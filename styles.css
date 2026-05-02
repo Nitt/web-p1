@@ -1,0 +1,210 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --color-bg:        #f0ede8;
+  --color-empty:     #e4e0da;
+  --color-wall:      #2b2926;
+  --color-player:    #3a6fd8;
+  --color-goal:      #e8a020;
+  --color-grid-gap:  #c8c4be;
+  --color-dpad-btn:  #2b2926;
+  --color-dpad-text: #f0ede8;
+
+  font-family: system-ui, sans-serif;
+  color: var(--color-wall);
+}
+
+html, body {
+  height: 100%;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+/* ─── views ──────────────────────────────────────────────────────────────── */
+
+.view { display: none; }
+.view.active { display: flex; }
+
+/* ─── puzzle view ────────────────────────────────────────────────────────── */
+
+#puzzle-view {
+  flex-direction: column;
+  align-items: center;
+  height: 100svh;
+  padding: 0.75rem;
+  gap: 0.75rem;
+}
+
+/* header */
+.puzzle-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.puzzle-header h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.btn-ghost {
+  background: none;
+  border: 1.5px solid var(--color-wall);
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.btn-ghost:hover { background: rgba(0,0,0,0.06); }
+
+/* grid container */
+#grid-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+}
+
+/* the actual grid */
+.grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 1fr);
+  gap: 3px;
+  background: var(--color-grid-gap);
+  border: 3px solid var(--color-grid-gap);
+  border-radius: 6px;
+  overflow: hidden;
+
+  /*
+    Size: fill height first, then cap to width.
+    12rem ≈ header + dpad + gaps.
+  */
+  height: min(calc(100svh - 12rem), calc(100vw - 1.5rem));
+  width:  calc(
+    min(calc(100svh - 12rem), calc(100vw - 1.5rem))
+    * var(--cols) / var(--rows)
+  );
+  aspect-ratio: var(--cols) / var(--rows);
+}
+
+.cell {
+  background: var(--color-empty);
+  aspect-ratio: 1;
+}
+
+.cell[data-type="wall"] {
+  background: var(--color-wall);
+}
+
+/* player & goal — both float above the grid via absolute positioning */
+.player,
+.goal {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.player {
+  width: calc((100% - 3px * (var(--cols) - 1)) / var(--cols) * 0.62);
+  height: calc((100% - 3px * (var(--rows) - 1)) / var(--rows) * 0.62);
+  background: var(--color-player);
+  border-radius: 50%;
+}
+
+.goal {
+  width:  calc((100% - 3px * (var(--cols) - 1)) / var(--cols) * 0.54);
+  height: calc((100% - 3px * (var(--rows) - 1)) / var(--rows) * 0.54);
+  background: var(--color-goal);
+  border-radius: 4px;
+  /* small rotation to look like a diamond / treasure marker */
+  transform-origin: center center;
+}
+
+/* keep the goal rotation separate from position transform */
+.goal::after {
+  content: '';
+  display: block;
+  width: 100%; height: 100%;
+  background: inherit;
+  border-radius: inherit;
+  transform: rotate(45deg);
+}
+.goal { background: transparent; }
+.goal::after { background: var(--color-goal); }
+
+/* ─── d-pad ──────────────────────────────────────────────────────────────── */
+
+#dpad {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 2.8rem);
+  grid-template-rows:    repeat(3, 2.8rem);
+  gap: 4px;
+}
+
+#dpad button {
+  background: var(--color-dpad-btn);
+  color: var(--color-dpad-text);
+  border: none;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  cursor: pointer;
+  touch-action: manipulation;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#dpad button:active { opacity: 0.7; }
+
+[data-dir="up"]    { grid-column: 2; grid-row: 1; }
+[data-dir="left"]  { grid-column: 1; grid-row: 2; }
+[data-dir="right"] { grid-column: 3; grid-row: 2; }
+[data-dir="down"]  { grid-column: 2; grid-row: 3; }
+
+/* on devices that have a fine pointer (desktop), de-emphasise the d-pad */
+@media (hover: hover) and (pointer: fine) {
+  #dpad { opacity: 0.35; }
+  #dpad:hover { opacity: 1; }
+}
+
+/* ─── win banner ─────────────────────────────────────────────────────────── */
+
+#win-banner {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  background: rgba(240, 237, 232, 0.88);
+  backdrop-filter: blur(4px);
+}
+
+#win-banner[hidden] { display: none; }
+
+#win-banner p {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+#win-banner button {
+  padding: 0.6rem 1.6rem;
+  font-size: 1rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--color-player);
+  color: #fff;
+  cursor: pointer;
+}

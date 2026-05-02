@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#f0ede8">
+  <title>Slide Puzzle</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ── Puzzle view ──────────────────────────────────────────────────── -->
+  <section id="puzzle-view" class="view active">
+
+    <header class="puzzle-header">
+      <button class="btn-ghost" id="back-btn" aria-label="Back to level select">← Back</button>
+      <h1 id="level-label">Level 1</h1>
+      <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
+    </header>
+
+    <div id="grid-container"></div>
+
+    <nav id="dpad" aria-label="Directional controls">
+      <button data-dir="up"    aria-label="Move up">↑</button>
+      <button data-dir="left"  aria-label="Move left">←</button>
+      <button data-dir="right" aria-label="Move right">→</button>
+      <button data-dir="down"  aria-label="Move down">↓</button>
+    </nav>
+
+  </section>
+
+  <!-- ── Level select view (stub) ─────────────────────────────────────── -->
+  <section id="levelselect-view" class="view">
+    <p>Level select — coming soon</p>
+  </section>
+
+  <!-- ── Win overlay ──────────────────────────────────────────────────── -->
+  <div id="win-banner" hidden>
+    <p>You found the treasure!</p>
+    <button id="win-restart-btn">Play again</button>
+  </div>
+
+  <script type="module">
+    import { init } from './game.js';
+
+    document.getElementById('win-restart-btn')
+      .addEventListener('click', () => location.reload());
+
+    init();
+  </script>
+</body>
+</html>
