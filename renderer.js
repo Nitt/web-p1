@@ -64,12 +64,13 @@ export function animatePlayer(from, to, level, onDone) {
   if (steps === 0) { onDone(); return; }
 
   const duration = steps * SPEED_MS_PER_CELL;
-  const startPx = _cellPixel(from.x, from.y, level);
-  const endPx   = _cellPixel(to.x,   to.y,   level);
   const startTime = performance.now();
 
   function frame(now) {
     const t = Math.min((now - startTime) / duration, 1);
+    // Recompute pixel coords every frame so a mid-animation resize stays correct.
+    const startPx = _cellPixel(from.x, from.y, level);
+    const endPx   = _cellPixel(to.x,   to.y,   level);
     const cx = startPx.x + (endPx.x - startPx.x) * t;
     const cy = startPx.y + (endPx.y - startPx.y) * t;
     _setOverlayPixel(playerEl, cx, cy);
@@ -80,6 +81,15 @@ export function animatePlayer(from, to, level, onDone) {
     }
   }
   requestAnimationFrame(frame);
+}
+
+/**
+ * Re-place both overlays at their current logical positions.
+ * Call this after a layout change (e.g. window resize).
+ */
+export function repositionOverlays(playerPos, level) {
+  _placeOverlay(playerEl, playerPos.x, playerPos.y, level);
+  _placeOverlay(goalEl,   level.goal.x, level.goal.y, level);
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

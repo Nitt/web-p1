@@ -1,5 +1,5 @@
 import { slidePlayer } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays } from './renderer.js';
 import { initInput } from './input.js';
 import { SAMPLE_LEVELS } from './levels.js';
 
@@ -35,6 +35,13 @@ export function init() {
     .addEventListener('click', () => loadLevel(state.level));
 
   initInput(gridContainer, dpadEl, handleMove);
+
+  new ResizeObserver(() => {
+    if (state.level && !state.isMoving) {
+      repositionOverlays(state.playerPos, state.level);
+    }
+  }).observe(gridContainer);
+
   loadLevel(SAMPLE_LEVELS[0]);
 }
 
