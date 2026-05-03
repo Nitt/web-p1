@@ -4,7 +4,6 @@ import { initInput } from './input.js';
 import { SAMPLE_LEVELS } from './levels.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
-let puzzleView   = null;
 let gridContainer = null;
 let dpadEl       = null;
 let winBanner    = null;
@@ -25,7 +24,6 @@ const state = {
 
 // ─── entry point ─────────────────────────────────────────────────────────────
 export function init() {
-  puzzleView    = document.getElementById('puzzle-view');
   gridContainer = document.getElementById('grid-container');
   dpadEl        = document.getElementById('dpad');
   winBanner     = document.getElementById('win-banner');

@@ -6,6 +6,10 @@ const SPEED_MS_PER_CELL = 80;
 let gridEl = null;
 let playerEl = null;
 let goalEl = null;
+// Tracks the last pixel position written to the player overlay.
+// Used as the authoritative animation start so there is never a
+// discrepancy between the visual position and the animation origin.
+let playerPx = { x: 0, y: 0 };
 
 /**
  * Build (or rebuild) the grid DOM from a level.
@@ -58,19 +62,20 @@ export function placePlayer(pos, level) {
  * @param {()=>void} onDone
  */
 export function animatePlayer(from, to, level, onDone) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+  const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
   if (steps === 0) { onDone(); return; }
 
   const duration = steps * SPEED_MS_PER_CELL;
   const startTime = performance.now();
+  // Capture the exact pixel the player is visually at right now.
+  // Recalculating from the cell DOM would risk a sub-pixel discrepancy on
+  // the first frame, which manifests as a one-frame snap in the wrong direction.
+  const startPx = { ...playerPx };
 
   function frame(now) {
-    const t = Math.min((now - startTime) / duration, 1);
-    // Recompute pixel coords every frame so a mid-animation resize stays correct.
-    const startPx = _cellPixel(from.x, from.y, level);
-    const endPx   = _cellPixel(to.x,   to.y,   level);
+    const t = Math.max(0, Math.min((now - startTime) / duration, 1));
+    // End position is recalculated every frame so mid-animation resizes stay correct.
+    const endPx = _cellPixel(to.x, to.y, level);
     const cx = startPx.x + (endPx.x - startPx.x) * t;
     const cy = startPx.y + (endPx.y - startPx.y) * t;
     _setOverlayPixel(playerEl, cx, cy);
@@ -95,12 +100,17 @@ export function repositionOverlays(playerPos, level) {
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function _cellPixel(x, y, level) {
-  const rect = gridEl.getBoundingClientRect();
-  const cellW = rect.width  / level.width;
-  const cellH = rect.height / level.height;
+  // Read the actual rendered position of the cell element rather than
+  // approximating with rect.width/cols — this correctly handles the grid
+  // border, gap, and any fractional pixel sizing automatically.
+  const cellEl = gridEl.children[y * level.width + x];
+  const cellRect = cellEl.getBoundingClientRect();
+  const gridRect = gridEl.getBoundingClientRect();
+  // clientLeft/clientTop = border width; overlays are positioned from the
+  // padding edge (inside the border), so we subtract it from the offset.
   return {
-    x: x * cellW + cellW / 2,
-    y: y * cellH + cellH / 2,
+    x: cellRect.left - gridRect.left - gridEl.clientLeft + cellRect.width  / 2,
+    y: cellRect.top  - gridRect.top  - gridEl.clientTop  + cellRect.height / 2,
   };
 }
 
@@ -110,5 +120,6 @@ function _placeOverlay(el, x, y, level) {
 }
 
 function _setOverlayPixel(el, cx, cy) {
+  if (el === playerEl) playerPx = { x: cx, y: cy };
   el.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
 }

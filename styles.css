@@ -96,6 +96,7 @@ html, body {
 }
 
 .cell {
+  position: relative;
   background: var(--color-empty);
   aspect-ratio: 1;
 }
