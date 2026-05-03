@@ -25,7 +25,7 @@ const ONEWAY_OUT = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
  * @param {number} width   - inner column count (no padding)
  * @param {number} height  - inner row count
  * @param {{ seed?: number, id?: number|string }} [opts]
- * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y} }}
+ * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y}, depths: Int16Array }}
  */
 export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   const rng = makeRng(seed);
@@ -173,6 +173,33 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   _logLevel(outCells, width, height, start, goal, id);
 
   return { id, width, height, cells: outCells, start, goal, depths };
+}
+
+/**
+ * Generate `candidates` levels (consecutive seeds) and return the hardest one
+ * (highest max depth value — most moves required to reach the goal).
+ *
+ * @param {number} width
+ * @param {number} height
+ * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
+ */
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300 } = {}) {
+  let best         = null;
+  let bestMaxDepth = -1;
+  let bestSeed     = seed;
+
+  for (let i = 0; i < candidates; i++) {
+    const level    = generateLevel(width, height, { seed: seed + i, id });
+    const maxDepth = Math.max(...level.depths);
+    if (maxDepth > bestMaxDepth) {
+      bestMaxDepth = maxDepth;
+      bestSeed     = seed + i;
+      best         = level;
+    }
+  }
+
+  console.log(`[hardest] seed=${bestSeed}  maxDepth=${bestMaxDepth}  (${candidates} candidates)`);
+  return best;
 }
 
 // ── Debug logging ─────────────────────────────────────────────────────────────

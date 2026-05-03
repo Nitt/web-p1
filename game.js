@@ -1,14 +1,15 @@
 import { slidePlayer } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlayer } from './renderer.js';
 import { initInput } from './input.js';
-import { generateLevel } from './generator.js';
+import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
-let gridContainer = null;
-let dpadEl       = null;
-let winBanner    = null;
-let levelLabel   = null;
+let gridContainer    = null;
+let dpadEl           = null;
+let winBanner        = null;
+let levelLabel       = null;
+let movesCounterEl   = null;
 
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
@@ -22,15 +23,16 @@ const state = {
   won:         false,
   queuedMove:  null,   // { dx, dy, queuedAt } — next move buffered during animation
   nextId:      2,      // id for the next generated level
-  nextSeed:    100,    // seed for the next generated level
+  nextSeed:    300,    // seed for the next generated level (0–299 used by level 1)
+  movesLeft:   0,      // decrements each move; explosion + reset at 0
 };
 
 // ─── entry point ─────────────────────────────────────────────────────────────
 export function init() {
-  gridContainer = document.getElementById('grid-container');
-  dpadEl        = document.getElementById('dpad');
-  winBanner     = document.getElementById('win-banner');
-  levelLabel    = document.getElementById('level-label');
+  gridContainer  = document.getElementById('grid-container');
+  dpadEl         = document.getElementById('dpad');
+  winBanner      = document.getElementById('win-banner');
+  levelLabel     = document.getElementById('level-label');
 
   document.getElementById('restart-btn')
     .addEventListener('click', () => loadLevel(state.level));
@@ -54,16 +56,24 @@ function loadLevel(level) {
   state.won         = false;
   state.queuedMove  = null;
 
+  const goalDepth = level.depths
+    ? level.depths[level.goal.y * level.width + level.goal.x]
+    : 0;
+  state.movesLeft = goalDepth > 0 ? goalDepth : 0;
+
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
   winBanner.hidden = true;
 
   buildGrid(gridContainer, level);
+  movesCounterEl = gridContainer.querySelector('.player-moves');
+  _updateMovesDisplay();
   placePlayer(state.playerPos, level);
 }
 
 function _nextLevel() {
-  const level = generateLevel(9, 9, { seed: state.nextSeed, id: state.nextId });
-  state.nextSeed += 1;
+  const CANDIDATES = 300;
+  const level = generateHardestLevel(9, 9, { seed: state.nextSeed, id: state.nextId, candidates: CANDIDATES });
+  state.nextSeed += CANDIDATES;
   state.nextId   += 1;
   loadLevel(level);
 }
@@ -103,6 +113,19 @@ function _executeMove(dx, dy) {
       return;
     }
 
+    // Decrement moves counter.
+    if (state.movesLeft > 0) {
+      state.movesLeft--;
+      _updateMovesDisplay();
+    }
+
+    if (state.movesLeft === 0) {
+      // Out of moves — explode, then reset.
+      state.queuedMove = null;
+      explodePlayer(() => loadLevel(state.level));
+      return;
+    }
+
     // Flush queued move if it arrived within the time window.
     const q = state.queuedMove;
     state.queuedMove = null;
@@ -110,4 +133,11 @@ function _executeMove(dx, dy) {
       _executeMove(q.dx, q.dy);
     }
   });
+}
+
+function _updateMovesDisplay() {
+  if (!movesCounterEl) return;
+  movesCounterEl.textContent = state.movesLeft;
+  const playerEl = movesCounterEl.closest('.player');
+  if (playerEl) playerEl.classList.toggle('low', state.movesLeft > 0 && state.movesLeft <= 3);
 }

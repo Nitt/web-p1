@@ -1,4 +1,4 @@
-import { generateLevel } from './generator.js';
+import { generateHardestLevel } from './generator.js';
 
 /**
  * Level format (what generateLevel emits, and what the game expects):
@@ -18,8 +18,7 @@ import { generateLevel } from './generator.js';
  */
 
 export const SAMPLE_LEVELS = [
-  //generateLevel(9, 9, { seed: 42, id: 1 }), <- faulty?
-  generateLevel(9, 9, { seed: 40, id: 1 }),
+  generateHardestLevel(9, 9, { seed: 0, id: 1, candidates: 300 }),
 ];
 
 // ── Hand-crafted 7×7 reference level (kept for reference) ───────────────────

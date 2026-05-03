@@ -101,30 +101,8 @@ html, body {
   aspect-ratio: 1;
 }
 
-.cell-coord {
-  position: absolute;
-  bottom: 2px;
-  right: 3px;
-  font-size: clamp(5px, 1.2vmin, 10px);
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: rgba(0, 0, 0, 0.28);
-  pointer-events: none;
-  user-select: none;
-}
-
-.cell-depth {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  font-size: clamp(6px, 1.5vmin, 13px);
-  font-weight: 600;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: rgba(0, 0, 0, 0.40);
-  pointer-events: none;
-  user-select: none;
-}
+.cell-coord,
+.cell-depth { display: none; }
 
 .cell[data-type="wall"] .cell-coord,
 .cell[data-type="wall"] .cell-depth {
@@ -233,6 +211,36 @@ html, body {
 @media (hover: hover) and (pointer: fine) {
   #dpad { opacity: 0.35; }
   #dpad:hover { opacity: 1; }
+}
+
+/* ─── moves counter (on player) ─────────────────────────────────────────── */
+
+.player-moves {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(8px, 2vmin, 16px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  pointer-events: none;
+  user-select: none;
+}
+
+.player.low .player-moves { color: #ffe066; }
+
+/* ─── player explosion ───────────────────────────────────────────────────── */
+
+@keyframes explode {
+  0%   { transform: var(--player-transform) scale(1);   opacity: 1; }
+  40%  { transform: var(--player-transform) scale(2.2); opacity: 0.9; }
+  100% { transform: var(--player-transform) scale(0.1); opacity: 0; }
+}
+
+.player.exploding {
+  animation: explode 0.55s ease-out forwards;
 }
 
 /* ─── win banner ─────────────────────────────────────────────────────────── */

@@ -72,6 +72,9 @@ export function buildGrid(container, level) {
   // Player (overlay)
   playerEl = document.createElement('div');
   playerEl.className = 'player';
+  const movesSpan = document.createElement('span');
+  movesSpan.className = 'player-moves';
+  playerEl.appendChild(movesSpan);
   gridEl.appendChild(playerEl);
 }
 
@@ -126,6 +129,23 @@ export function animatePlayer(from, to, level, onDone) {
 export function repositionOverlays(playerPos, level) {
   _placeOverlay(playerEl, playerPos.x, playerPos.y, level);
   _placeOverlay(goalEl,   level.goal.x, level.goal.y, level);
+}
+
+/**
+ * Play an explosion animation on the player, then call onDone.
+ * @param {()=>void} onDone
+ */
+export function explodePlayer(onDone) {
+  // Save the current positional transform as a CSS var, then remove the inline
+  // style so the CSS animation (which references the var) can take full control.
+  playerEl.style.setProperty('--player-transform', playerEl.style.transform);
+  playerEl.style.transform = '';
+  playerEl.classList.add('exploding');
+  playerEl.addEventListener('animationend', function handler() {
+    playerEl.classList.remove('exploding');
+    playerEl.style.removeProperty('--player-transform');
+    onDone();
+  }, { once: true });
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
