@@ -120,7 +120,8 @@ function _executeMove(dx, dy) {
     }
 
     if (state.movesLeft === 0) {
-      // Out of moves — explode, then reset.
+      // Out of moves — block input, explode, then reset.
+      state.isMoving   = true;
       state.queuedMove = null;
       explodePlayer(() => loadLevel(state.level));
       return;
