@@ -48,6 +48,17 @@ export function buildGrid(container, level) {
       coord.className = 'cell-coord';
       coord.textContent = `${x},${y}`;
       cell.appendChild(coord);
+
+      if (level.depths) {
+        const d = level.depths[y * level.width + x];
+        if (d >= 0) {
+          const depth = document.createElement('span');
+          depth.className = 'cell-depth';
+          depth.textContent = d;
+          cell.appendChild(depth);
+        }
+      }
+
       gridEl.appendChild(cell);
     }
   }

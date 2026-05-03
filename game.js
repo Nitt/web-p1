@@ -1,6 +1,7 @@
 import { slidePlayer } from './puzzle.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays } from './renderer.js';
 import { initInput } from './input.js';
+import { generateLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
@@ -20,6 +21,8 @@ const state = {
   isMoving:    false,
   won:         false,
   queuedMove:  null,   // { dx, dy, queuedAt } — next move buffered during animation
+  nextId:      2,      // id for the next generated level
+  nextSeed:    100,    // seed for the next generated level
 };
 
 // ─── entry point ─────────────────────────────────────────────────────────────
@@ -58,6 +61,13 @@ function loadLevel(level) {
   placePlayer(state.playerPos, level);
 }
 
+function _nextLevel() {
+  const level = generateLevel(9, 9, { seed: state.nextSeed, id: state.nextId });
+  state.nextSeed += 1;
+  state.nextId   += 1;
+  loadLevel(level);
+}
+
 // ─── move dispatcher ──────────────────────────────────────────────────────────
 function handleMove(dx, dy) {
   if (state.won) return;
@@ -89,6 +99,7 @@ function _executeMove(dx, dy) {
       state.won = true;
       state.queuedMove = null;
       winBanner.hidden = false;
+      setTimeout(_nextLevel, 1200);
       return;
     }
 

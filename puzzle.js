@@ -80,6 +80,12 @@ export function slidePlayer(level, pos, dx, dy) {
     x = nx;
     y = ny;
 
+    // Stop on the goal (acts like sticky — slide through triggers it)
+    if (level.goal && x === level.goal.x && y === level.goal.y) {
+      steps.push(`(${x},${y}) — goal`);
+      break;
+    }
+
     // Stop after landing on a sticky cell
     if (cell === CellType.STICKY) {
       steps.push(`(${x},${y}) — sticky stop`);

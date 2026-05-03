@@ -168,11 +168,11 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   }
 
   const start = { x: startX - 1, y: startY - 1 };
-  const goal  = _findGoal(outCells, width, height, start);
+  const { goal, depths } = _findGoal(outCells, width, height, start);
 
   _logLevel(outCells, width, height, start, goal, id);
 
-  return { id, width, height, cells: outCells, start, goal };
+  return { id, width, height, cells: outCells, start, goal, depths };
 }
 
 // ── Debug logging ─────────────────────────────────────────────────────────────
@@ -206,18 +206,21 @@ function _logLevel(cells, width, height, start, goal, id) {
 
 // ── BFS goal finder ──────────────────────────────────────────────────────────
 
-function _slide(cells, width, height, pos, dx, dy) {
+// Returns every cell traversed (in order), including the landing cell.
+function _slidePath(cells, width, height, pos, dx, dy) {
+  const path = [];
   let x = pos.x, y = pos.y;
   while (true) {
     const nx = x + dx, ny = y + dy;
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) break;
     const cell = cells[ny * width + nx];
-    if (cell === 1) break;  // WALL
-    if (cell >= 3 && !_onewayAllows(cell, dx, dy)) break;  // ONEWAY wrong dir
+    if (cell === 1) break;                                   // WALL
+    if (cell >= 3 && !_onewayAllows(cell, dx, dy)) break;   // ONEWAY wrong dir
     x = nx; y = ny;
-    if (cell === 2) break;  // STICKY — stop after moving onto it
+    path.push({ x, y });
+    if (cell === 2) break;                                   // STICKY
   }
-  return { x, y };
+  return path;
 }
 
 function _onewayAllows(cellType, dx, dy) {
@@ -232,35 +235,61 @@ function _onewayAllows(cellType, dx, dy) {
 }
 
 function _findGoal(cells, width, height, start) {
-  const visited    = new Map();
+  // landingVisited: tracks landing positions already queued for BFS expansion
+  const landingVisited = new Map();
+  // depths: minimum move-count to reach ANY cell (landing or pass-through)
+  const depths         = new Map();
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
   const key = (p) => p.y * width + p.x;
 
-  visited.set(key(start), 0);
+  landingVisited.set(key(start), 0);
+  depths.set(key(start), 0);
   const queue = [{ pos: start, depth: 0 }];
-
-  let bestPos  = start;
-  let bestDepth = 0;
-  let bestManhattan = 0;
 
   while (queue.length > 0) {
     const { pos, depth } = queue.shift();
     for (const { dx, dy } of DIRS4) {
-      const next = _slide(cells, width, height, pos, dx, dy);
-      if (next.x === pos.x && next.y === pos.y) continue;  // no-op slide
-      const k = key(next);
-      if (visited.has(k)) continue;
-      visited.set(k, depth + 1);
+      const path = _slidePath(cells, width, height, pos, dx, dy);
+      if (path.length === 0) continue;
+
       const nd = depth + 1;
-      const nm = Math.abs(next.x - start.x) + Math.abs(next.y - start.y);
-      if (nd > bestDepth || (nd === bestDepth && nm > bestManhattan)) {
-        bestDepth     = nd;
-        bestManhattan = nm;
-        bestPos       = next;
+
+      // Update depth for every cell traversed along this slide (keep minimum)
+      for (const p of path) {
+        const k = key(p);
+        if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
       }
-      queue.push({ pos: next, depth: nd });
+
+      // Only expand BFS from the landing cell (last in path)
+      const landing = path[path.length - 1];
+      const lk = key(landing);
+      if (landingVisited.has(lk)) continue;
+      landingVisited.set(lk, nd);
+      queue.push({ pos: landing, depth: nd });
     }
   }
 
-  return bestPos;
+  // Build flat depth array: -1 = unreachable, ≥0 = min move count from start
+  const depthArray = new Int16Array(width * height).fill(-1);
+  for (const [k, d] of depths) depthArray[k] = d;
+
+  // Pick goal: non-wall cell with the highest depth in the depths map.
+  // Since goal triggers on pass-through, depth IS the true difficulty.
+  let bestPos       = start;
+  let bestDepth     = 0;
+  let bestManhattan = 0;
+  for (const [k, d] of depths) {
+    if (cells[k] === 1) continue;  // skip walls
+    const x  = k % width;
+    const y  = Math.floor(k / width);
+    const nm = Math.abs(x - start.x) + Math.abs(y - start.y);
+    if (d > bestDepth || (d === bestDepth && nm > bestManhattan)) {
+      bestDepth     = d;
+      bestManhattan = nm;
+      bestPos       = { x, y };
+    }
+  }
+
+  return { goal: bestPos, depths: depthArray };
 }
+
