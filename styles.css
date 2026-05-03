@@ -101,9 +101,51 @@ html, body {
   aspect-ratio: 1;
 }
 
+.cell-coord {
+  position: absolute;
+  bottom: 2px;
+  right: 3px;
+  font-size: clamp(5px, 1.2vmin, 10px);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  user-select: none;
+}
+
+.cell[data-type="wall"] .cell-coord {
+  color: rgba(255, 255, 255, 0.20);
+}
+
 .cell[data-type="wall"] {
   background: var(--color-wall);
 }
+
+.cell[data-type="sticky"] {
+  background: #c8a060;
+}
+
+/* One-way cell: tinted background + directional arrow via pseudo-element */
+.cell[data-type="oneway"] {
+  background: #7ab8a0;
+}
+
+.cell[data-type="oneway"]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8em;
+  color: #fff;
+  opacity: 0.85;
+}
+
+.cell[data-type="oneway"][data-dir="left"]::after  { content: '←'; }
+.cell[data-type="oneway"][data-dir="right"]::after { content: '→'; }
+.cell[data-type="oneway"][data-dir="up"]::after    { content: '↑'; }
+.cell[data-type="oneway"][data-dir="down"]::after  { content: '↓'; }
 
 /* player & goal — both float above the grid via absolute positioning */
 .player,
@@ -168,10 +210,10 @@ html, body {
 
 #dpad button:active { opacity: 0.7; }
 
-[data-dir="up"]    { grid-column: 2; grid-row: 1; }
-[data-dir="left"]  { grid-column: 1; grid-row: 2; }
-[data-dir="right"] { grid-column: 3; grid-row: 2; }
-[data-dir="down"]  { grid-column: 2; grid-row: 3; }
+#dpad [data-dir="up"]    { grid-column: 2; grid-row: 1; }
+#dpad [data-dir="left"]  { grid-column: 1; grid-row: 2; }
+#dpad [data-dir="right"] { grid-column: 3; grid-row: 2; }
+#dpad [data-dir="down"]  { grid-column: 2; grid-row: 3; }
 
 /* on devices that have a fine pointer (desktop), de-emphasise the d-pad */
 @media (hover: hover) and (pointer: fine) {

@@ -1,4 +1,12 @@
-import { CellType } from './puzzle.js';
+import { CellType, isOneway } from './puzzle.js';
+
+// Maps ONEWAY_* CellType values → data-dir attribute strings for CSS
+const ONEWAY_DIR_ATTR = {
+  [CellType.ONEWAY_LEFT]:  'left',
+  [CellType.ONEWAY_RIGHT]: 'right',
+  [CellType.ONEWAY_UP]:    'up',
+  [CellType.ONEWAY_DOWN]:  'down',
+};
 
 // ms per grid cell of travel — feel free to tune
 const SPEED_MS_PER_CELL = 80;
@@ -30,7 +38,16 @@ export function buildGrid(container, level) {
       const cell = document.createElement('div');
       cell.className = 'cell';
       const type = level.cells[y * level.width + x];
-      if (type === CellType.WALL) cell.dataset.type = 'wall';
+      if (type === CellType.WALL)   cell.dataset.type = 'wall';
+      if (type === CellType.STICKY) cell.dataset.type = 'sticky';
+      if (isOneway(type)) {
+        cell.dataset.type = 'oneway';
+        cell.dataset.dir  = ONEWAY_DIR_ATTR[type];
+      }
+      const coord = document.createElement('span');
+      coord.className = 'cell-coord';
+      coord.textContent = `${x},${y}`;
+      cell.appendChild(coord);
       gridEl.appendChild(cell);
     }
   }
@@ -67,9 +84,12 @@ export function animatePlayer(from, to, level, onDone) {
 
   const duration = steps * SPEED_MS_PER_CELL;
   const startTime = performance.now();
-  // Capture the exact pixel the player is visually at right now.
-  // Recalculating from the cell DOM would risk a sub-pixel discrepancy on
-  // the first frame, which manifests as a one-frame snap in the wrong direction.
+  // Snap visual position to the logical start cell before reading startPx.
+  // This eliminates any accumulated desync between playerPx and state.playerPos
+  // (e.g. caused by a previous no-op move or mid-animation resize), so the
+  // new animation always originates from exactly the right pixel.
+  // The Math.max(0,…) clamp on t means this snap never causes a backward jerk.
+  _placeOverlay(playerEl, from.x, from.y, level);
   const startPx = { ...playerPx };
 
   function frame(now) {

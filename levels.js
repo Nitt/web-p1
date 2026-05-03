@@ -1,23 +1,31 @@
-import { CellType } from './puzzle.js';
-
-const E = CellType.EMPTY;
-const W = CellType.WALL;
+import { generateLevel } from './generator.js';
 
 /**
- * Level format — what the level generator should emit:
+ * Level format (what generateLevel emits, and what the game expects):
  *
  * {
  *   id:     string | number,
- *   width:  number,           // columns
- *   height: number,           // rows
- *   cells:  Uint8Array,       // flat row-major, length = width * height
- *   start:  { x: number, y: number },   // 0-indexed, top-left origin
+ *   width:  number,             // columns
+ *   height: number,             // rows
+ *   cells:  Uint8Array,         // flat row-major, length = width * height
+ *   start:  { x: number, y: number },
  *   goal:   { x: number, y: number },
  * }
+ *
+ * CellType values (see puzzle.js):
+ *   0 = EMPTY, 1 = WALL, 2 = STICKY,
+ *   3 = ONEWAY_LEFT, 4 = ONEWAY_RIGHT, 5 = ONEWAY_UP, 6 = ONEWAY_DOWN
  */
 
-// 7×7 sample level (row-major, top-left = (0,0))
-// S = start (0,0)  G = goal (6,6)
+export const SAMPLE_LEVELS = [
+  //generateLevel(9, 9, { seed: 42, id: 1 }), <- faulty?
+  generateLevel(9, 9, { seed: 40, id: 1 }),
+];
+
+// ── Hand-crafted 7×7 reference level (kept for reference) ───────────────────
+//
+// import { CellType } from './puzzle.js';
+// const E = CellType.EMPTY, W = CellType.WALL;
 //
 //  S . . . . . .
 //  W . . W . . .
@@ -26,24 +34,14 @@ const W = CellType.WALL;
 //  . . . . . . .
 //  . . W . . . W
 //  . . . . . . G
-
-const sampleCells = new Uint8Array([
-  E, E, E, E, E, E, E,  // row 0
-  W, E, E, W, E, E, E,  // row 1
-  E, E, E, E, E, E, W,  // row 2
-  E, W, E, E, E, W, E,  // row 3
-  E, E, E, E, E, E, E,  // row 4
-  E, E, W, E, E, E, W,  // row 5
-  E, E, E, E, E, E, E,  // row 6
-]);
-
-export const SAMPLE_LEVELS = [
-  {
-    id: 1,
-    width: 7,
-    height: 7,
-    cells: sampleCells,
-    start: { x: 0, y: 0 },
-    goal:  { x: 6, y: 6 },
-  },
-];
+//
+// const sampleCells = new Uint8Array([
+//   E,E,E,E,E,E,E,
+//   W,E,E,W,E,E,E,
+//   E,E,E,E,E,E,W,
+//   E,W,E,E,E,W,E,
+//   E,E,E,E,E,E,E,
+//   E,E,W,E,E,E,W,
+//   E,E,E,E,E,E,E,
+// ]);
+// { id:1, width:7, height:7, cells:sampleCells, start:{x:0,y:0}, goal:{x:6,y:6} }
