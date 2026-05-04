@@ -59,6 +59,16 @@ export function buildGrid(container, level) {
         }
       }
 
+      if (level.difficulties) {
+        const d = level.difficulties[y * level.width + x];
+        if (d >= 0) {
+          const diff = document.createElement('span');
+          diff.className = 'cell-difficulty';
+          diff.textContent = Number.isInteger(d) ? d : d.toFixed(1);
+          cell.appendChild(diff);
+        }
+      }
+
       gridEl.appendChild(cell);
     }
   }

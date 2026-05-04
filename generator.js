@@ -17,6 +17,20 @@ const WEIGHT_TOTAL = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
 // Maps a ONEWAY direction key → the CellType value used in the output level
 const ONEWAY_OUT = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
 
+// ── Difficulty weights ────────────────────────────────────────────────────────
+// Each entry represents the cognitive cost added to a move when that interaction
+// occurs. BASE_MOVE is applied once per slide action. All others stack on top.
+// Add new cell types here as they are introduced (crumbles, keys, doors, etc.).
+export const DIFFICULTY_WEIGHTS = {
+  BASE_MOVE:       1.0,   // every slide, regardless of length
+  STICKY:          0.5,   // landing on a sticky cell (easy to predict, minor load)
+  ONEWAY_TRAVERSE: 1.0,   // passing through a one-way in the allowed direction
+  ONEWAY_BLOCKED:  2.5,   // stopped by a one-way approaching from the wrong direction
+  // CRUMBLE:      3.0,   // breaking a crumble block (topology change, high load)
+  // KEY:          2.5,   // picking up a key
+  // DOOR:         2.5,   // unlocking a door
+};
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -168,43 +182,43 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   }
 
   const start = { x: startX - 1, y: startY - 1 };
-  const { goal, depths } = _findGoal(outCells, width, height, start);
+  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start);
+  const goalDifficulty = difficulties[goal.y * width + goal.x];
 
-  _logLevel(outCells, width, height, start, goal, id);
+  _logLevel(outCells, width, height, start, goal, id, goalDifficulty);
 
-  return { id, width, height, cells: outCells, start, goal, depths };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty };
 }
 
 /**
  * Generate `candidates` levels (consecutive seeds) and return the hardest one
- * (highest max depth value — most moves required to reach the goal).
+ * (highest goal difficulty — most cognitively demanding path to the goal).
  *
  * @param {number} width
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
 export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300 } = {}) {
-  let best         = null;
-  let bestMaxDepth = -1;
-  let bestSeed     = seed;
+  let best             = null;
+  let bestDifficulty   = -1;
+  let bestSeed         = seed;
 
   for (let i = 0; i < candidates; i++) {
-    const level    = generateLevel(width, height, { seed: seed + i, id });
-    const maxDepth = Math.max(...level.depths);
-    if (maxDepth > bestMaxDepth) {
-      bestMaxDepth = maxDepth;
-      bestSeed     = seed + i;
-      best         = level;
+    const level = generateLevel(width, height, { seed: seed + i, id });
+    if (level.goalDifficulty > bestDifficulty) {
+      bestDifficulty = level.goalDifficulty;
+      bestSeed       = seed + i;
+      best           = level;
     }
   }
 
-  console.log(`[hardest] seed=${bestSeed}  maxDepth=${bestMaxDepth}  (${candidates} candidates)`);
+  console.log(`[hardest] seed=${bestSeed}  goalDifficulty=${bestDifficulty.toFixed(2)}  (${candidates} candidates)`);
   return best;
 }
 
 // ── Debug logging ─────────────────────────────────────────────────────────────
 
-function _logLevel(cells, width, height, start, goal, id) {
+function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
   const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓'];
 
   // Column header: "   x: 0 1 2 3 ..."
@@ -227,27 +241,44 @@ function _logLevel(cells, width, height, start, goal, id) {
   console.group(`[Level ${id}] ${width}×${height}`);
   console.log(lines.join('\n'));
   console.log(legend);
-  console.log(`start=(${start.x},${start.y})  goal=(${goal.x},${goal.y})`);
+  console.log(`start=(${start.x},${start.y})  goal=(${goal.x},${goal.y})  difficulty=${goalDifficulty?.toFixed(2) ?? '?'}`);
   console.groupEnd();
 }
 
 // ── BFS goal finder ──────────────────────────────────────────────────────────
 
-// Returns every cell traversed (in order), including the landing cell.
+// Returns every cell traversed (in order), including the landing cell,
+// plus the difficulty cost of executing this slide.
 function _slidePath(cells, width, height, pos, dx, dy) {
   const path = [];
   let x = pos.x, y = pos.y;
+  let blockedByOneway = false;
+
   while (true) {
     const nx = x + dx, ny = y + dy;
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) break;
     const cell = cells[ny * width + nx];
     if (cell === 1) break;                                   // WALL
-    if (cell >= 3 && !_onewayAllows(cell, dx, dy)) break;   // ONEWAY wrong dir
+    if (cell >= 3 && cell <= 6 && !_onewayAllows(cell, dx, dy)) {
+      blockedByOneway = true;                                // ONEWAY wrong dir
+      break;
+    }
     x = nx; y = ny;
-    path.push({ x, y });
+    path.push({ x, y, cell });
     if (cell === 2) break;                                   // STICKY
   }
-  return path;
+
+  // Compute difficulty cost for this slide.
+  // BASE_MOVE is charged once. Additional costs stack per interaction.
+  let cost = path.length === 0 && !blockedByOneway ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
+  for (const { cell } of path) {
+    if (cell === 2)                cost += DIFFICULTY_WEIGHTS.STICKY;          // sticky landing
+    if (cell >= 3 && cell <= 6)    cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE; // one-way traversal
+    // future: CRUMBLE, KEY, DOOR, etc. added here
+  }
+  if (blockedByOneway) cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
+
+  return { path, cost };
 }
 
 function _onewayAllows(cellType, dx, dy) {
@@ -262,61 +293,128 @@ function _onewayAllows(cellType, dx, dy) {
 }
 
 function _findGoal(cells, width, height, start) {
-  // landingVisited: tracks landing positions already queued for BFS expansion
-  const landingVisited = new Map();
-  // depths: minimum move-count to reach ANY cell (landing or pass-through)
-  const depths         = new Map();
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
   const key = (p) => p.y * width + p.x;
 
+  // ── Pass 1: BFS for move-count depths (uniform cost) ──────────────────────
+  // depths tracks minimum moves to reach any cell; used as the player's move counter.
+  const landingVisited = new Map();
+  const depths         = new Map();
+
   landingVisited.set(key(start), 0);
   depths.set(key(start), 0);
-  const queue = [{ pos: start, depth: 0 }];
+  const bfsQueue = [{ pos: start, depth: 0 }];
 
-  while (queue.length > 0) {
-    const { pos, depth } = queue.shift();
+  while (bfsQueue.length > 0) {
+    const { pos, depth } = bfsQueue.shift();
     for (const { dx, dy } of DIRS4) {
-      const path = _slidePath(cells, width, height, pos, dx, dy);
+      const { path } = _slidePath(cells, width, height, pos, dx, dy);
       if (path.length === 0) continue;
 
       const nd = depth + 1;
-
-      // Update depth for every cell traversed along this slide (keep minimum)
       for (const p of path) {
         const k = key(p);
         if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
       }
 
-      // Only expand BFS from the landing cell (last in path)
       const landing = path[path.length - 1];
       const lk = key(landing);
       if (landingVisited.has(lk)) continue;
       landingVisited.set(lk, nd);
-      queue.push({ pos: landing, depth: nd });
+      bfsQueue.push({ pos: landing, depth: nd });
     }
   }
 
-  // Build flat depth array: -1 = unreachable, ≥0 = min move count from start
-  const depthArray = new Int16Array(width * height).fill(-1);
-  for (const [k, d] of depths) depthArray[k] = d;
+  // ── Pass 2: Dijkstra for difficulty (variable cost) ───────────────────────
+  // difficulties tracks the minimum accumulated cognitive cost to reach any cell.
+  // Uses a simple min-heap so lower difficulties are always expanded first.
+  const difficulties   = new Map();
+  const diffLandingVis = new Map();
 
-  // Pick goal: non-wall cell with the highest depth in the depths map.
-  // Since goal triggers on pass-through, depth IS the true difficulty.
-  let bestPos       = start;
-  let bestDepth     = 0;
-  let bestManhattan = 0;
-  for (const [k, d] of depths) {
+  difficulties.set(key(start), 0);
+  diffLandingVis.set(key(start), 0);
+
+  // Min-heap keyed on accumulated difficulty cost.
+  // Each entry: { pos, diff } where diff = total difficulty so far.
+  const heap = [{ pos: start, diff: 0 }];
+
+  function heapPush(entry) {
+    heap.push(entry);
+    // Bubble up
+    let i = heap.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (heap[parent].diff <= heap[i].diff) break;
+      [heap[parent], heap[i]] = [heap[i], heap[parent]];
+      i = parent;
+    }
+  }
+  function heapPop() {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      // Bubble down
+      let i = 0;
+      while (true) {
+        let smallest = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < heap.length && heap[l].diff < heap[smallest].diff) smallest = l;
+        if (r < heap.length && heap[r].diff < heap[smallest].diff) smallest = r;
+        if (smallest === i) break;
+        [heap[i], heap[smallest]] = [heap[smallest], heap[i]];
+        i = smallest;
+      }
+    }
+    return top;
+  }
+
+  while (heap.length > 0) {
+    const { pos, diff } = heapPop();
+    // Skip if we already found a cheaper path to this landing cell
+    if ((diffLandingVis.get(key(pos)) ?? Infinity) < diff) continue;
+
+    for (const { dx, dy } of DIRS4) {
+      const { path, cost } = _slidePath(cells, width, height, pos, dx, dy);
+      if (path.length === 0) continue;
+
+      const nd = diff + cost;
+      for (const p of path) {
+        const k = key(p);
+        if (!difficulties.has(k) || difficulties.get(k) > nd) difficulties.set(k, nd);
+      }
+
+      const landing = path[path.length - 1];
+      const lk = key(landing);
+      if ((diffLandingVis.get(lk) ?? Infinity) <= nd) continue;
+      diffLandingVis.set(lk, nd);
+      heapPush({ pos: landing, diff: nd });
+    }
+  }
+
+  // ── Build flat arrays: -1 = unreachable ──────────────────────────────────
+  const depthArray      = new Int16Array(width * height).fill(-1);
+  const difficultyArray = new Float32Array(width * height).fill(-1);
+  for (const [k, d] of depths)      depthArray[k]      = d;
+  for (const [k, d] of difficulties) difficultyArray[k] = d;
+
+  // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
+  // Ties broken by Manhattan distance from start (prefer visually distant cell).
+  let bestPos        = start;
+  let bestDifficulty = 0;
+  let bestManhattan  = 0;
+  for (const [k, d] of difficulties) {
     if (cells[k] === 1) continue;  // skip walls
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);
-    if (d > bestDepth || (d === bestDepth && nm > bestManhattan)) {
-      bestDepth     = d;
-      bestManhattan = nm;
-      bestPos       = { x, y };
+    if (d > bestDifficulty || (d === bestDifficulty && nm > bestManhattan)) {
+      bestDifficulty = d;
+      bestManhattan  = nm;
+      bestPos        = { x, y };
     }
   }
 
-  return { goal: bestPos, depths: depthArray };
+  return { goal: bestPos, depths: depthArray, difficulties: difficultyArray };
 }
 

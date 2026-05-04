@@ -102,11 +102,51 @@ html, body {
 }
 
 .cell-coord,
-.cell-depth { display: none; }
+.cell-depth,
+.cell-difficulty { display: none; }
 
 .cell[data-type="wall"] .cell-coord,
-.cell[data-type="wall"] .cell-depth {
+.cell[data-type="wall"] .cell-depth,
+.cell[data-type="wall"] .cell-difficulty {
   color: rgba(255, 255, 255, 0.20);
+}
+
+/* ─── debug overlay ──────────────────────────────────────────────────────── */
+
+body.debug .cell-depth,
+body.debug .cell-difficulty {
+  display: block;
+  position: absolute;
+  font-size: clamp(5px, 1.5vmin, 10px);
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+body.debug .cell-depth {
+  top: 2px;
+  left: 3px;
+  color: #3a6fd8;
+}
+
+body.debug .cell-difficulty {
+  bottom: 2px;
+  right: 3px;
+  color: #c04020;
+}
+
+#debug-btn {
+  position: fixed;
+  top: 0.5rem;
+  right: 0.5rem;
+  font-size: 0.65rem;
+  padding: 0.2rem 0.45rem;
+  opacity: 0.4;
+  z-index: 200;
+}
+
+body.debug #debug-btn {
+  opacity: 1;
 }
 
 .cell[data-type="wall"] {

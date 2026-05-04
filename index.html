@@ -40,11 +40,16 @@
     <button id="win-restart-btn">Play again</button>
   </div>
 
+  <button id="debug-btn" class="btn-ghost">dbg</button>
+
   <script type="module">
     import { init } from './game.js';
 
     document.getElementById('win-restart-btn')
       .addEventListener('click', () => location.reload());
+
+    document.getElementById('debug-btn')
+      .addEventListener('click', () => document.body.classList.toggle('debug'));
 
     init();
   </script>
