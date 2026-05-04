@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, removeCrumble, removeKey, openDoor } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, removeCrumble, removeKey, openDoor } from './renderer.js';
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -146,7 +146,64 @@ function handleMove(dx, dy) {
   _executeMove(dx, dy);
 }
 
+// Animate chain retraction after a multi-back revisit.
+// The tail smoothly rewinds along each path segment back to targetLength.
+// Total animation time is capped at TOTAL_MS regardless of segment count.
+let _retractToken = 0;
+function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone) {
+  const TOTAL_MS    = 100;
+  const numSegments = fromGears.length - targetLength;
+  const segmentMs   = TOTAL_MS / numSegments;
+  const token = ++_retractToken;
+  let gears = fromGears.slice();
+
+  function animateSegment() {
+    if (token !== _retractToken) { onDone(); return; }
+    if (gears.length <= targetLength) {
+      drawChain(gears, playerPos, gearsLeft, totalGears, level);
+      onDone();
+      return;
+    }
+
+    const tailIdx  = gears.length - 1;
+    const prevIdx  = tailIdx - 1;
+    const fromPx   = getCellPixel(gears[tailIdx].x, gears[tailIdx].y, level);
+    const toPx     = prevIdx >= 0
+      ? getCellPixel(gears[prevIdx].x, gears[prevIdx].y, level)
+      : getCellPixel(playerPos.x, playerPos.y, level);
+    const duration = segmentMs;
+    const startTime = performance.now();
+    const gearsWithoutTail = gears.slice(0, tailIdx);
+
+    function frame(now) {
+      if (token !== _retractToken) { onDone(); return; }
+      const t  = Math.min((now - startTime) / duration, 1);
+      const cx = fromPx.x + (toPx.x - fromPx.x) * t;
+      const cy = fromPx.y + (toPx.y - fromPx.y) * t;
+      drawChainWithPixelTail(gearsWithoutTail, { x: cx, y: cy }, gearsLeft, totalGears, level);
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        gears = gearsWithoutTail;
+        animateSegment();
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  animateSegment();
+}
+
+function _flushQueuedMove() {
+  const q = state.queuedMove;
+  state.queuedMove = null;
+  if (q && (performance.now() - q.queuedAt) <= QUEUE_WINDOW_MS) {
+    _executeMove(q.dx, q.dy);
+  }
+}
+
 function _executeMove(dx, dy) {
+  _retractToken++; // cancel any in-progress retraction animation
   const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
   const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
@@ -165,11 +222,24 @@ function _executeMove(dx, dy) {
 
   state.isMoving = true;
 
+  // ── Pre-animation chain update for "one back" retraction ─────────────────
+  // When moving into the cog immediately behind the latest one, shorten the
+  // chain state before the animation so the retraction is visible during movement.
+  const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === state.gears.length - 2)
+                 || (isBoatEntry && state.gears.length === 1);
+  if (isOneBack) {
+    drawChain(
+      state.gears.slice(0, revisitIdx + 1),
+      state.playerPos, state.gearsLeft + 1, state.totalGears, state.level,
+    );
+  }
+
   animatePlayer(state.playerPos, target, state.level, () => {
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
 
     // ── Update gear chain ────────────────────────────────────────────────────
+    const gearsBeforeUpdate = state.gears.slice();
     if (!isBoatEntry) {
       if (revisitIdx >= 0) {
         // Revisited a past waypoint — shorten chain back to it, reclaim gears.
@@ -185,7 +255,19 @@ function _executeMove(dx, dy) {
       state.gearsLeft += state.gears.length;
       state.gears = [];
     }
-    drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+
+    // Animate retraction for multi-back revisit or boat entry (when chain is non-empty).
+    const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
+                             && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
+    if (needsRetractAnim) {
+      state.isMoving = true; // keep blocked during retraction
+      _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+        state.isMoving = false;
+        _flushQueuedMove();
+      });
+    } else {
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    }
 
     // Activate the crumble toggle: set its bit in worldState and update the DOM.
     if (hasCrumble) {
@@ -232,10 +314,7 @@ function _executeMove(dx, dy) {
     }
 
     // Flush queued move if it arrived within the time window.
-    const q = state.queuedMove;
-    state.queuedMove = null;
-    if (q && (performance.now() - q.queuedAt) <= QUEUE_WINDOW_MS) {
-      _executeMove(q.dx, q.dy);
-    }
+    // (needsRetractAnim defers this until after the retraction animation.)
+    if (!needsRetractAnim) _flushQueuedMove();
   });
 }

@@ -229,6 +229,18 @@ export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   _redrawChain(pp.x, pp.y);
 }
 
+/** Like drawChain but the tail endpoint is already in pixels (used for retract animation). */
+export function drawChainWithPixelTail(gears, tailPx, gearsLeft, totalGears, level) {
+  if (!chainSvgEl || !gridEl) return;
+  _chainState = { gears, gearsLeft, totalGears, level };
+  _redrawChain(tailPx.x, tailPx.y);
+}
+
+/** Expose pixel centre of a grid cell for use in retract animation. */
+export function getCellPixel(x, y, level) {
+  return _cellPixel(x, y, level);
+}
+
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
   const { gears, gearsLeft, level } = _chainState;
