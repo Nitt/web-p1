@@ -97,6 +97,7 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  * @param {number} dy
  * @param {Map<number,number>} [toggleMap]  - from buildToggleMap(); null = no toggles
  * @param {number}             [worldState] - bitmask of active toggles (default 0)
+ * @param {Set<number>}        [gearSet]    - flat indices of placed gear waypoints; player stops on them like sticky
  *
  * @returns {{
  *   x: number,
@@ -109,7 +110,7 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  *   In both cases the caller computes the new worldState:
  *     newWS = worldState | (1 << toggleIdx)
  */
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
@@ -191,6 +192,12 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
     if (cell === CellType.STICKY) {
       steps.push(`(${x},${y}) — sticky stop`);
+      break;
+    }
+
+    // Gear waypoints act like stickies: stop on landing rather than sliding through
+    if (gearSet && gearSet.has(y * width + x)) {
+      steps.push(`(${x},${y}) — gear stop`);
       break;
     }
 

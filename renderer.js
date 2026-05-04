@@ -15,10 +15,13 @@ let gridEl = null;
 let playerEl = null;
 let goalEl = null;
 let chainSvgEl = null;
+let counterSpan = null;
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
 let playerPx = { x: 0, y: 0 };
+// Stores the last drawChain arguments so the animation loop can redraw each frame.
+let _chainState = null;
 
 /**
  * Build (or rebuild) the grid DOM from a level.
@@ -95,6 +98,9 @@ export function buildGrid(container, level) {
   // Player (overlay)
   playerEl = document.createElement('div');
   playerEl.className = 'player';
+  counterSpan = document.createElement('span');
+  counterSpan.className = 'chain-counter';
+  playerEl.appendChild(counterSpan);
   gridEl.appendChild(playerEl);
 }
 
@@ -133,6 +139,7 @@ export function animatePlayer(from, to, level, onDone) {
     const cx = startPx.x + (endPx.x - startPx.x) * t;
     const cy = startPx.y + (endPx.y - startPx.y) * t;
     _setOverlayPixel(playerEl, cx, cy);
+    if (_chainState) _redrawChain(cx, cy);
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
@@ -217,6 +224,14 @@ export function openDoor(x, y, level) {
  */
 export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   if (!chainSvgEl || !gridEl) return;
+  const pp = _cellPixel(playerPos.x, playerPos.y, level);
+  _chainState = { gears, gearsLeft, totalGears, level };
+  _redrawChain(pp.x, pp.y);
+}
+
+function _redrawChain(px, py) {
+  if (!chainSvgEl || !gridEl || !_chainState) return;
+  const { gears, gearsLeft, level } = _chainState;
   chainSvgEl.innerHTML = '';
 
   const gridRect = gridEl.getBoundingClientRect();
@@ -224,11 +239,11 @@ export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   const H = gridRect.height;
   chainSvgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
-  // Build the list of points: start cell → each gear → player pos
+  // Build the list of points: start cell → each gear → current player pixel
   const points = [
     _cellPixel(level.start.x, level.start.y, level),
     ...gears.map(g => _cellPixel(g.x, g.y, level)),
-    _cellPixel(playerPos.x, playerPos.y, level),
+    { x: px, y: py },
   ];
 
   if (points.length < 2) return;
@@ -245,24 +260,51 @@ export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   polyline.setAttribute('stroke-linejoin', 'round');
   chainSvgEl.appendChild(polyline);
 
-  // Gear circles at each waypoint (skip start and player positions)
+  // Gear shapes at each waypoint (skip start and player positions)
   for (let i = 1; i < points.length - 1; i++) {
-    const circle = document.createElementNS(NS, 'circle');
-    circle.setAttribute('cx', points[i].x);
-    circle.setAttribute('cy', points[i].y);
-    circle.setAttribute('r', '4');
-    circle.setAttribute('fill', 'rgba(60,80,120,0.7)');
-    chainSvgEl.appendChild(circle);
+    const g = document.createElementNS(NS, 'path');
+    g.setAttribute('d', _gearPath(points[i].x, points[i].y, 18, 12, 8));
+    g.setAttribute('fill', 'rgba(50,70,110,0.75)');
+    g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
+    g.setAttribute('stroke-width', '0.8');
+    chainSvgEl.appendChild(g);
+
+    // Hole in the center
+    const hole = document.createElementNS(NS, 'circle');
+    hole.setAttribute('cx', points[i].x);
+    hole.setAttribute('cy', points[i].y);
+    hole.setAttribute('r', '5');
+    hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
+    chainSvgEl.appendChild(hole);
   }
 
-  // Gear counter near player
-  const pp = points[points.length - 1];
-  const text = document.createElementNS(NS, 'text');
-  text.setAttribute('x', pp.x + 10);
-  text.setAttribute('y', pp.y - 8);
-  text.setAttribute('class', 'chain-counter');
-  text.textContent = `${gearsLeft}`;
-  chainSvgEl.appendChild(text);
+  // Update the counter span inside the player div
+  if (counterSpan) counterSpan.textContent = gearsLeft;
+}
+
+/**
+ * Returns an SVG path string for a gear shape centred at (cx, cy).
+ * @param {number} cx
+ * @param {number} cy
+ * @param {number} outerR  - tip of teeth radius
+ * @param {number} innerR  - valley between teeth radius
+ * @param {number} teeth   - number of teeth
+ */
+function _gearPath(cx, cy, outerR, innerR, teeth = 8) {
+  const toothFrac = 0.35; // fraction of tooth arc occupied by the flat top
+  const pts = [];
+  for (let i = 0; i < teeth; i++) {
+    const a0 = (2 * Math.PI * i)       / teeth - Math.PI / 2;
+    const a1 = (2 * Math.PI * (i + 1)) / teeth - Math.PI / 2;
+    const mid = (a0 + a1) / 2;
+    const half = (a1 - a0) * toothFrac / 2;
+    // valley → tooth rise → tooth top → tooth fall
+    pts.push(`${cx + Math.cos(a0) * innerR},${cy + Math.sin(a0) * innerR}`);
+    pts.push(`${cx + Math.cos(mid - half) * outerR},${cy + Math.sin(mid - half) * outerR}`);
+    pts.push(`${cx + Math.cos(mid + half) * outerR},${cy + Math.sin(mid + half) * outerR}`);
+    pts.push(`${cx + Math.cos(a1) * innerR},${cy + Math.sin(a1) * innerR}`);
+  }
+  return 'M ' + pts.join(' L ') + ' Z';
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

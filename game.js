@@ -147,7 +147,8 @@ function handleMove(dx, dy) {
 }
 
 function _executeMove(dx, dy) {
-  const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState);
+  const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
+  const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
   if (!didMove && !hasCrumble) return;

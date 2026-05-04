@@ -359,10 +359,17 @@ body.debug #debug-btn {
 }
 
 .chain-counter {
-  font-size: clamp(9px, 2vmin, 14px);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(8px, 2vmin, 15px);
   font-weight: 700;
-  fill: rgba(60, 80, 120, 0.85);
-  font-family: system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* ─── player explosion ───────────────────────────────────────────────────── */
