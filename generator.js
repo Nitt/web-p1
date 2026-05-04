@@ -181,7 +181,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           break;
         }
         case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
-        default:        out = 1; break;   // CellType.WALL  (BLOCK + UNTOUCHED)
+        case G.BLOCK:   out = 1; break;   // CellType.WALL
+        default:        out = 0; break;   // CellType.EMPTY  (UNTOUCHED — never carved)
       }
       outCells[y * width + x] = out;
     }

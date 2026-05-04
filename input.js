@@ -18,6 +18,7 @@ const DIRS = [
 export function initInput(swipeTarget, dpadEl, onMove) {
   _initKeyboard(onMove);
   _initSwipe(swipeTarget, onMove);
+  _initMouseDrag(onMove);
   _initDpad(dpadEl, onMove);
 }
 
@@ -73,6 +74,39 @@ function _initSwipe(el, onMove) {
       onMove(0, dy > 0 ? 1 : -1);
     }
   }, { passive: true });
+}
+
+// ─── mouse drag ──────────────────────────────────────────────────────────────
+
+function _initMouseDrag(onMove) {
+  let startX = 0;
+  let startY = 0;
+  let dragging = false;
+
+  document.addEventListener('mousedown', e => {
+    startX = e.clientX;
+    startY = e.clientY;
+    dragging = true;
+  });
+
+  document.addEventListener('mouseup', e => {
+    if (!dragging) return;
+    dragging = false;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    const dist = Math.max(adx, ady);
+    if (dist < SWIPE_THRESHOLD) return;
+    if (adx >= ady) {
+      onMove(dx > 0 ? 1 : -1, 0);
+    } else {
+      onMove(0, dy > 0 ? 1 : -1);
+    }
+  });
+
+  // Cancel drag if mouse leaves the window
+  document.addEventListener('mouseleave', () => { dragging = false; });
 }
 
 // ─── d-pad ───────────────────────────────────────────────────────────────────
