@@ -15,6 +15,18 @@ let movesCounterEl   = null;
 // Inputs queued earlier than this window will be discarded.
 const QUEUE_WINDOW_MS = 300;
 
+// ─── background level pre-generation ─────────────────────────────────────────
+const CANDIDATES = 300;
+const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });
+let _pendingLevel = null;   // resolves to a level object when the worker finishes
+
+function _pregenNext(seed, id) {
+  _pendingLevel = new Promise(resolve => {
+    _worker.onmessage = ({ data }) => resolve(data);
+  });
+  _worker.postMessage({ width: 9, height: 9, seed, id, candidates: CANDIDATES });
+}
+
 // ─── game state ───────────────────────────────────────────────────────────────
 const state = {
   level:       null,
@@ -76,14 +88,24 @@ function loadLevel(level) {
   movesCounterEl = gridContainer.querySelector('.player-moves');
   _updateMovesDisplay();
   placePlayer(state.playerPos, level);
+
+  // Kick off background generation of the next level immediately.
+  _pregenNext(state.nextSeed, state.nextId);
 }
 
 function _nextLevel() {
-  const CANDIDATES = 300;
-  const level = generateHardestLevel(9, 9, { seed: state.nextSeed, id: state.nextId, candidates: CANDIDATES });
+  const seed = state.nextSeed;
+  const id   = state.nextId;
   state.nextSeed += CANDIDATES;
   state.nextId   += 1;
-  loadLevel(level);
+
+  // Use the pre-generated level if ready; otherwise generate synchronously.
+  Promise.resolve(_pendingLevel).then(level => {
+    if (!level) {
+      level = generateHardestLevel(9, 9, { seed, id, candidates: CANDIDATES });
+    }
+    loadLevel(level);
+  });
 }
 
 // ─── move dispatcher ──────────────────────────────────────────────────────────
