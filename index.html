@@ -36,17 +36,14 @@
 
   <!-- ── Win overlay ──────────────────────────────────────────────────── -->
   <div id="win-banner" hidden>
-    <p>You found the treasure!</p>
-    <button id="win-restart-btn">Play again</button>
+    <p>Level complete!</p>
+    <span class="win-hint">Tap anywhere to continue</span>
   </div>
 
   <button id="debug-btn" class="btn-ghost">dbg</button>
 
   <script type="module">
     import { init } from './game.js';
-
-    document.getElementById('win-restart-btn')
-      .addEventListener('click', () => location.reload());
 
     document.getElementById('debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('debug'));

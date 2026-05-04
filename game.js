@@ -186,7 +186,15 @@ function _executeMove(dx, dy) {
       state.won = true;
       state.queuedMove = null;
       winBanner.hidden = false;
-      setTimeout(_nextLevel, 1200);
+
+      function _advance() {
+        winBanner.hidden = true;
+        winBanner.removeEventListener('pointerdown', _advance);
+        document.removeEventListener('keyup', _advance);
+        _nextLevel();
+      }
+      winBanner.addEventListener('pointerdown', _advance, { once: true });
+      document.addEventListener('keyup', _advance, { once: true });
       return;
     }
 
