@@ -63,13 +63,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   const idx = (x, y) => y * pw + x;
 
-  // ── Place start — always top-center; only DOWN is reachable ──
+  // ── Place start — always top-center; start is above the grid (y = -1) ──
   const startX = 1 + Math.floor(width / 2);
   const startY = 1;
   cells[idx(startX, startY)] = G.EMPTY;
-  // Force left/right of start to walls BEFORE DFS so the carver never opens them.
-  cells[idx(startX - 1, startY)] = G.BLOCK;
-  cells[idx(startX + 1, startY)] = G.BLOCK;
 
   // ── State tracking ──
   // visitedDirs: cellIndex → Set<dirKey> (directions already explored from here)
@@ -191,7 +188,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const start = { x: startX - 1, y: startY - 1 };
+  const start = { x: startX - 1, y: -1 };
 
   // First pass: find the goal without any key-door pair, so _tryPlaceKeyDoor
   // knows which cell to gate behind the door.

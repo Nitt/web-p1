@@ -153,11 +153,14 @@ function _executeMove(dx, dy) {
   const hasCrumble = target.crumble !== null;
   if (!didMove && !hasCrumble) return;
 
+  // Moving into the boat (above the grid) is a free move — no gear consumed.
+  const isBoatEntry = target.y < 0;
+
   // ── Gear check ────────────────────────────────────────────────────────────
   // Determine if landing on an already-visited waypoint (revisit = chain shortens,
   // no new gear consumed) or on a fresh cell (requires a free gear).
-  const revisitIdx = state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  const willUseGear = revisitIdx < 0;
+  const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
+  const willUseGear = !isBoatEntry && revisitIdx < 0;
   if (willUseGear && state.gearsLeft === 0) return;  // silently blocked — no gears left
 
   state.isMoving = true;
@@ -167,14 +170,20 @@ function _executeMove(dx, dy) {
     state.isMoving  = false;
 
     // ── Update gear chain ────────────────────────────────────────────────────
-    if (revisitIdx >= 0) {
-      // Revisited a past waypoint — shorten chain back to it, reclaim gears.
-      const freed = state.gears.length - revisitIdx - 1;
-      state.gears = state.gears.slice(0, revisitIdx + 1);
-      state.gearsLeft += freed;
+    if (!isBoatEntry) {
+      if (revisitIdx >= 0) {
+        // Revisited a past waypoint — shorten chain back to it, reclaim gears.
+        const freed = state.gears.length - revisitIdx - 1;
+        state.gears = state.gears.slice(0, revisitIdx + 1);
+        state.gearsLeft += freed;
+      } else {
+        state.gears.push({ x: target.x, y: target.y });
+        state.gearsLeft--;
+      }
     } else {
-      state.gears.push({ x: target.x, y: target.y });
-      state.gearsLeft--;
+      // Returned to the boat — retract the full chain, reclaim all gears.
+      state.gearsLeft += state.gears.length;
+      state.gears = [];
     }
     drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
 

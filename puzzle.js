@@ -125,6 +125,13 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     const nx = x + dx;
     const ny = y + dy;
 
+    // Allow sliding up into the boat entry (one row above the grid at the start column).
+    if (ny === -1 && nx === level.start.x && dx === 0 && dy === -1) {
+      x = nx; y = ny;
+      steps.push(`(${x},${y}) — boat`);
+      break;
+    }
+
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
       steps.push(`(${x},${y}) — boundary`);
       break;

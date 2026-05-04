@@ -313,14 +313,16 @@ function _cellPixel(x, y, level) {
   // Read the actual rendered position of the cell element rather than
   // approximating with rect.width/cols — this correctly handles the grid
   // border, gap, and any fractional pixel sizing automatically.
-  const cellEl = gridEl.children[y * level.width + x];
+  // y = -1 means one cell above the top row (boat entry point above the grid).
+  const refY = y < 0 ? 0 : y;
+  const cellEl = gridEl.children[refY * level.width + x];
   const cellRect = cellEl.getBoundingClientRect();
   const gridRect = gridEl.getBoundingClientRect();
   // clientLeft/clientTop = border width; overlays are positioned from the
   // padding edge (inside the border), so we subtract it from the offset.
   return {
     x: cellRect.left - gridRect.left - gridEl.clientLeft + cellRect.width  / 2,
-    y: cellRect.top  - gridRect.top  - gridEl.clientTop  + cellRect.height / 2,
+    y: cellRect.top  - gridRect.top  - gridEl.clientTop  + cellRect.height / 2 - (y < 0 ? cellRect.height : 0),
   };
 }
 
