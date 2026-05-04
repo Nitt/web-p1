@@ -1,7 +1,7 @@
 import { makeRng } from './random.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5 };
 
 const DIRS = [
   { key: 'LEFT',  dx: -1, dy:  0 },
@@ -11,7 +11,7 @@ const DIRS = [
 ];
 
 // Probability weights for choosing a cell type when carving into UNTOUCHED
-const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, empty: 1.00 };
+const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.00 };
 const WEIGHT_TOTAL = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
 
 // Maps a ONEWAY direction key → the CellType value used in the output level
@@ -26,7 +26,7 @@ export const DIFFICULTY_WEIGHTS = {
   STICKY:          0.5,   // landing on a sticky cell (easy to predict, minor load)
   ONEWAY_TRAVERSE: 1.0,   // passing through a one-way in the allowed direction
   ONEWAY_BLOCKED:  2.5,   // stopped by a one-way approaching from the wrong direction
-  // CRUMBLE:      3.0,   // breaking a crumble block (topology change, high load)
+  CRUMBLE:         3.0,   // stopped by a crumble block (topology change, high load)
   // KEY:          2.5,   // picking up a key
   // DOOR:         2.5,   // unlocking a door
 };
@@ -132,6 +132,9 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
         } else if (type === 'block') {
           cells[ni] = G.BLOCK;
           enqueue(x, y);
+        } else if (type === 'crumble') {
+          cells[ni] = G.CRUMBLE;
+          enqueue(x, y);
         } else { // sticky
           cells[ni] = G.STICKY;
           enqueue(nx, ny);
@@ -175,6 +178,7 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
           out = dk ? ONEWAY_OUT[dk] : 0;
           break;
         }
+        case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
         default:        out = 1; break;   // CellType.WALL  (BLOCK + UNTOUCHED)
       }
       outCells[y * width + x] = out;
@@ -219,7 +223,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
 // ── Debug logging ─────────────────────────────────────────────────────────────
 
 function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░'];
 
   // Column header: "   x: 0 1 2 3 ..."
   const colHeader = '    x: ' + Array.from({ length: width }, (_, i) => i).join(' ');
@@ -237,7 +241,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
     lines.push(row);
   }
 
-  const legend = '  . empty  # wall  S sticky  ←→↑↓ oneway  @ start  G goal';
+  const legend = '  . empty  # wall  S sticky  ←→↑↓ oneway  ░ crumble  @ start  G goal';
   console.group(`[Level ${id}] ${width}×${height}`);
   console.log(lines.join('\n'));
   console.log(legend);
@@ -248,37 +252,53 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 // ── BFS goal finder ──────────────────────────────────────────────────────────
 
 // Returns every cell traversed (in order), including the landing cell,
-// plus the difficulty cost of executing this slide.
-function _slidePath(cells, width, height, pos, dx, dy) {
+// plus the difficulty cost of executing this slide, and the position + toggleIdx
+// of any crumble that stopped the slide (for worldState transition in the BFS).
+//
+// toggleMap : Map<flatIdx, toggleIdx>  — from buildToggleMap()
+// worldState: number                   — bitmask of active (already-broken) toggles
+function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState) {
   const path = [];
   let x = pos.x, y = pos.y;
-  let blockedByOneway = false;
+  let blockedByOneway  = false;
+  let blockedByCrumble = false;
+  let crumblePos       = null;
 
   while (true) {
     const nx = x + dx, ny = y + dy;
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) break;
-    const cell = cells[ny * width + nx];
-    if (cell === 1) break;                                   // WALL
+    const flatIdx = ny * width + nx;
+    const cell    = cells[flatIdx];
+    if (cell === 1) break;                                           // WALL
+    if (cell === 7) {                                                // CRUMBLE
+      const tIdx = toggleMap.get(flatIdx);
+      if (tIdx === undefined || !(worldState & (1 << tIdx))) {
+        // Still solid — stop before it
+        crumblePos = { x: nx, y: ny, toggleIdx: tIdx };
+        blockedByCrumble = true;
+        break;
+      }
+      // Broken (toggle active) — treat as empty and keep sliding
+    }
     if (cell >= 3 && cell <= 6 && !_onewayAllows(cell, dx, dy)) {
-      blockedByOneway = true;                                // ONEWAY wrong dir
+      blockedByOneway = true;                                        // ONEWAY wrong dir
       break;
     }
     x = nx; y = ny;
     path.push({ x, y, cell });
-    if (cell === 2) break;                                   // STICKY
+    if (cell === 2) break;                                           // STICKY
   }
 
   // Compute difficulty cost for this slide.
-  // BASE_MOVE is charged once. Additional costs stack per interaction.
-  let cost = path.length === 0 && !blockedByOneway ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
+  let cost = (path.length === 0 && !blockedByOneway && !blockedByCrumble) ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
   for (const { cell } of path) {
-    if (cell === 2)                cost += DIFFICULTY_WEIGHTS.STICKY;          // sticky landing
-    if (cell >= 3 && cell <= 6)    cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE; // one-way traversal
-    // future: CRUMBLE, KEY, DOOR, etc. added here
+    if (cell === 2)                cost += DIFFICULTY_WEIGHTS.STICKY;
+    if (cell >= 3 && cell <= 6)    cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE;
   }
-  if (blockedByOneway) cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
+  if (blockedByOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
+  if (blockedByCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE;
 
-  return { path, cost };
+  return { path, cost, crumblePos };
 }
 
 function _onewayAllows(cellType, dx, dy) {
@@ -294,53 +314,86 @@ function _onewayAllows(cellType, dx, dy) {
 
 function _findGoal(cells, width, height, start) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
-  const key = (p) => p.y * width + p.x;
+
+  // ── Build toggle map ───────────────────────────────────────────────────────
+  // Assign a toggle index to every stateful cell (crumbles for now).
+  // worldState is a bitmask over these indices; 2^N possible universes.
+  const toggleMap = new Map();
+  let toggleCount = 0;
+  for (let i = 0; i < width * height; i++) {
+    if (cells[i] === 7) toggleMap.set(i, toggleCount++); // CRUMBLE
+  }
+
+  // Key functions.
+  // posKey    — identifies a grid cell for the output arrays (position only).
+  // stateKey  — identifies a (position, worldState) pair for visited tracking.
+  const posKey   = (p)     => p.y * width + p.x;
+  const stateKey = (p, ws) => ws * width * height + p.y * width + p.x;
 
   // ── Pass 1: BFS for move-count depths (uniform cost) ──────────────────────
-  // depths tracks minimum moves to reach any cell; used as the player's move counter.
+  // depths tracks the minimum number of moves to reach a position across ALL
+  // universes (worldStates).  landingVisited prevents re-expanding the same
+  // (pos, worldState) node twice.
   const landingVisited = new Map();
-  const depths         = new Map();
+  const depths         = new Map(); // posKey → min depth over all worldStates
 
-  landingVisited.set(key(start), 0);
-  depths.set(key(start), 0);
-  const bfsQueue = [{ pos: start, depth: 0 }];
+  landingVisited.set(stateKey(start, 0), 0);
+  depths.set(posKey(start), 0);
+  const bfsQueue = [{ pos: start, depth: 0, worldState: 0 }];
 
   while (bfsQueue.length > 0) {
-    const { pos, depth } = bfsQueue.shift();
+    const { pos, depth, worldState } = bfsQueue.shift();
+
+    if ((landingVisited.get(stateKey(pos, worldState)) ?? depth) < depth) continue;
+
     for (const { dx, dy } of DIRS4) {
-      const { path } = _slidePath(cells, width, height, pos, dx, dy);
-      if (path.length === 0) continue;
+      const { path, crumblePos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState);
+      if (path.length === 0 && !crumblePos) continue;
 
       const nd = depth + 1;
+
       for (const p of path) {
-        const k = key(p);
+        const k = posKey(p);
         if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
       }
 
-      const landing = path[path.length - 1];
-      const lk = key(landing);
-      if (landingVisited.has(lk)) continue;
-      landingVisited.set(lk, nd);
-      bfsQueue.push({ pos: landing, depth: nd });
+      if (path.length > 0) {
+        const landing = path[path.length - 1];
+        const lk = stateKey(landing, worldState);
+        if ((landingVisited.get(lk) ?? Infinity) > nd) {
+          landingVisited.set(lk, nd);
+          bfsQueue.push({ pos: landing, depth: nd, worldState });
+        }
+      }
+
+      // Crumble break: transition to a new universe where that crumble is gone.
+      // The player remains at their landing position (or start pos if no movement)
+      // in the new worldState — no extra move is charged for the break itself.
+      if (crumblePos && crumblePos.toggleIdx !== undefined) {
+        const newWorldState = worldState | (1 << crumblePos.toggleIdx);
+        const from = path.length > 0 ? path[path.length - 1] : pos;
+        const fk  = posKey(from);
+        if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
+        const lk = stateKey(from, newWorldState);
+        if ((landingVisited.get(lk) ?? Infinity) > nd) {
+          landingVisited.set(lk, nd);
+          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState });
+        }
+      }
     }
   }
 
   // ── Pass 2: Dijkstra for difficulty (variable cost) ───────────────────────
-  // difficulties tracks the minimum accumulated cognitive cost to reach any cell.
-  // Uses a simple min-heap so lower difficulties are always expanded first.
-  const difficulties   = new Map();
+  const difficulties   = new Map(); // posKey → min difficulty over all worldStates
   const diffLandingVis = new Map();
 
-  difficulties.set(key(start), 0);
-  diffLandingVis.set(key(start), 0);
+  difficulties.set(posKey(start), 0);
+  diffLandingVis.set(stateKey(start, 0), 0);
 
-  // Min-heap keyed on accumulated difficulty cost.
-  // Each entry: { pos, diff } where diff = total difficulty so far.
-  const heap = [{ pos: start, diff: 0 }];
+  const heap = [{ pos: start, diff: 0, worldState: 0 }];
 
   function heapPush(entry) {
     heap.push(entry);
-    // Bubble up
     let i = heap.length - 1;
     while (i > 0) {
       const parent = (i - 1) >> 1;
@@ -354,7 +407,6 @@ function _findGoal(cells, width, height, start) {
     const last = heap.pop();
     if (heap.length > 0) {
       heap[0] = last;
-      // Bubble down
       let i = 0;
       while (true) {
         let smallest = i;
@@ -370,41 +422,56 @@ function _findGoal(cells, width, height, start) {
   }
 
   while (heap.length > 0) {
-    const { pos, diff } = heapPop();
-    // Skip if we already found a cheaper path to this landing cell
-    if ((diffLandingVis.get(key(pos)) ?? Infinity) < diff) continue;
+    const { pos, diff, worldState } = heapPop();
+    if ((diffLandingVis.get(stateKey(pos, worldState)) ?? Infinity) < diff) continue;
 
     for (const { dx, dy } of DIRS4) {
-      const { path, cost } = _slidePath(cells, width, height, pos, dx, dy);
-      if (path.length === 0) continue;
+      const { path, cost, crumblePos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState);
+      if (path.length === 0 && !crumblePos) continue;
 
       const nd = diff + cost;
+
       for (const p of path) {
-        const k = key(p);
+        const k = posKey(p);
         if (!difficulties.has(k) || difficulties.get(k) > nd) difficulties.set(k, nd);
       }
 
-      const landing = path[path.length - 1];
-      const lk = key(landing);
-      if ((diffLandingVis.get(lk) ?? Infinity) <= nd) continue;
-      diffLandingVis.set(lk, nd);
-      heapPush({ pos: landing, diff: nd });
+      if (path.length > 0) {
+        const landing = path[path.length - 1];
+        const lk = stateKey(landing, worldState);
+        if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
+          diffLandingVis.set(lk, nd);
+          heapPush({ pos: landing, diff: nd, worldState });
+        }
+      }
+
+      // Crumble break: transition to new worldState, no extra difficulty charge.
+      if (crumblePos && crumblePos.toggleIdx !== undefined) {
+        const newWorldState = worldState | (1 << crumblePos.toggleIdx);
+        const from = path.length > 0 ? path[path.length - 1] : pos;
+        const fk  = posKey(from);
+        if (!difficulties.has(fk) || difficulties.get(fk) > nd) difficulties.set(fk, nd);
+        const lk = stateKey(from, newWorldState);
+        if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
+          diffLandingVis.set(lk, nd);
+          heapPush({ pos: from, diff: nd, worldState: newWorldState });
+        }
+      }
     }
   }
 
   // ── Build flat arrays: -1 = unreachable ──────────────────────────────────
   const depthArray      = new Int16Array(width * height).fill(-1);
   const difficultyArray = new Float32Array(width * height).fill(-1);
-  for (const [k, d] of depths)      depthArray[k]      = d;
+  for (const [k, d] of depths)       depthArray[k]      = d;
   for (const [k, d] of difficulties) difficultyArray[k] = d;
 
   // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
-  // Ties broken by Manhattan distance from start (prefer visually distant cell).
   let bestPos        = start;
   let bestDifficulty = 0;
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
-    if (cells[k] === 1) continue;  // skip walls
+    if (cells[k] === 1) continue;
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);

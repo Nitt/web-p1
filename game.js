@@ -1,5 +1,5 @@
-import { slidePlayer } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlayer } from './renderer.js';
+import { slidePlayer, buildToggleMap } from './puzzle.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlayer, removeCrumble } from './renderer.js';
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -25,6 +25,12 @@ const state = {
   nextId:      2,      // id for the next generated level
   nextSeed:    300,    // seed for the next generated level (0–299 used by level 1)
   movesLeft:   0,      // decrements each move; explosion + reset at 0
+  // Parallel-universe / world-state system.
+  // Each topological change (crumble break, door open, …) is a "toggle".
+  // worldState is a bitmask: bit N set means toggle N is active.
+  // toggleMap maps flat cell index → toggle index (built once per level).
+  worldState:  0,
+  toggleMap:   null,
 };
 
 // ─── entry point ─────────────────────────────────────────────────────────────
@@ -55,6 +61,8 @@ function loadLevel(level) {
   state.isMoving    = false;
   state.won         = false;
   state.queuedMove  = null;
+  state.worldState  = 0;
+  state.toggleMap   = buildToggleMap(level.cells);
 
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
@@ -93,14 +101,27 @@ function handleMove(dx, dy) {
 }
 
 function _executeMove(dx, dy) {
-  const target = slidePlayer(state.level, state.playerPos, dx, dy);
-  if (target.x === state.playerPos.x && target.y === state.playerPos.y) return;
+  const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState);
+  const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
+  const hasCrumble = target.crumble !== null;
+  if (!didMove && !hasCrumble) return;
 
   state.isMoving = true;
 
   animatePlayer(state.playerPos, target, state.level, () => {
-    state.playerPos = target;
+    state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
+
+    // Activate the crumble toggle: set its bit in worldState and update the DOM.
+    // The level.cells array is NOT mutated — the world-state bitmask is the
+    // authoritative record of which crumbles (and future toggles) are broken.
+    if (hasCrumble) {
+      const { x: cx, y: cy, toggleIdx } = target.crumble;
+      if (toggleIdx !== undefined) {
+        state.worldState |= (1 << toggleIdx);
+      }
+      removeCrumble(cx, cy, state.level);
+    }
 
     if (
       target.x === state.level.goal.x &&

@@ -179,6 +179,39 @@ body.debug #debug-btn {
 .cell[data-type="oneway"][data-dir="up"]::after    { content: '↑'; }
 .cell[data-type="oneway"][data-dir="down"]::after  { content: '↓'; }
 
+/* Crumble cell: looks like a wall but with visible crack lines */
+.cell[data-type="crumble"] {
+  background-color: #7d5a40;
+  background-image: repeating-linear-gradient(
+    -55deg,
+    transparent,
+    transparent 28%,
+    rgba(0, 0, 0, 0.15) 28%,
+    rgba(0, 0, 0, 0.15) 32%,
+    transparent 32%,
+    transparent 60%,
+    rgba(0, 0, 0, 0.10) 60%,
+    rgba(0, 0, 0, 0.10) 63%
+  );
+}
+
+.cell[data-type="crumble"] .cell-depth,
+.cell[data-type="crumble"] .cell-difficulty {
+  color: rgba(255, 255, 255, 0.30);
+}
+
+@keyframes crumble {
+  0%   { transform: scale(1);    opacity: 1; }
+  15%  { transform: scale(1.08) rotate(2deg); }
+  35%  { transform: scale(0.9)  rotate(-2deg); }
+  100% { transform: scale(0);    opacity: 0; }
+}
+
+.cell.crumbling {
+  animation: crumble 0.25s ease-in forwards;
+  z-index: 1;
+}
+
 /* player & goal — both float above the grid via absolute positioning */
 .player,
 .goal {
