@@ -8,6 +8,8 @@ export const CellType = {
   ONEWAY_UP:    5,   // passable only when moving up    (dy=-1)
   ONEWAY_DOWN:  6,   // passable only when moving down  (dy=+1)
   CRUMBLE:      7,   // acts like a wall, but crumbles when the player stops against it
+  KEY:          8,   // player stops on it and collects it (activates its toggle)
+  DOOR:         9,   // blocks like a wall; passable once the paired key's toggle is active
 };
 
 /** Returns true for any one-way cell type. */
@@ -31,19 +33,22 @@ export function onewayAllows(type, dx, dy) {
 
 // ── World-state / toggle system ───────────────────────────────────────────────
 //
-// Topological changes to a level (crumble breaks, doors opening, etc.) are
-// modelled as "toggles".  Each toggle has an index (0–30) and a bit in a
-// 31-bit integer called the worldState.  A set bit means the toggle is
-// "active" (e.g. the crumble at that position has been broken).
+// Topological changes to a level (crumble breaks, key collection, door opening,
+// …) are modelled as "toggles".  Each toggle has an index (0–30) and a bit in a
+// 31-bit integer called the worldState.  A set bit means the toggle is "active"
+// (e.g. the crumble broke, or the key was collected).
 //
-// This lets the BFS / solver treat every distinct (playerPos, worldState) pair
-// as a separate node — i.e. "parallel universes" — without mutating the level.
-// Adding new types of topological change (keys, doors, alternating blocks, …)
-// only requires assigning them toggle indices and checking the bit here.
+// Cells that ACTIVATE a toggle: CRUMBLE (auto-breaks when stopped against),
+//                               KEY (collected when player lands on it).
+// Cells that REQUIRE a toggle:  DOOR (passable only after paired key collected).
+//
+// Adding new types of topological change only requires:
+//   1. Assigning toggle indices in buildToggleMap
+//   2. Checking the bit in slidePlayer / generator _slidePath
 
 /**
- * Scan a level's cells and assign a toggle index to every stateful cell.
- * Currently: CRUMBLE cells.  Add more types here as they are introduced.
+ * Scan a level's cells and assign a toggle index to every activating cell.
+ * Currently: CRUMBLE and KEY cells (in flat scan order).
  *
  * @param {Uint8Array} cells
  * @returns {Map<number, number>}  flatIndex → toggleIndex
@@ -52,11 +57,10 @@ export function buildToggleMap(cells) {
   const map = new Map();
   let count = 0;
   for (let i = 0; i < cells.length; i++) {
-    if (cells[i] === CellType.CRUMBLE) {
+    if (cells[i] === CellType.CRUMBLE || cells[i] === CellType.KEY) {
       map.set(i, count++);
     }
-    // Future: keys, doors, alternating blocks, etc.
-    // if (cells[i] === CellType.DOOR) map.set(i, count++);
+    // Future: alternating blocks, switches, etc.
   }
   return map;
 }
@@ -76,29 +80,41 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  * Compute the cell the player slides to when moving in direction (dx, dy).
  * Pure function — no side effects.
  *
- * Rules:
- *   WALL       — stop before the cell
- *   CRUMBLE    — stop before the cell when solid; pass through when its toggle
- *                is active in worldState (i.e. already broken)
- *   ONEWAY_*   — stop before the cell if moving in the wrong direction
- *   STICKY     — move onto the cell, then stop
+ * Cell behaviour:
+ *   WALL        — stop before the cell
+ *   CRUMBLE     — stop before the cell when solid; pass through when its toggle
+ *                 is active in worldState (i.e. already broken)
+ *   KEY         — move onto it and stop (collecting it) when its toggle is NOT
+ *                 active; treat as empty (slide through) when already collected
+ *   DOOR        — stop before it when its required toggle is NOT active (locked);
+ *                 treat as empty when the required toggle IS active (open)
+ *   ONEWAY_*    — stop before the cell if moving in the wrong direction
+ *   STICKY      — move onto the cell, then stop
  *
- * @param {object} level     - { width, height, cells: Uint8Array, goal? }
- * @param {{x:number, y:number}} pos
+ * @param {object} level      - { width, height, cells, goal?, doorRequirements? }
+ * @param {{x,y}}  pos
  * @param {number} dx
  * @param {number} dy
  * @param {Map<number,number>} [toggleMap]  - from buildToggleMap(); null = no toggles
  * @param {number}             [worldState] - bitmask of active toggles (default 0)
- * @returns {{ x:number, y:number, crumble:{ x:number, y:number, toggleIdx:number }|null }}
- *   crumble is non-null when the slide was stopped by a solid crumble cell.
- *   toggleIdx is the toggle index for that crumble (so the caller can compute
- *   the next worldState: newWS = worldState | (1 << toggleIdx)).
+ *
+ * @returns {{
+ *   x: number,
+ *   y: number,
+ *   crumble:      { x, y, toggleIdx } | null,
+ *   keyCollected: { x, y, toggleIdx } | null,
+ * }}
+ *   crumble      — non-null when the slide stopped before a solid crumble.
+ *   keyCollected — non-null when the player landed on an uncollected key.
+ *   In both cases the caller computes the new worldState:
+ *     newWS = worldState | (1 << toggleIdx)
  */
 export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
-  let crumble = null;
+  let crumble      = null;
+  let keyCollected = null;
 
   const DIR_NAME = { '1,0': 'RIGHT', '-1,0': 'LEFT', '0,1': 'DOWN', '0,-1': 'UP' };
   const dirLabel = DIR_NAME[`${dx},${dy}`] ?? `(${dx},${dy})`;
@@ -108,7 +124,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     const nx = x + dx;
     const ny = y + dy;
 
-    // Stop at grid boundary
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
       steps.push(`(${x},${y}) — boundary`);
       break;
@@ -117,41 +132,63 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
 
-    // Stop before a wall
+    // ── WALL ──────────────────────────────────────────────────────────────
     if (cell === CellType.WALL) {
       steps.push(`(${x},${y}) — wall at (${nx},${ny})`);
       break;
     }
 
-    // Crumble: solid unless its toggle is active (already broken)
+    // ── CRUMBLE: solid unless its toggle is active (already broken) ────────
     if (cell === CellType.CRUMBLE) {
       if (!isToggleActive(toggleMap, worldState, flatIdx)) {
-        // Still solid — stop before it and record for the caller
         const toggleIdx = toggleMap ? toggleMap.get(flatIdx) : undefined;
         crumble = { x: nx, y: ny, toggleIdx };
         steps.push(`(${x},${y}) — crumble at (${nx},${ny})`);
         break;
       }
-      // Broken — treat as empty and keep sliding (fall through)
+      // Broken — treat as empty, continue sliding
     }
 
-    // Stop before a one-way cell moving in the wrong direction
+    // ── KEY: collect on first landing; treat as empty once collected ───────
+    if (cell === CellType.KEY) {
+      const toggleIdx = toggleMap ? toggleMap.get(flatIdx) : undefined;
+      const collected = toggleIdx !== undefined && (worldState & (1 << toggleIdx)) !== 0;
+      if (!collected) {
+        // Land on the key, collect it, stop here
+        x = nx; y = ny;
+        keyCollected = { x, y, toggleIdx };
+        steps.push(`(${x},${y}) — key collected`);
+        break;
+      }
+      // Already collected — treat as empty, fall through to normal move
+    }
+
+    // ── DOOR: locked until its required toggle is active ──────────────────
+    if (cell === CellType.DOOR) {
+      const req = level.doorRequirements?.get(flatIdx);
+      const open = req !== undefined && (worldState & (1 << req)) !== 0;
+      if (!open) {
+        steps.push(`(${x},${y}) — door locked at (${nx},${ny})`);
+        break;
+      }
+      // Open — treat as empty, fall through
+    }
+
+    // ── ONEWAY: stop if approaching from the wrong direction ──────────────
     if (isOneway(cell) && !onewayAllows(cell, dx, dy)) {
       steps.push(`(${x},${y}) — oneway blocked at (${nx},${ny})`);
       break;
     }
 
-    // Move onto the cell
+    // ── Move onto the cell ────────────────────────────────────────────────
     x = nx;
     y = ny;
 
-    // Stop on the goal (acts like sticky — slide through triggers it)
     if (level.goal && x === level.goal.x && y === level.goal.y) {
       steps.push(`(${x},${y}) — goal`);
       break;
     }
 
-    // Stop after landing on a sticky cell
     if (cell === CellType.STICKY) {
       steps.push(`(${x},${y}) — sticky stop`);
       break;
@@ -160,11 +197,12 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     steps.push(`(${x},${y})`);
   }
 
-  const result = { x, y, crumble };
-  const moved = result.x !== pos.x || result.y !== pos.y;
+  const result = { x, y, crumble, keyCollected };
+  const moved  = result.x !== pos.x || result.y !== pos.y;
   console.log(
     `[move] ${dirLabel}  (${pos.x},${pos.y}) → (${result.x},${result.y})` +
-    (crumble ? `  crumble=(${crumble.x},${crumble.y}) toggleIdx=${crumble.toggleIdx}` : '') +
+    (crumble      ? `  crumble=(${crumble.x},${crumble.y}) toggleIdx=${crumble.toggleIdx}` : '') +
+    (keyCollected ? `  key=(${keyCollected.x},${keyCollected.y}) toggleIdx=${keyCollected.toggleIdx}` : '') +
     (moved ? `  steps: ${steps.join(' → ')}` : '  (no movement)')
   );
 

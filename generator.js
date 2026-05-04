@@ -27,8 +27,9 @@ export const DIFFICULTY_WEIGHTS = {
   ONEWAY_TRAVERSE: 1.0,   // passing through a one-way in the allowed direction
   ONEWAY_BLOCKED:  2.5,   // stopped by a one-way approaching from the wrong direction
   CRUMBLE:         3.0,   // stopped by a crumble block (topology change, high load)
-  // KEY:          2.5,   // picking up a key
-  // DOOR:         2.5,   // unlocking a door
+  KEY:             2.5,   // stopping to collect a key
+  DOOR_TRAVERSE:   1.0,   // sliding through an already-open door
+  DOOR_LOCKED:     3.5,   // stopped by a locked door (high load — player must find the key)
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -39,7 +40,8 @@ export const DIFFICULTY_WEIGHTS = {
  * @param {number} width   - inner column count (no padding)
  * @param {number} height  - inner row count
  * @param {{ seed?: number, id?: number|string }} [opts]
- * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y}, depths: Int16Array }}
+ * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
+ *            depths: Int16Array, doorRequirements: Map }}
  */
 export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   const rng = makeRng(seed);
@@ -186,12 +188,21 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   }
 
   const start = { x: startX - 1, y: startY - 1 };
-  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start);
+
+  // First pass: find the goal without any key-door pair, so _tryPlaceKeyDoor
+  // knows which cell to gate behind the door.
+  const initial    = _findGoal(outCells, width, height, start, new Map());
+  const kdResult   = _tryPlaceKeyDoor(outCells, width, height, start, initial.goal, rng);
+  const doorRequirements = kdResult ? kdResult.doorRequirements : new Map();
+
+  // Second pass: recompute goal / depths / difficulties now that KEY and DOOR
+  // are placed (reaching the goal may now require collecting the key first).
+  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   _logLevel(outCells, width, height, start, goal, id, goalDifficulty);
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements };
 }
 
 /**
@@ -223,7 +234,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
 // ── Debug logging ─────────────────────────────────────────────────────────────
 
 function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D'];
 
   // Column header: "   x: 0 1 2 3 ..."
   const colHeader = '    x: ' + Array.from({ length: width }, (_, i) => i).join(' ');
@@ -241,7 +252,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
     lines.push(row);
   }
 
-  const legend = '  . empty  # wall  S sticky  ←→↑↓ oneway  ░ crumble  @ start  G goal';
+  const legend = '  . empty  # wall  S sticky  ←→↑↓ oneway  ░ crumble  K key  D door  @ start  G goal';
   console.group(`[Level ${id}] ${width}×${height}`);
   console.log(lines.join('\n'));
   console.log(legend);
@@ -252,17 +263,20 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 // ── BFS goal finder ──────────────────────────────────────────────────────────
 
 // Returns every cell traversed (in order), including the landing cell,
-// plus the difficulty cost of executing this slide, and the position + toggleIdx
-// of any crumble that stopped the slide (for worldState transition in the BFS).
+// plus the difficulty cost of executing this slide, and any events that
+// occurred (crumble stopped slide; key collected at landing).
 //
-// toggleMap : Map<flatIdx, toggleIdx>  — from buildToggleMap()
-// worldState: number                   — bitmask of active (already-broken) toggles
-function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState) {
+// toggleMap       : Map<flatIdx, toggleIdx>   — from buildToggleMap()
+// worldState      : number                    — bitmask of active toggles
+// doorRequirements: Map<flatIdx, toggleIdx>   — which toggle each door cell requires
+function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null) {
   const path = [];
   let x = pos.x, y = pos.y;
   let blockedByOneway  = false;
   let blockedByCrumble = false;
+  let blockedByDoor    = false;
   let crumblePos       = null;
+  let keyPos           = null;
 
   while (true) {
     const nx = x + dx, ny = y + dy;
@@ -270,16 +284,40 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState) {
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
     if (cell === 1) break;                                           // WALL
+
     if (cell === 7) {                                                // CRUMBLE
       const tIdx = toggleMap.get(flatIdx);
       if (tIdx === undefined || !(worldState & (1 << tIdx))) {
-        // Still solid — stop before it
         crumblePos = { x: nx, y: ny, toggleIdx: tIdx };
         blockedByCrumble = true;
         break;
       }
-      // Broken (toggle active) — treat as empty and keep sliding
+      // Broken — treat as empty
     }
+
+    if (cell === 8) {                                                // KEY
+      const tIdx = toggleMap.get(flatIdx);
+      const collected = tIdx !== undefined && (worldState & (1 << tIdx)) !== 0;
+      if (!collected) {
+        // Land on key, stop, mark collected
+        x = nx; y = ny;
+        path.push({ x, y, cell });
+        keyPos = { x, y, toggleIdx: tIdx };
+        break;
+      }
+      // Already collected — treat as empty (fall through)
+    }
+
+    if (cell === 9) {                                                // DOOR
+      const req  = doorRequirements?.get(flatIdx);
+      const open = req !== undefined && (worldState & (1 << req)) !== 0;
+      if (!open) {
+        blockedByDoor = true;
+        break;
+      }
+      // Open — treat as empty (fall through)
+    }
+
     if (cell >= 3 && cell <= 6 && !_onewayAllows(cell, dx, dy)) {
       blockedByOneway = true;                                        // ONEWAY wrong dir
       break;
@@ -290,15 +328,18 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState) {
   }
 
   // Compute difficulty cost for this slide.
-  let cost = (path.length === 0 && !blockedByOneway && !blockedByCrumble) ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
+  let cost = (path.length === 0 && !blockedByOneway && !blockedByCrumble && !blockedByDoor) ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
   for (const { cell } of path) {
-    if (cell === 2)                cost += DIFFICULTY_WEIGHTS.STICKY;
-    if (cell >= 3 && cell <= 6)    cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE;
+    if (cell === 2)             cost += DIFFICULTY_WEIGHTS.STICKY;
+    if (cell >= 3 && cell <= 6) cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE;
+    if (cell === 8)             cost += DIFFICULTY_WEIGHTS.KEY;
+    if (cell === 9)             cost += DIFFICULTY_WEIGHTS.DOOR_TRAVERSE;
   }
   if (blockedByOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
   if (blockedByCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE;
+  if (blockedByDoor)    cost += DIFFICULTY_WEIGHTS.DOOR_LOCKED;
 
-  return { path, cost, crumblePos };
+  return { path, cost, crumblePos, keyPos };
 }
 
 function _onewayAllows(cellType, dx, dy) {
@@ -312,16 +353,111 @@ function _onewayAllows(cellType, dx, dy) {
   }
 }
 
-function _findGoal(cells, width, height, start) {
+// ── Key-door placement helpers ────────────────────────────────────────────────
+
+/**
+ * BFS over player landing positions.
+ * Returns a Set<flatIdx> of every cell the player can stop at from startPos,
+ * given the current cells, toggleMap, worldState, and doorRequirements.
+ * Crumbles are treated as solid (worldState=0 means nothing broken yet).
+ */
+function _computeLandings(cells, width, height, startPos, toggleMap, worldState, doorRequirements) {
+  const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
+  const visited = new Set();
+  const startFlat = startPos.y * width + startPos.x;
+  visited.add(startFlat);
+  const queue = [startPos];
+
+  while (queue.length > 0) {
+    const pos = queue.shift();
+    for (const { dx, dy } of DIRS4) {
+      const { path } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      if (path.length > 0) {
+        const landing = path[path.length - 1];
+        const lk = landing.y * width + landing.x;
+        if (!visited.has(lk)) {
+          visited.add(lk);
+          queue.push(landing);
+        }
+      }
+    }
+  }
+  return visited;
+}
+
+/**
+ * Attempt to place a key-door pair in outCells such that the goal is gated
+ * behind the door.  Mutates cells in place on success.
+ *
+ * Returns { doorRequirements: Map<flatIdx, toggleIdx> } on success, or null
+ * if no valid placement could be found.
+ */
+function _tryPlaceKeyDoor(cells, width, height, startPos, goalPos, rng) {
+  const goalFlat  = goalPos.y  * width + goalPos.x;
+  const startFlat = startPos.y * width + startPos.x;
+
+  // Use an empty toggleMap so crumbles are treated as walls (solid, worldState=0).
+  const emptyToggleMap = new Map();
+
+  // Baseline: cells reachable from start with no door
+  const allReachable = _computeLandings(cells, width, height, startPos, emptyToggleMap, 0, null);
+  if (!allReachable.has(goalFlat)) return null;
+
+  // Try each reachable empty cell as a candidate door position.
+  // A valid door gates the goal (goal unreachable across the door) while
+  // still leaving at least one free cell for the key.
+  const candidates = [];
+  for (const flat of allReachable) {
+    if (flat === startFlat || flat === goalFlat) continue;
+    if (cells[flat] !== 0) continue; // only empty cells become doors
+
+    cells[flat] = 1; // temporarily wall-off
+    const withDoor = _computeLandings(cells, width, height, startPos, emptyToggleMap, 0, null);
+    cells[flat] = 0; // restore
+
+    if (!withDoor.has(goalFlat) && withDoor.size >= 2) {
+      candidates.push({ flat, freeReachable: withDoor });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Pick a random valid door position
+  const chosen  = candidates[Math.floor(rng() * candidates.length)];
+  const doorFlat = chosen.flat;
+
+  // Pick a key position from the free side (reachable without door, not start or door)
+  const freeForKey = Array.from(chosen.freeReachable).filter(
+    f => f !== startFlat && f !== doorFlat && cells[f] === 0
+  );
+  if (freeForKey.length === 0) return null;
+
+  const keyFlat = freeForKey[Math.floor(rng() * freeForKey.length)];
+
+  // Place KEY(8) and DOOR(9) in cells
+  cells[keyFlat]  = 8;
+  cells[doorFlat] = 9;
+
+  // Determine the key's toggle index: count of CRUMBLE+KEY cells before keyFlat
+  // in flat scan order — this matches what buildToggleMap() will produce.
+  let keyToggleIdx = 0;
+  for (let i = 0; i < keyFlat; i++) {
+    if (cells[i] === 7 || cells[i] === 8) keyToggleIdx++;
+  }
+
+  return { doorRequirements: new Map([[doorFlat, keyToggleIdx]]) };
+}
+
+function _findGoal(cells, width, height, start, doorRequirements = null) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   // ── Build toggle map ───────────────────────────────────────────────────────
-  // Assign a toggle index to every stateful cell (crumbles for now).
+  // Assign a toggle index to every activating cell: CRUMBLE(7) and KEY(8).
   // worldState is a bitmask over these indices; 2^N possible universes.
   const toggleMap = new Map();
   let toggleCount = 0;
   for (let i = 0; i < width * height; i++) {
-    if (cells[i] === 7) toggleMap.set(i, toggleCount++); // CRUMBLE
+    if (cells[i] === 7 || cells[i] === 8) toggleMap.set(i, toggleCount++); // CRUMBLE or KEY
   }
 
   // Key functions.
@@ -347,7 +483,7 @@ function _findGoal(cells, width, height, start) {
     if ((landingVisited.get(stateKey(pos, worldState)) ?? depth) < depth) continue;
 
     for (const { dx, dy } of DIRS4) {
-      const { path, crumblePos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState);
+      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = depth + 1;
@@ -359,10 +495,12 @@ function _findGoal(cells, width, height, start) {
 
       if (path.length > 0) {
         const landing = path[path.length - 1];
-        const lk = stateKey(landing, worldState);
+        // Key collection happens at the landing cell — fold it into worldState.
+        const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
+        const lk = stateKey(landing, effectiveWS);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          bfsQueue.push({ pos: landing, depth: nd, worldState });
+          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS });
         }
       }
 
@@ -426,7 +564,7 @@ function _findGoal(cells, width, height, start) {
     if ((diffLandingVis.get(stateKey(pos, worldState)) ?? Infinity) < diff) continue;
 
     for (const { dx, dy } of DIRS4) {
-      const { path, cost, crumblePos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState);
+      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = diff + cost;
@@ -438,10 +576,11 @@ function _findGoal(cells, width, height, start) {
 
       if (path.length > 0) {
         const landing = path[path.length - 1];
-        const lk = stateKey(landing, worldState);
+        const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
+        const lk = stateKey(landing, effectiveWS);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: landing, diff: nd, worldState });
+          heapPush({ pos: landing, diff: nd, worldState: effectiveWS });
         }
       }
 
@@ -471,7 +610,7 @@ function _findGoal(cells, width, height, start) {
   let bestDifficulty = 0;
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
-    if (cells[k] === 1) continue;
+    if (cells[k] === 1 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, keys, doors
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);

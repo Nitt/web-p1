@@ -41,6 +41,8 @@ export function buildGrid(container, level) {
       if (type === CellType.WALL)    cell.dataset.type = 'wall';
       if (type === CellType.STICKY)  cell.dataset.type = 'sticky';
       if (type === CellType.CRUMBLE) cell.dataset.type = 'crumble';
+      if (type === CellType.KEY)     cell.dataset.type = 'key';
+      if (type === CellType.DOOR)    cell.dataset.type = 'door';
       if (isOneway(type)) {
         cell.dataset.type = 'oneway';
         cell.dataset.dir  = ONEWAY_DIR_ATTR[type];
@@ -170,6 +172,28 @@ export function removeCrumble(x, y, level) {
     cellEl.classList.remove('crumbling');
     delete cellEl.dataset.type;
   }, { once: true });
+}
+
+/**
+ * Play a collect animation on the key at (x, y), then clear its appearance.
+ */
+export function removeKey(x, y, level) {
+  const cellEl = gridEl.children[y * level.width + x];
+  if (!cellEl) return;
+  cellEl.classList.add('key-collected');
+  cellEl.addEventListener('animationend', () => {
+    cellEl.classList.remove('key-collected');
+    delete cellEl.dataset.type;
+  }, { once: true });
+}
+
+/**
+ * Play an open animation on the door at (x, y), then update its appearance.
+ */
+export function openDoor(x, y, level) {
+  const cellEl = gridEl.children[y * level.width + x];
+  if (!cellEl) return;
+  cellEl.dataset.type = 'door-open';
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

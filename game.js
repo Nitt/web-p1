@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlayer, removeCrumble } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlayer, removeCrumble, removeKey, openDoor } from './renderer.js';
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -121,6 +121,23 @@ function _executeMove(dx, dy) {
         state.worldState |= (1 << toggleIdx);
       }
       removeCrumble(cx, cy, state.level);
+    }
+
+    // Key collected: activate its toggle, animate removal, and open paired doors.
+    if (target.keyCollected) {
+      const { x: kx, y: ky, toggleIdx } = target.keyCollected;
+      if (toggleIdx !== undefined) {
+        state.worldState |= (1 << toggleIdx);
+        // Open every door that requires this toggle.
+        if (state.level.doorRequirements) {
+          for (const [flatIdx, reqToggle] of state.level.doorRequirements) {
+            if (reqToggle === toggleIdx) {
+              openDoor(flatIdx % state.level.width, Math.floor(flatIdx / state.level.width), state.level);
+            }
+          }
+        }
+      }
+      removeKey(kx, ky, state.level);
     }
 
     if (

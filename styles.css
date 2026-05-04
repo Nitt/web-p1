@@ -212,6 +212,63 @@ body.debug #debug-btn {
   z-index: 1;
 }
 
+/* ─── key cell ───────────────────────────────────────────────────────────── */
+
+.cell[data-type="key"] {
+  background: #e8c020;
+}
+
+.cell[data-type="key"]::after {
+  content: '⬟';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8em;
+  color: rgba(80, 40, 0, 0.65);
+}
+
+.cell[data-type="key"] .cell-depth,
+.cell[data-type="key"] .cell-difficulty {
+  color: rgba(80, 40, 0, 0.45);
+}
+
+@keyframes key-collect {
+  0%   { transform: scale(1);   opacity: 1; }
+  30%  { transform: scale(1.4); opacity: 0.9; }
+  100% { transform: scale(0);   opacity: 0; }
+}
+
+.cell.key-collected {
+  animation: key-collect 0.3s ease-out forwards;
+  z-index: 1;
+}
+
+/* ─── door cell ──────────────────────────────────────────────────────────── */
+
+.cell[data-type="door"] {
+  background: #4a2e10;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.22) 0%,  rgba(0, 0, 0, 0.22) 16%,
+    transparent         16%, transparent         50%,
+    rgba(0, 0, 0, 0.22) 50%, rgba(0, 0, 0, 0.22) 66%,
+    transparent         66%
+  );
+}
+
+.cell[data-type="door"] .cell-depth,
+.cell[data-type="door"] .cell-difficulty {
+  color: rgba(255, 200, 120, 0.40);
+}
+
+/* Open door: faded passage — visually distinct from both closed and empty */
+.cell[data-type="door-open"] {
+  background: #8a6040;
+  opacity: 0.30;
+}
+
 /* player & goal — both float above the grid via absolute positioning */
 .player,
 .goal {

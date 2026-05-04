@@ -14,7 +14,8 @@ import { generateHardestLevel } from './generator.js';
  *
  * CellType values (see puzzle.js):
  *   0 = EMPTY, 1 = WALL, 2 = STICKY,
- *   3 = ONEWAY_LEFT, 4 = ONEWAY_RIGHT, 5 = ONEWAY_UP, 6 = ONEWAY_DOWN
+ *   3 = ONEWAY_LEFT, 4 = ONEWAY_RIGHT, 5 = ONEWAY_UP, 6 = ONEWAY_DOWN,
+ *   7 = CRUMBLE, 8 = KEY, 9 = DOOR
  */
 
 export const SAMPLE_LEVELS = [
