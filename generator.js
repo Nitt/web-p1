@@ -63,10 +63,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   const idx = (x, y) => y * pw + x;
 
-  // ── Place start ──
-  const startX = 1 + Math.floor(rng() * width);
-  const startY = 1 + Math.floor(rng() * height);
+  // ── Place start — always top-center; only DOWN is reachable ──
+  const startX = 1 + Math.floor(width / 2);
+  const startY = 1;
   cells[idx(startX, startY)] = G.EMPTY;
+  // Force left/right of start to walls BEFORE DFS so the carver never opens them.
+  cells[idx(startX - 1, startY)] = G.BLOCK;
+  cells[idx(startX + 1, startY)] = G.BLOCK;
 
   // ── State tracking ──
   // visitedDirs: cellIndex → Set<dirKey> (directions already explored from here)

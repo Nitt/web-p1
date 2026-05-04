@@ -14,6 +14,7 @@ const SPEED_MS_PER_CELL = 80;
 let gridEl = null;
 let playerEl = null;
 let goalEl = null;
+let chainSvgEl = null;
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
@@ -76,6 +77,15 @@ export function buildGrid(container, level) {
     }
   }
 
+  // Mark start cell
+  const startCell = gridEl.children[level.start.y * level.width + level.start.x];
+  if (startCell) startCell.dataset.type = 'start';
+
+  // Chain SVG overlay (below player/goal)
+  chainSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  chainSvgEl.setAttribute('class', 'chain-svg');
+  gridEl.appendChild(chainSvgEl);
+
   // Goal marker (overlay)
   goalEl = document.createElement('div');
   goalEl.className = 'goal';
@@ -85,9 +95,6 @@ export function buildGrid(container, level) {
   // Player (overlay)
   playerEl = document.createElement('div');
   playerEl.className = 'player';
-  const movesSpan = document.createElement('span');
-  movesSpan.className = 'player-moves';
-  playerEl.appendChild(movesSpan);
   gridEl.appendChild(playerEl);
 }
 
@@ -194,6 +201,68 @@ export function openDoor(x, y, level) {
   const cellEl = gridEl.children[y * level.width + x];
   if (!cellEl) return;
   cellEl.dataset.type = 'door-open';
+}
+
+// ─── chain / gear rope ───────────────────────────────────────────────────────
+
+/**
+ * Redraw the chain SVG: rope from start cell → gear waypoints → player,
+ * small circles at each waypoint, and a gear counter near the player.
+ *
+ * @param {{x,y}[]} gears        - ordered waypoint positions
+ * @param {{x,y}}   playerPos    - current player position
+ * @param {number}  gearsLeft    - remaining gear budget
+ * @param {number}  totalGears   - starting gear budget
+ * @param {object}  level        - current level (for start pos + dimensions)
+ */
+export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
+  if (!chainSvgEl || !gridEl) return;
+  chainSvgEl.innerHTML = '';
+
+  const gridRect = gridEl.getBoundingClientRect();
+  const W = gridRect.width;
+  const H = gridRect.height;
+  chainSvgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+  // Build the list of points: start cell → each gear → player pos
+  const points = [
+    _cellPixel(level.start.x, level.start.y, level),
+    ...gears.map(g => _cellPixel(g.x, g.y, level)),
+    _cellPixel(playerPos.x, playerPos.y, level),
+  ];
+
+  if (points.length < 2) return;
+
+  const NS = 'http://www.w3.org/2000/svg';
+
+  // Rope polyline
+  const polyline = document.createElementNS(NS, 'polyline');
+  polyline.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
+  polyline.setAttribute('fill', 'none');
+  polyline.setAttribute('stroke', 'rgba(60,80,120,0.55)');
+  polyline.setAttribute('stroke-width', '2.5');
+  polyline.setAttribute('stroke-linecap', 'round');
+  polyline.setAttribute('stroke-linejoin', 'round');
+  chainSvgEl.appendChild(polyline);
+
+  // Gear circles at each waypoint (skip start and player positions)
+  for (let i = 1; i < points.length - 1; i++) {
+    const circle = document.createElementNS(NS, 'circle');
+    circle.setAttribute('cx', points[i].x);
+    circle.setAttribute('cy', points[i].y);
+    circle.setAttribute('r', '4');
+    circle.setAttribute('fill', 'rgba(60,80,120,0.7)');
+    chainSvgEl.appendChild(circle);
+  }
+
+  // Gear counter near player
+  const pp = points[points.length - 1];
+  const text = document.createElementNS(NS, 'text');
+  text.setAttribute('x', pp.x + 10);
+  text.setAttribute('y', pp.y - 8);
+  text.setAttribute('class', 'chain-counter');
+  text.textContent = `${gearsLeft}`;
+  chainSvgEl.appendChild(text);
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
