@@ -10,9 +10,8 @@ const DIRS = [
   { key: 'DOWN',  dx:  0, dy:  1 },
 ];
 
-// Probability weights for choosing a cell type when carving into UNTOUCHED
+// Probability weights for choosing a cell type when carving into UNTOUCHED — used as defaults
 const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.00 };
-const WEIGHT_TOTAL = Object.values(WEIGHTS).reduce((a, b) => a + b, 0);
 
 // Maps a ONEWAY direction key → the CellType value used in the output level
 const ONEWAY_OUT = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
@@ -43,8 +42,9 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true } = {}) {
   const rng = makeRng(seed);
+  const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
 
   // Padded grid dimensions (1-cell BLOCK border on all sides)
   const pw = width  + 2;
@@ -92,8 +92,8 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   }
 
   function pickType() {
-    let r = rng() * WEIGHT_TOTAL;
-    for (const [type, w] of Object.entries(WEIGHTS)) {
+    let r = rng() * weightTotal;
+    for (const [type, w] of Object.entries(weights)) {
       if (r < w) return type;
       r -= w;
     }
@@ -192,7 +192,7 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
   // First pass: find the goal without any key-door pair, so _tryPlaceKeyDoor
   // knows which cell to gate behind the door.
   const initial    = _findGoal(outCells, width, height, start, new Map());
-  const kdResult   = _tryPlaceKeyDoor(outCells, width, height, start, initial.goal, rng);
+  const kdResult   = useKeyDoor ? _tryPlaceKeyDoor(outCells, width, height, start, initial.goal, rng) : null;
   const doorRequirements = kdResult ? kdResult.doorRequirements : new Map();
 
   // Second pass: recompute goal / depths / difficulties now that KEY and DOOR
@@ -213,21 +213,26 @@ export function generateLevel(width, height, { seed = 0, id = 1 } = {}) {
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300 } = {}) {
-  let best             = null;
-  let bestDifficulty   = -1;
-  let bestSeed         = seed;
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, difficultyTarget = null } = {}) {
+  let best           = null;
+  let bestScore      = Infinity; // used as |diff - target| when targeting, -Infinity when maximising
+  let bestSeed       = seed;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id });
-    if (level.goalDifficulty > bestDifficulty) {
-      bestDifficulty = level.goalDifficulty;
-      bestSeed       = seed + i;
-      best           = level;
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor });
+    const d = level.goalDifficulty;
+    const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
+    if (score < bestScore) {
+      bestScore = score;
+      bestSeed  = seed + i;
+      best      = level;
     }
   }
 
-  console.log(`[hardest] seed=${bestSeed}  goalDifficulty=${bestDifficulty.toFixed(2)}  (${candidates} candidates)`);
+  const label = difficultyTarget !== null
+    ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
+    : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
+  console.log(`[hardest] seed=${bestSeed}  ${label}  (${candidates} candidates)`);
   return best;
 }
 

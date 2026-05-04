@@ -1,4 +1,5 @@
 import { generateHardestLevel } from './generator.js';
+import { PROGRESSION } from './levelConfig.js';
 
 /**
  * Level format (what generateLevel emits, and what the game expects):
@@ -18,9 +19,19 @@ import { generateHardestLevel } from './generator.js';
  *   7 = CRUMBLE, 8 = KEY, 9 = DOOR
  */
 
-export const SAMPLE_LEVELS = [
-  generateHardestLevel(9, 9, { seed: 0, id: 1, candidates: 300 }),
-];
+export const SAMPLE_LEVELS = (() => {
+  const s = PROGRESSION[0];
+  return [
+    generateHardestLevel(9, 9, {
+      seed:             0,
+      id:               1,
+      candidates:       s.candidates,
+      weights:          s.weights,
+      useKeyDoor:       false,
+      difficultyTarget: s.difficultyTarget,
+    }),
+  ];
+})();
 
 // ── Hand-crafted 7×7 reference level (kept for reference) ───────────────────
 //

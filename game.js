@@ -3,6 +3,7 @@ import { buildGrid, placePlayer, animatePlayer, repositionOverlays, explodePlaye
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
+import { getRecipe } from './levelConfig.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
@@ -16,33 +17,40 @@ let movesCounterEl   = null;
 const QUEUE_WINDOW_MS = 300;
 
 // ─── background level pre-generation ─────────────────────────────────────────
-const CANDIDATES = 300;
 const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });
-let _pendingLevel = null;   // resolves to a level object when the worker finishes
+let _pendingLevel  = null;   // Promise → level object when worker finishes
+let _pendingRecipe = null;   // recipe used for the pending pre-generation
 
-function _pregenNext(seed, id) {
+function _pregenNext(seed, id, recipe) {
+  _pendingRecipe = recipe;
   _pendingLevel = new Promise(resolve => {
     _worker.onmessage = ({ data }) => resolve(data);
   });
-  _worker.postMessage({ width: 9, height: 9, seed, id, candidates: CANDIDATES });
+  _worker.postMessage({
+    width: 9, height: 9, seed, id,
+    candidates:       recipe.candidates,
+    weights:          recipe.weights,
+    useKeyDoor:       recipe.useKeyDoor,
+    difficultyTarget: recipe.difficultyTarget,
+  });
 }
 
 // ─── game state ───────────────────────────────────────────────────────────────
 const state = {
-  level:       null,
-  playerPos:   null,
-  isMoving:    false,
-  won:         false,
-  queuedMove:  null,   // { dx, dy, queuedAt } — next move buffered during animation
-  nextId:      2,      // id for the next generated level
-  nextSeed:    300,    // seed for the next generated level (0–299 used by level 1)
-  movesLeft:   0,      // decrements each move; explosion + reset at 0
+  level:                null,
+  playerPos:            null,
+  isMoving:             false,
+  won:                  false,
+  queuedMove:           null,   // { dx, dy, queuedAt } — next move buffered during animation
+  nextId:               2,      // id for the next generated level
+  nextSeed:             300,    // seed for level 2 (level 1 uses 0–299 as a safe margin)
+  movesLeft:            0,      // decrements each move; explosion + reset at 0
   // Parallel-universe / world-state system.
-  // Each topological change (crumble break, door open, …) is a "toggle".
-  // worldState is a bitmask: bit N set means toggle N is active.
-  // toggleMap maps flat cell index → toggle index (built once per level).
-  worldState:  0,
-  toggleMap:   null,
+  worldState:           0,
+  toggleMap:            null,
+  // Progression tracking.
+  levelIndex:           1,      // 1-indexed number of the level currently being played
+  levelsSinceKeyDoor:   0,      // levels elapsed since last key/door level appeared
 };
 
 // ─── entry point ─────────────────────────────────────────────────────────────
@@ -90,19 +98,28 @@ function loadLevel(level) {
   placePlayer(state.playerPos, level);
 
   // Kick off background generation of the next level immediately.
-  _pregenNext(state.nextSeed, state.nextId);
+  // getRecipe uses state.levelsSinceKeyDoor which is already updated by _nextLevel
+  // before loadLevel is called (restart leaves it unchanged — correct behaviour).
+  const nextRecipe = getRecipe(state.nextId, state.levelsSinceKeyDoor);
+  _pregenNext(state.nextSeed, state.nextId, nextRecipe);
 }
 
 function _nextLevel() {
   const seed = state.nextSeed;
   const id   = state.nextId;
-  state.nextSeed += CANDIDATES;
+  state.nextSeed += _pendingRecipe?.candidates ?? 300;
   state.nextId   += 1;
+
+  // Update progression counters before loading so loadLevel's pre-gen is accurate.
+  state.levelIndex += 1;
+  const hadKeyDoor = state.level?.doorRequirements?.size > 0;
+  state.levelsSinceKeyDoor = hadKeyDoor ? 0 : state.levelsSinceKeyDoor + 1;
 
   // Use the pre-generated level if ready; otherwise generate synchronously.
   Promise.resolve(_pendingLevel).then(level => {
     if (!level) {
-      level = generateHardestLevel(9, 9, { seed, id, candidates: CANDIDATES });
+      const recipe = getRecipe(id, state.levelsSinceKeyDoor);
+      level = generateHardestLevel(9, 9, { seed, id, ...recipe });
     }
     loadLevel(level);
   });
