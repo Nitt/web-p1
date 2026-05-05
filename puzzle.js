@@ -125,21 +125,24 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
   const { width, height, goal } = level;
   if (!goal) return true;
   const DIRS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  // Key uses (y+1) so the boat row (y=-1) maps to 0 — prevents collision with
+  // the bottom grid row when ws differs by 1.
+  const key = (x, y, ws) => ws * width * (height + 1) + (y + 1) * width + x;
   const visited = new Set();
   const queue = [{ x: pos.x, y: pos.y, ws: worldState }];
-  visited.add(worldState * width * height + pos.y * width + pos.x);
+  visited.add(key(pos.x, pos.y, worldState));
 
   while (queue.length) {
     const { x, y, ws } = queue.shift();
     if (x === goal.x && y === goal.y) return true;
 
     for (const { dx, dy } of DIRS) {
-      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws);
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true);
       let nws = ws;
       if (r.crumble      ?.toggleIdx !== undefined) nws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected ?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
 
-      const k = nws * width * height + r.y * width + r.x;
+      const k = key(r.x, r.y, nws);
       if (!visited.has(k)) {
         visited.add(k);
         queue.push({ x: r.x, y: r.y, ws: nws });
@@ -149,7 +152,7 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
   return false;
 }
 
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, silent = false) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
@@ -252,7 +255,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
   const result = { x, y, crumble, keyCollected };
   const moved  = result.x !== pos.x || result.y !== pos.y;
-  console.log(
+  if (!silent) console.log(
     `[move] ${dirLabel}  (${pos.x},${pos.y}) → (${result.x},${result.y})` +
     (crumble      ? `  crumble=(${crumble.x},${crumble.y}) toggleIdx=${crumble.toggleIdx}` : '') +
     (keyCollected ? `  key=(${keyCollected.x},${keyCollected.y}) toggleIdx=${keyCollected.toggleIdx}` : '') +

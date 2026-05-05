@@ -232,6 +232,11 @@ export function skipLevel() {
   _nextLevel();
 }
 
+/** Return the level object currently being played. */
+export function getCurrentLevel() {
+  return state.level;
+}
+
 function _flushQueuedMove() {
   const q = state.queuedMove;
   state.queuedMove = null;

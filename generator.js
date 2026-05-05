@@ -42,7 +42,7 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, _steps = null } = {}) {
   const rng = makeRng(seed);
   const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
 
@@ -100,6 +100,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     return 'empty';
   }
 
+  // ── Step recorder (no-op when _steps is null) ──
+  function rec(fromX, fromY, toX, toY, label) {
+    if (!_steps) return;
+    _steps.push({ grid: new Uint8Array(cells), pw, ph, fromX, fromY, toX, toY, label });
+  }
+
   // DFS carving — mirrors the reference goDirection
   function carve(dirKey, x, y) {
     const i = idx(x, y);
@@ -117,6 +123,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         const type = pickType();
         if (type === 'empty') {
           cells[ni] = G.EMPTY;
+          rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
           carve(dirKey, nx, ny);
         } else if (type === 'oneway') {
           // Only place a one-way if the cell beyond it is reachable
@@ -130,15 +137,20 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           } else {
             cells[ni] = G.EMPTY;
           }
+          rec(x, y, nx, ny, `oneway-${dirKey} (${nx-1},${ny-1})`);
           carve(dirKey, nx, ny);
         } else if (type === 'block') {
           cells[ni] = G.BLOCK;
+          rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
           enqueue(x, y);
         } else if (type === 'crumble') {
           cells[ni] = G.CRUMBLE;
-          enqueue(x, y);
+          rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
+          enqueue(x, y);           // stop before crumble — explore other directions from here
+          carve(dirKey, nx, ny);   // post-crumble universe — continue through it in same direction
         } else { // sticky
           cells[ni] = G.STICKY;
+          rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
           enqueue(nx, ny);
         }
         break;
@@ -162,6 +174,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   enqueue(startX, startY);
   while (branchQueue.length > 0) {
     const { x, y } = branchQueue.shift();
+    if (_steps) _steps.push({ grid: new Uint8Array(cells), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
     for (const dir of DIRS) carve(dir.key, x, y);
   }
 
@@ -188,22 +201,31 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // Mark which output cells were explicitly carved (not left UNTOUCHED).
+  // Used to prevent placing the goal on accidental open cells the carver never reached.
+  const carvedMask = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (cells[idx(x + 1, y + 1)] !== G.UNTOUCHED) carvedMask[y * width + x] = 1;
+    }
+  }
+
   const start = { x: startX - 1, y: -1 };
 
   // First pass: find the goal without any key-door pair, so _tryPlaceKeyDoor
   // knows which cell to gate behind the door.
-  const initial    = _findGoal(outCells, width, height, start, new Map());
+  const initial    = _findGoal(outCells, width, height, start, new Map(), carvedMask);
   const kdResult   = useKeyDoor ? _tryPlaceKeyDoor(outCells, width, height, start, initial.goal, rng) : null;
   const doorRequirements = kdResult ? kdResult.doorRequirements : new Map();
 
   // Second pass: recompute goal / depths / difficulties now that KEY and DOOR
   // are placed (reaching the goal may now require collecting the key first).
-  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements);
+  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   _logLevel(outCells, width, height, start, goal, id, goalDifficulty);
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements, seed };
 }
 
 /**
@@ -234,6 +256,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
     : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
   console.log(`[hardest] seed=${bestSeed}  ${label}  (${candidates} candidates)`);
+  best.weights = weights;
   return best;
 }
 
@@ -454,7 +477,7 @@ function _tryPlaceKeyDoor(cells, width, height, startPos, goalPos, rng) {
   return { doorRequirements: new Map([[doorFlat, keyToggleIdx]]) };
 }
 
-function _findGoal(cells, width, height, start, doorRequirements = null) {
+function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   // ── Build toggle map ───────────────────────────────────────────────────────
@@ -476,8 +499,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null) {
   // depths tracks the minimum number of moves to reach a position across ALL
   // universes (worldStates).  landingVisited prevents re-expanding the same
   // (pos, worldState) node twice.
-  const landingVisited = new Map();
-  const depths         = new Map(); // posKey → min depth over all worldStates
+  const landingVisited  = new Map();
+  const depths          = new Map(); // posKey → min depth over all worldStates
 
   landingVisited.set(stateKey(start, 0), 0);
   depths.set(posKey(start), 0);
@@ -612,11 +635,14 @@ function _findGoal(cells, width, height, start, doorRequirements = null) {
   for (const [k, d] of difficulties) difficultyArray[k] = d;
 
   // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
+  // Exclude walls, crumbles (goal hidden under crumble = unreachable), keys, doors.
   let bestPos        = start;
   let bestDifficulty = 0;
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
-    if (cells[k] === 1 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, keys, doors
+    if (k < 0 || k >= width * height) continue;                        // skip off-grid keys (e.g. boat at y=-1)
+    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, crumbles, keys, doors
+    if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);

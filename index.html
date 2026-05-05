@@ -15,7 +15,10 @@
     <header class="puzzle-header">
       <button class="btn-ghost" id="back-btn" aria-label="Back to level select">← Back</button>
       <h1 id="level-label">Level 1</h1>
-      <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
+      <div class="header-actions">
+        <button class="btn-ghost" id="skip-btn" aria-label="Skip level">Skip</button>
+        <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
+      </div>
     </header>
 
     <div id="grid-container"></div>
@@ -47,7 +50,37 @@
   </div>
 
   <button id="debug-btn" class="btn-ghost">dbg</button>
-  <button id="skip-btn" class="btn-ghost debug-only">skip</button>
+  <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
+
+  <!-- ── Generator debug panel ────────────────────────────────────────────── -->
+  <div id="gen-debug-panel" hidden>
+    <div id="gen-debug-header">
+      <span>Generator Debug</span>
+      <div class="gen-debug-controls">
+        <label>seed <input id="gen-debug-seed" type="number" value="0"></label>
+        <label>w <input id="gen-debug-w" type="number" value="9" min="3" max="20"></label>
+        <label>h <input id="gen-debug-h" type="number" value="9" min="3" max="20"></label>
+        <button id="gen-debug-run">Generate</button>
+        <button id="gen-debug-close">✕</button>
+      </div>
+    </div>
+    <div id="gen-debug-canvas-wrap">
+      <canvas id="gen-debug-canvas"></canvas>
+      <div id="gen-debug-legend">
+        <span class="gl-untouched">untouched</span>
+        <span class="gl-empty">empty</span>
+        <span class="gl-sticky">sticky</span>
+        <span class="gl-block">block</span>
+        <span class="gl-oneway">oneway</span>
+        <span class="gl-crumble">crumble</span>
+        <span class="gl-from">▶ from</span>
+        <span class="gl-to">● to</span>
+      </div>
+    </div>
+    <div id="gen-debug-label">—</div>
+    <input type="range" id="gen-debug-slider" min="0" max="0" value="0">
+    <div id="gen-debug-counter">— / —</div>
+  </div>
 
   <script type="module">
     import { init, skipLevel } from './game.js';
@@ -60,5 +93,116 @@
 
     init();
 </script>
+
+  <script type="module">
+    import { generateLevel } from './generator.js';
+    import { getCurrentLevel } from './game.js';
+
+    const panel   = document.getElementById('gen-debug-panel');
+    const canvas  = document.getElementById('gen-debug-canvas');
+    const slider  = document.getElementById('gen-debug-slider');
+    const label   = document.getElementById('gen-debug-label');
+    const counter = document.getElementById('gen-debug-counter');
+
+    document.getElementById('gen-debug-open-btn').addEventListener('click', () => {
+      panel.hidden = false;
+      // Auto-generate from the current level's seed when opening.
+      const lvl = getCurrentLevel();
+      if (lvl) {
+        document.getElementById('gen-debug-seed').value = lvl.seed ?? 0;
+        document.getElementById('gen-debug-w').value    = lvl.width  ?? 9;
+        document.getElementById('gen-debug-h').value    = lvl.height ?? 9;
+        runGenerate(lvl.weights);
+      }
+    });
+    document.getElementById('gen-debug-close').addEventListener('click', () => { panel.hidden = true; });
+
+    let _steps = [];
+
+    function runGenerate(weights) {
+      const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
+      const w    = parseInt(document.getElementById('gen-debug-w').value)    || 9;
+      const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
+      _steps = [];
+      generateLevel(w, h, { seed, id: 'dbg', weights, _steps });
+      slider.max   = Math.max(0, _steps.length - 1);
+      slider.value = _steps.length - 1;
+      renderStep(_steps.length - 1);
+    }
+
+    document.getElementById('gen-debug-run').addEventListener('click', () => {
+      const lvl = getCurrentLevel();
+      runGenerate(lvl?.weights);
+    });
+
+    slider.addEventListener('input', () => renderStep(parseInt(slider.value)));
+
+    // Keyboard: arrow keys to step through when panel is open
+    document.addEventListener('keydown', e => {
+      if (panel.hidden) return;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        slider.value = Math.min(+slider.value + 1, +slider.max);
+        renderStep(+slider.value);
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        slider.value = Math.max(+slider.value - 1, 0);
+        renderStep(+slider.value);
+      }
+    });
+
+    function renderStep(i) {
+      if (!_steps.length) return;
+      const step = _steps[Math.min(i, _steps.length - 1)];
+      label.textContent   = step.label;
+      counter.textContent = `${i + 1} / ${_steps.length}`;
+      drawStep(step);
+    }
+
+    // G enum values → fill colours (matches generator.js G object)
+    const CELL_COLORS = [
+      '#999',       // 0 UNTOUCHED
+      '#e4e0da',    // 1 EMPTY
+      '#c8a060',    // 2 STICKY
+      '#2b2926',    // 3 BLOCK
+      '#7ab8a0',    // 4 ONEWAY
+      '#7d5a40',    // 5 CRUMBLE
+    ];
+
+    function drawStep(step) {
+      const { grid, pw, ph, fromX, fromY, toX, toY } = step;
+
+      // Size canvas to fit the panel, keeping cells square
+      const wrap = canvas.parentElement;
+      const maxW = wrap.clientWidth  - 4;
+      const maxH = wrap.clientHeight - 32; // leave room for legend
+      const size = Math.max(4, Math.floor(Math.min(maxW / pw, maxH / ph)));
+      canvas.width  = pw * size;
+      canvas.height = ph * size;
+
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let cy = 0; cy < ph; cy++) {
+        for (let cx = 0; cx < pw; cx++) {
+          const cell = grid[cy * pw + cx];
+          ctx.fillStyle = CELL_COLORS[cell] ?? '#999';
+          ctx.fillRect(cx * size, cy * size, size - 1, size - 1);
+        }
+      }
+
+      // "from" highlight — blue outline
+      if (fromX >= 0 && fromY >= 0) {
+        ctx.strokeStyle = '#3a6fd8';
+        ctx.lineWidth   = Math.max(2, size * 0.15);
+        ctx.strokeRect(fromX * size + 1, fromY * size + 1, size - 3, size - 3);
+      }
+
+      // "to" highlight — orange outline
+      if (toX >= 0 && toY >= 0) {
+        ctx.strokeStyle = '#e8a020';
+        ctx.lineWidth   = Math.max(2, size * 0.15);
+        ctx.strokeRect(toX * size + 1, toY * size + 1, size - 3, size - 3);
+      }
+    }
+  </script>
 </body>
 </html>
