@@ -27,12 +27,12 @@ let _chainSpinning  = false;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 const SPIN_PERIOD_MS      = 500;
-const CHAIN_LINK_OUTER_RX = 8;    // half long-axis  — outer ring
-const CHAIN_LINK_OUTER_RY = 5;    // half short-axis — outer ring
-const CHAIN_LINK_INNER_RX = 5;    // half long-axis  — hole
-const CHAIN_LINK_INNER_RY = 2.5;  // half short-axis — hole
-// Pitch = 2×outerRX so each face-on and edge-on link sits one after the other
-const CHAIN_LINK_PITCH    = CHAIN_LINK_OUTER_RX * 2;
+const CHAIN_LINK_OUTER_RX = 17;   // half long-axis  — outer ring
+const CHAIN_LINK_OUTER_RY = 10.5; // half short-axis — outer ring
+const CHAIN_LINK_INNER_RX = 10.5; // half long-axis  — hole
+const CHAIN_LINK_INNER_RY = 5.3;  // half short-axis — hole
+// Pitch = 1.4×outerRX → links overlap ~20% on each end
+const CHAIN_LINK_PITCH    = CHAIN_LINK_OUTER_RX * 1.4;
 
 /**
  * Build (or rebuild) the grid DOM from a level.
@@ -293,8 +293,8 @@ function _redrawChain(px, py) {
     gGroup.setAttribute('transform', `translate(${points[i].x},${points[i].y}) rotate(${spinAngle})`);
 
     const g = document.createElementNS(NS, 'path');
-    g.setAttribute('d', _gearPath(0, 0, 18, 12, 8));
-    g.setAttribute('fill', 'rgba(50,70,110,0.75)');
+    g.setAttribute('d', _gearPath(0, 0, 22.5, 15, 8));
+    g.setAttribute('fill', 'rgb(50,70,110)');
     g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
     g.setAttribute('stroke-width', '0.8');
     gGroup.appendChild(g);
@@ -302,7 +302,7 @@ function _redrawChain(px, py) {
     const hole = document.createElementNS(NS, 'circle');
     hole.setAttribute('cx', '0');
     hole.setAttribute('cy', '0');
-    hole.setAttribute('r', '5');
+    hole.setAttribute('r', '6.25');
     hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
     gGroup.appendChild(hole);
 
@@ -371,10 +371,8 @@ function _drawChainLinks(points, NS) {
   const ringPath =
     `M ${orx},0 A ${orx},${ory},0,1,0,${-orx},0 A ${orx},${ory},0,1,0,${orx},0 Z ` +
     `M ${irx},0 A ${irx},${iry},0,1,1,${-irx},0 A ${irx},${iry},0,1,1,${irx},0 Z`;
-  // Edge-on link: thin solid sliver (3D-projected side view of a perpendicular link)
-  const thinRy = 1.5;
-  const sliverPath =
-    `M ${orx},0 A ${orx},${thinRy},0,1,0,${-orx},0 A ${orx},${thinRy},0,1,0,${orx},0 Z`;
+  // Edge-on link: pill/stadium shape (rounded rectangle, fully rounded ends)
+  const thinRy = 3.2;
 
   const linkTransforms = [];
   let linkIdx = 0;
@@ -388,31 +386,38 @@ function _drawChainLinks(points, NS) {
   }
 
   function makeLinkEl(transform, isFaceOn) {
-    const path = document.createElementNS(NS, 'path');
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', transform);
     if (isFaceOn) {
+      const path = document.createElementNS(NS, 'path');
       path.setAttribute('d', ringPath);
       path.setAttribute('fill', 'rgba(65,85,130,0.95)');
       path.setAttribute('fill-rule', 'evenodd');
       path.setAttribute('stroke', 'rgba(190,215,245,0.85)');
       path.setAttribute('stroke-width', '0.6');
+      g.appendChild(path);
     } else {
-      path.setAttribute('d', sliverPath);
-      path.setAttribute('fill', 'rgba(50,68,110,0.9)');
-      path.setAttribute('stroke', 'rgba(150,185,230,0.7)');
-      path.setAttribute('stroke-width', '0.5');
+      const rect = document.createElementNS(NS, 'rect');
+      rect.setAttribute('x', -orx);
+      rect.setAttribute('y', -thinRy);
+      rect.setAttribute('width', orx * 2);
+      rect.setAttribute('height', thinRy * 2);
+      rect.setAttribute('rx', thinRy);
+      rect.setAttribute('ry', thinRy);
+      rect.setAttribute('fill', 'rgba(50,68,110,0.9)');
+      rect.setAttribute('stroke', 'rgba(150,185,230,0.7)');
+      rect.setAttribute('stroke-width', '0.5');
+      g.appendChild(rect);
     }
-    const g = document.createElementNS(NS, 'g');
-    g.setAttribute('transform', transform);
-    g.appendChild(path);
     return g;
   }
 
-  // Edge-on (sliver) links behind, face-on (ring) links in front
-  for (const { transform, parity } of linkTransforms) {
-    if (parity === 1) chainSvgEl.appendChild(makeLinkEl(transform, false));
-  }
+  // Face-on (ring) links behind, edge-on (sliver) links in front
   for (const { transform, parity } of linkTransforms) {
     if (parity === 0) chainSvgEl.appendChild(makeLinkEl(transform, true));
+  }
+  for (const { transform, parity } of linkTransforms) {
+    if (parity === 1) chainSvgEl.appendChild(makeLinkEl(transform, false));
   }
 }
 
