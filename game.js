@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, removeCrumble, removeKey, openDoor } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor } from './renderer.js';
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -234,6 +234,7 @@ function _executeMove(dx, dy) {
     );
   }
 
+  setChainSpinning(true, willUseGear ? 1 : -1);
   animatePlayer(state.playerPos, target, state.level, () => {
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
@@ -263,6 +264,7 @@ function _executeMove(dx, dy) {
       state.isMoving = true; // keep blocked during retraction
       _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
         state.isMoving = false;
+        setChainSpinning(false);
         _flushQueuedMove();
       });
     } else {
@@ -300,6 +302,7 @@ function _executeMove(dx, dy) {
     ) {
       state.won = true;
       state.queuedMove = null;
+      setChainSpinning(false);
       winBanner.hidden = false;
 
       function _advance() {
@@ -315,6 +318,9 @@ function _executeMove(dx, dy) {
 
     // Flush queued move if it arrived within the time window.
     // (needsRetractAnim defers this until after the retraction animation.)
-    if (!needsRetractAnim) _flushQueuedMove();
+    if (!needsRetractAnim) {
+      setChainSpinning(false);
+      _flushQueuedMove();
+    }
   });
 }

@@ -22,6 +22,11 @@ let counterSpan = null;
 let playerPx = { x: 0, y: 0 };
 // Stores the last drawChain arguments so the animation loop can redraw each frame.
 let _chainState = null;
+// Gear spin state — driven by JS so rotation is continuous despite per-frame DOM recreation.
+let _chainSpinning  = false;
+let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
+let _spinStartTime  = 0;
+const SPIN_PERIOD_MS = 500; // one full rotation every 500 ms
 
 /**
  * Build (or rebuild) the grid DOM from a level.
@@ -241,6 +246,13 @@ export function getCellPixel(x, y, level) {
   return _cellPixel(x, y, level);
 }
 
+/** Start or stop gear spinning. direction: 1 = clockwise, -1 = counterclockwise. */
+export function setChainSpinning(spinning, direction = 1) {
+  if (spinning && !_chainSpinning) _spinStartTime = performance.now();
+  _chainSpinning = spinning;
+  _spinDirection = direction;
+}
+
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
   const { gears, gearsLeft, level } = _chainState;
@@ -273,21 +285,29 @@ function _redrawChain(px, py) {
   chainSvgEl.appendChild(polyline);
 
   // Gear shapes at each waypoint (skip start and player positions)
+  const spinAngle = _chainSpinning
+    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
+    : 0;
   for (let i = 1; i < points.length - 1; i++) {
+    const gGroup = document.createElementNS(NS, 'g');
+    gGroup.setAttribute('class', 'gear-group');
+    gGroup.setAttribute('transform', `translate(${points[i].x},${points[i].y}) rotate(${spinAngle})`);
+
     const g = document.createElementNS(NS, 'path');
-    g.setAttribute('d', _gearPath(points[i].x, points[i].y, 18, 12, 8));
+    g.setAttribute('d', _gearPath(0, 0, 18, 12, 8));
     g.setAttribute('fill', 'rgba(50,70,110,0.75)');
     g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
     g.setAttribute('stroke-width', '0.8');
-    chainSvgEl.appendChild(g);
+    gGroup.appendChild(g);
 
-    // Hole in the center
     const hole = document.createElementNS(NS, 'circle');
-    hole.setAttribute('cx', points[i].x);
-    hole.setAttribute('cy', points[i].y);
+    hole.setAttribute('cx', '0');
+    hole.setAttribute('cy', '0');
     hole.setAttribute('r', '5');
     hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
-    chainSvgEl.appendChild(hole);
+    gGroup.appendChild(hole);
+
+    chainSvgEl.appendChild(gGroup);
   }
 
   // Update the counter span inside the player div
