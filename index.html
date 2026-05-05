@@ -95,7 +95,7 @@
 </script>
 
   <script type="module">
-    import { generateLevel } from './generator.js';
+    import { generateLevel, computeStepAnalysis } from './generator.js';
     import { getCurrentLevel } from './game.js';
 
     const panel   = document.getElementById('gen-debug-panel');
@@ -117,14 +117,26 @@
     });
     document.getElementById('gen-debug-close').addEventListener('click', () => { panel.hidden = true; });
 
-    let _steps = [];
+    let _steps       = [];
+    let _depths      = null;   // Int16Array from final generateLevel result
+    let _difficulties = null;  // Float32Array
+    let _levelW      = 0;
+    let _levelH      = 0;
+    let _levelStart  = null;
+    let _stepAnalysisCache = [];
 
     function runGenerate(weights) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
       const w    = parseInt(document.getElementById('gen-debug-w').value)    || 9;
       const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
       _steps = [];
-      generateLevel(w, h, { seed, id: 'dbg', weights, _steps });
+      const result = generateLevel(w, h, { seed, id: 'dbg', weights, _steps });
+      _depths       = result.depths;
+      _difficulties = result.difficulties;
+      _levelW       = w;
+      _levelH       = h;
+      _levelStart   = result.start;
+      _stepAnalysisCache = new Array(_steps.length).fill(null);
       slider.max   = Math.max(0, _steps.length - 1);
       slider.value = _steps.length - 1;
       renderStep(_steps.length - 1);
@@ -154,7 +166,13 @@
       const step = _steps[Math.min(i, _steps.length - 1)];
       label.textContent   = step.label;
       counter.textContent = `${i + 1} / ${_steps.length}`;
-      drawStep(step);
+
+      // Lazily compute per-step depth/difficulty analysis and cache it.
+      if (!_stepAnalysisCache[i] && _levelStart) {
+        _stepAnalysisCache[i] = computeStepAnalysis(step, _levelW, _levelH, _levelStart);
+      }
+      const analysis = _stepAnalysisCache[i];
+      drawStep(step, analysis?.depths ?? null, analysis?.difficulties ?? null);
     }
 
     // G enum values → fill colours (matches generator.js G object)
@@ -167,7 +185,7 @@
       '#7d5a40',    // 5 CRUMBLE
     ];
 
-    function drawStep(step) {
+    function drawStep(step, depths, difficulties) {
       const { grid, pw, ph, fromX, fromY, toX, toY } = step;
 
       // Size canvas to fit the panel, keeping cells square
@@ -186,6 +204,28 @@
           const cell = grid[cy * pw + cx];
           ctx.fillStyle = CELL_COLORS[cell] ?? '#999';
           ctx.fillRect(cx * size, cy * size, size - 1, size - 1);
+
+          // Overlay depth (top-left, blue) and difficulty (bottom-right, red)
+          // only for inner cells (not border padding) and only when data exists.
+          if (size >= 10 && cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1 && depths && cell !== 0) {
+            const ix = cx - 1, iy = cy - 1;
+            const fi = iy * _levelW + ix;
+            const d  = depths[fi];
+            const df = difficulties?.[fi];
+            const fontSize = Math.max(5, Math.floor(size * 0.22));
+            ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+
+            if (d !== undefined && d >= 0) {
+              ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#3a6fd8';
+              ctx.fillText(d, cx * size + 2, cy * size + fontSize + 1);
+            }
+            if (df !== undefined && df >= 0) {
+              ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#c04020';
+              const txt = df % 1 === 0 ? df : df.toFixed(1);
+              const tw  = ctx.measureText(txt).width;
+              ctx.fillText(txt, cx * size + size - tw - 2, cy * size + size - 3);
+            }
+          }
         }
       }
 

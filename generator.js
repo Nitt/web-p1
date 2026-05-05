@@ -64,9 +64,20 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const idx = (x, y) => y * pw + x;
 
   // ── Place start — always top-center; start is above the grid (y = -1) ──
+  // The entry tunnel: two cells forced empty so the player always slides through
+  // both before any decision point.  The carver begins from the second cell so
+  // the first cell (directly under the boat) is never enqueued as a BFS source
+  // and therefore never explored in all four directions.
   const startX = 1 + Math.floor(width / 2);
   const startY = 1;
-  cells[idx(startX, startY)] = G.EMPTY;
+  cells[idx(startX, startY)]     = G.EMPTY;  // pass-through — player always slides through
+  cells[idx(startX, startY + 1)] = G.EMPTY;  // second tunnel cell — actual carve origin
+
+  // Wall off every other cell in the entry row so they don't remain UNTOUCHED
+  // (which maps to output EMPTY and would let the player slide across the top).
+  for (let px = 1; px < pw - 1; px++) {
+    if (px !== startX) cells[idx(px, startY)] = G.BLOCK;
+  }
 
   // ── State tracking ──
   // visitedDirs: cellIndex → Set<dirKey> (directions already explored from here)
@@ -91,6 +102,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // Pre-mark the entry cell visited in all directions so carve() can never
+  // enqueue it or explore laterally from it.  It remains G.EMPTY so the player
+  // slides through it, but it is never a BFS decision point.
+  for (const d of DIRS) markVisited(idx(startX, startY), d.key);
+
   function pickType() {
     let r = rng() * weightTotal;
     for (const [type, w] of Object.entries(weights)) {
@@ -103,7 +119,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // ── Step recorder (no-op when _steps is null) ──
   function rec(fromX, fromY, toX, toY, label) {
     if (!_steps) return;
-    _steps.push({ grid: new Uint8Array(cells), pw, ph, fromX, fromY, toX, toY, label });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX, fromY, toX, toY, label });
   }
 
   // DFS carving — mirrors the reference goDirection
@@ -171,10 +187,14 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   // ── Main generation loop ──
-  enqueue(startX, startY);
+  // Begin carving from the second tunnel cell (startY+1), one row below the
+  // boat entry.  This ensures the entry cell (startY) is never enqueued as a
+  // BFS source and so is never explored laterally — matching the player physics
+  // where the first slide always passes through the entry cell.
+  carve('DOWN', startX, startY + 1);
   while (branchQueue.length > 0) {
     const { x, y } = branchQueue.shift();
-    if (_steps) _steps.push({ grid: new Uint8Array(cells), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
+    if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
     for (const dir of DIRS) carve(dir.key, x, y);
   }
 
@@ -298,7 +318,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 // toggleMap       : Map<flatIdx, toggleIdx>   — from buildToggleMap()
 // worldState      : number                    — bitmask of active toggles
 // doorRequirements: Map<flatIdx, toggleIdx>   — which toggle each door cell requires
-function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null) {
+function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, gearSet = null) {
   const path = [];
   let x = pos.x, y = pos.y;
   let blockedByOneway  = false;
@@ -354,6 +374,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
     x = nx; y = ny;
     path.push({ x, y, cell });
     if (cell === 2) break;                                           // STICKY
+    if (gearSet && gearSet.has(flatIdx)) break;                      // GEAR (acts as sticky)
   }
 
   // Compute difficulty cost for this slide.
@@ -477,6 +498,47 @@ function _tryPlaceKeyDoor(cells, width, height, startPos, goalPos, rng) {
   return { doorRequirements: new Map([[doorFlat, keyToggleIdx]]) };
 }
 
+// ── Per-step analysis for debug visualiser ────────────────────────────────────
+
+/**
+ * Given a single step snapshot from the _steps array, convert the partial
+ * padded grid to output cells (treating UNTOUCHED as WALL) and run _findGoal
+ * to compute depths/difficulties for just the cells carved so far.
+ *
+ * @param {{ grid: Uint8Array, onewayDir: Map, pw: number, ph: number }} step
+ * @param {number} width   - inner (unpadded) column count
+ * @param {number} height  - inner row count
+ * @param {{ x: number, y: number }} start
+ * @returns {{ depths: Int16Array, difficulties: Float32Array }}
+ */
+export function computeStepAnalysis(step, width, height, start) {
+  const { grid, onewayDir, pw } = step;
+  const ONEWAY_OUT_MAP = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
+  const outCells = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pi   = (y + 1) * pw + (x + 1);
+      const cell = grid[pi];
+      let out;
+      switch (cell) {
+        case 1: out = 0; break; // G.EMPTY   → CellType.EMPTY
+        case 2: out = 2; break; // G.STICKY  → CellType.STICKY
+        case 4: {               // G.ONEWAY  → directional CellType
+          const dk = onewayDir?.get(pi);
+          out = dk ? ONEWAY_OUT_MAP[dk] : 0;
+          break;
+        }
+        case 5: out = 7; break; // G.CRUMBLE → CellType.CRUMBLE
+        case 3: out = 1; break; // G.BLOCK   → CellType.WALL
+        default: out = 1; break; // G.UNTOUCHED → treat as WALL (not yet carved)
+      }
+      outCells[y * width + x] = out;
+    }
+  }
+  const { depths, difficulties } = _findGoal(outCells, width, height, start, null, null);
+  return { depths, difficulties };
+}
+
 function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
@@ -501,6 +563,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   // (pos, worldState) node twice.
   const landingVisited  = new Map();
   const depths          = new Map(); // posKey → min depth over all worldStates
+  const landingsOnly    = new Set(); // posKeys of actual landing positions (for pass 1b gearSet)
 
   landingVisited.set(stateKey(start, 0), 0);
   depths.set(posKey(start), 0);
@@ -524,6 +587,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
       if (path.length > 0) {
         const landing = path[path.length - 1];
+        landingsOnly.add(posKey(landing));
         // Key collection happens at the landing cell — fold it into worldState.
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
         const lk = stateKey(landing, effectiveWS);
@@ -540,11 +604,63 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const newWorldState = worldState | (1 << crumblePos.toggleIdx);
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk  = posKey(from);
+        landingsOnly.add(fk);
         if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
         const lk = stateKey(from, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
           bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState });
+        }
+      }
+    }
+  }
+
+  // ── Pass 1b: gear-aware BFS ────────────────────────────────────────────────
+  // Re-run BFS treating every position reachable in Pass 1 as a placed cog
+  // (stops the player mid-slide like a sticky). This models the fact that
+  // previously-visited cells act as stopping points in the live game.
+  // The resulting depths are a lower bound; we take min(pass1, pass1b) per cell.
+  {
+    const gearSet = landingsOnly; // only actual landing positions become stoppers
+    const lv2     = new Map();
+    lv2.set(stateKey(start, 0), 0);
+    const q2 = [{ pos: start, depth: 0, worldState: 0 }];
+
+    while (q2.length > 0) {
+      const { pos, depth, worldState } = q2.shift();
+      if ((lv2.get(stateKey(pos, worldState)) ?? depth) < depth) continue;
+
+      for (const { dx, dy } of DIRS4) {
+        const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, gearSet);
+        if (path.length === 0 && !crumblePos) continue;
+
+        const nd = depth + 1;
+
+        for (const p of path) {
+          const k = posKey(p);
+          if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
+        }
+
+        if (path.length > 0) {
+          const landing = path[path.length - 1];
+          const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
+          const lk = stateKey(landing, effectiveWS);
+          if ((lv2.get(lk) ?? Infinity) > nd) {
+            lv2.set(lk, nd);
+            q2.push({ pos: landing, depth: nd, worldState: effectiveWS });
+          }
+        }
+
+        if (crumblePos && crumblePos.toggleIdx !== undefined) {
+          const newWorldState = worldState | (1 << crumblePos.toggleIdx);
+          const from = path.length > 0 ? path[path.length - 1] : pos;
+          const fk  = posKey(from);
+          if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
+          const lk = stateKey(from, newWorldState);
+          if ((lv2.get(lk) ?? Infinity) > nd) {
+            lv2.set(lk, nd);
+            q2.push({ pos: from, depth: nd, worldState: newWorldState });
+          }
         }
       }
     }
