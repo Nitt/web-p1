@@ -26,7 +26,13 @@ let _chainState = null;
 let _chainSpinning  = false;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
-const SPIN_PERIOD_MS = 500; // one full rotation every 500 ms
+const SPIN_PERIOD_MS      = 500;
+const CHAIN_LINK_OUTER_RX = 8;    // half long-axis  — outer ring
+const CHAIN_LINK_OUTER_RY = 5;    // half short-axis — outer ring
+const CHAIN_LINK_INNER_RX = 5;    // half long-axis  — hole
+const CHAIN_LINK_INNER_RY = 2.5;  // half short-axis — hole
+// Pitch = 2×outerRX so each face-on and edge-on link sits one after the other
+const CHAIN_LINK_PITCH    = CHAIN_LINK_OUTER_RX * 2;
 
 /**
  * Build (or rebuild) the grid DOM from a level.
@@ -274,15 +280,8 @@ function _redrawChain(px, py) {
 
   const NS = 'http://www.w3.org/2000/svg';
 
-  // Rope polyline
-  const polyline = document.createElementNS(NS, 'polyline');
-  polyline.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
-  polyline.setAttribute('fill', 'none');
-  polyline.setAttribute('stroke', 'rgba(60,80,120,0.55)');
-  polyline.setAttribute('stroke-width', '2.5');
-  polyline.setAttribute('stroke-linecap', 'round');
-  polyline.setAttribute('stroke-linejoin', 'round');
-  chainSvgEl.appendChild(polyline);
+  // Linked chain along the path (replaces the old rope polyline)
+  _drawChainLinks(points, NS);
 
   // Gear shapes at each waypoint (skip start and player positions)
   const spinAngle = _chainSpinning
@@ -312,6 +311,109 @@ function _redrawChain(px, py) {
 
   // Update the counter span inside the player div
   if (counterSpan) counterSpan.textContent = gearsLeft;
+}
+
+/**
+ * Draw animated chain links along the polyline defined by `points`.
+ * Each link is a small oval; adjacent links alternate 90° (one along the path,
+ * the next perpendicular) to mimic the look of a real linked chain.
+ * When _chainSpinning is true the links scroll at CHAIN_LINK_SPEED px/ms.
+ */
+function _drawChainLinks(points, NS) {
+  if (points.length < 2) return;
+
+  // Build segments with cumulative distance tracking
+  const segs = [];
+  let totalLen = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i-1].x;
+    const dy = points[i].y - points[i-1].y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.01) {
+      segs.push({ x0: points[i-1].x, y0: points[i-1].y, dx, dy, len, cumLen: totalLen });
+      totalLen += len;
+    }
+  }
+  if (totalLen < 1 || segs.length === 0) return;
+
+  // Sample a point + tangent angle at distance d along the path
+  function sample(d) {
+    d = Math.max(0, Math.min(d, totalLen));
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      if (d <= s.cumLen + s.len + 0.001 || i === segs.length - 1) {
+        const t = s.len > 0 ? (d - s.cumLen) / s.len : 0;
+        return {
+          x:        s.x0 + s.dx * t,
+          y:        s.y0 + s.dy * t,
+          angleDeg: Math.atan2(s.dy, s.dx) * 180 / Math.PI,
+        };
+      }
+    }
+  }
+
+  // Scroll offset driven by actual chain path length — links shift exactly as
+  // fast as the chain grows or shrinks, matching the player animation speed.
+  const rawOff  = _chainSpinning ? totalLen : 0;
+  const offset  = ((rawOff % CHAIN_LINK_PITCH) + CHAIN_LINK_PITCH) % CHAIN_LINK_PITCH;
+
+  // Determine the starting link-index parity so the alternation is stable
+  const baseIdx = Math.floor(rawOff / CHAIN_LINK_PITCH);
+
+  // Collect all link transforms in a single pass, then render odd-indexed links
+  // first (behind) and even-indexed links second (in front) — this creates the
+  // classic over-under interlocking illusion at crossings.
+  const orx = CHAIN_LINK_OUTER_RX;
+  const ory = CHAIN_LINK_OUTER_RY;
+  const irx = CHAIN_LINK_INNER_RX;
+  const iry = CHAIN_LINK_INNER_RY;
+  // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
+  const ringPath =
+    `M ${orx},0 A ${orx},${ory},0,1,0,${-orx},0 A ${orx},${ory},0,1,0,${orx},0 Z ` +
+    `M ${irx},0 A ${irx},${iry},0,1,1,${-irx},0 A ${irx},${iry},0,1,1,${irx},0 Z`;
+  // Edge-on link: thin solid sliver (3D-projected side view of a perpendicular link)
+  const thinRy = 1.5;
+  const sliverPath =
+    `M ${orx},0 A ${orx},${thinRy},0,1,0,${-orx},0 A ${orx},${thinRy},0,1,0,${orx},0 Z`;
+
+  const linkTransforms = [];
+  let linkIdx = 0;
+  for (let d = offset; d <= totalLen; d += CHAIN_LINK_PITCH) {
+    const pt = sample(d);
+    if (!pt) break;
+    // Both link types keep long axis along the chain — no extraAngle rotation
+    const parity = ((baseIdx + linkIdx) % 2 + 2) % 2;
+    linkTransforms.push({ transform: `translate(${pt.x},${pt.y}) rotate(${pt.angleDeg})`, parity });
+    linkIdx++;
+  }
+
+  function makeLinkEl(transform, isFaceOn) {
+    const path = document.createElementNS(NS, 'path');
+    if (isFaceOn) {
+      path.setAttribute('d', ringPath);
+      path.setAttribute('fill', 'rgba(65,85,130,0.95)');
+      path.setAttribute('fill-rule', 'evenodd');
+      path.setAttribute('stroke', 'rgba(190,215,245,0.85)');
+      path.setAttribute('stroke-width', '0.6');
+    } else {
+      path.setAttribute('d', sliverPath);
+      path.setAttribute('fill', 'rgba(50,68,110,0.9)');
+      path.setAttribute('stroke', 'rgba(150,185,230,0.7)');
+      path.setAttribute('stroke-width', '0.5');
+    }
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', transform);
+    g.appendChild(path);
+    return g;
+  }
+
+  // Edge-on (sliver) links behind, face-on (ring) links in front
+  for (const { transform, parity } of linkTransforms) {
+    if (parity === 1) chainSvgEl.appendChild(makeLinkEl(transform, false));
+  }
+  for (const { transform, parity } of linkTransforms) {
+    if (parity === 0) chainSvgEl.appendChild(makeLinkEl(transform, true));
+  }
 }
 
 /**
