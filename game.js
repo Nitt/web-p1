@@ -57,6 +57,8 @@ const state = {
   // Progression tracking.
   levelIndex:           1,      // 1-indexed number of the level currently being played
   levelsSinceKeyDoor:   0,      // levels elapsed since last key/door level appeared
+  // One-way double-press backtrack.
+  pendingOnewayBreak:   null,   // { dx, dy, owx, owy } — set after first blocked-by-oneway press
 };
 
 // ─── entry point ─────────────────────────────────────────────────────────────
@@ -96,6 +98,7 @@ function loadLevel(level) {
   state.queuedMove  = null;
   state.worldState  = 0;
   state.toggleMap   = buildToggleMap(level.cells);
+  state.pendingOnewayBreak = null;
 
   // Gear budget: 25% above the minimum solution depth (easy to tune).
   const goalDepth = level.depths
@@ -227,6 +230,66 @@ function _scheduleDeadEndCheck() {
   }
 }
 
+// ─── one-way backtrack helpers ────────────────────────────────────────────────
+
+/**
+ * Returns the index in state.gears of the last gear that is on the "entry side"
+ * of the one-way at (owx, owy) when approaching in direction (dx, dy).
+ * Entry side: (g.x - owx)*dx + (g.y - owy)*dy < 0
+ */
+function _findOnewayEntryGear(owx, owy, dx, dy) {
+  for (let i = state.gears.length - 1; i >= 0; i--) {
+    const g = state.gears[i];
+    if ((g.x - owx) * dx + (g.y - owy) * dy < 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Animate the player to state.gears[gearIdx] and shorten the chain back to it.
+ * Mirrors the revisit path in _executeMove.
+ */
+function _executeBacktrack(gearIdx) {
+  const backtrackPos = state.gears[gearIdx];
+
+  const isOneBack = gearIdx === state.gears.length - 2;
+  if (isOneBack) {
+    drawChain(
+      state.gears.slice(0, gearIdx + 1),
+      state.playerPos, state.gearsLeft + 1, state.totalGears, state.level,
+    );
+  }
+
+  state.isMoving = true;
+  setChainSpinning(true, -1);
+
+  animatePlayer(state.playerPos, backtrackPos, state.level, () => {
+    state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
+    state.isMoving  = false;
+
+    const gearsBeforeUpdate = state.gears.slice();
+    const freed = state.gears.length - gearIdx - 1;
+    state.gears     = state.gears.slice(0, gearIdx + 1);
+    state.gearsLeft += freed;
+
+    const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length;
+    if (needsRetractAnim) {
+      state.isMoving = true;
+      _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+        state.isMoving = false;
+        setChainSpinning(false);
+        _scheduleDeadEndCheck();
+        _flushQueuedMove();
+      });
+    } else {
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      setChainSpinning(false);
+      _scheduleDeadEndCheck();
+      _flushQueuedMove();
+    }
+  });
+}
+
 /** Skip to the next level (debug/test shortcut). */
 export function skipLevel() {
   _nextLevel();
@@ -255,7 +318,24 @@ function _executeMove(dx, dy) {
   const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
-  if (!didMove && !hasCrumble) return;
+  if (!didMove && !hasCrumble) {
+    if (target.blockedByOneway) {
+      const { x: owx, y: owy } = target.blockedByOneway;
+      const p = state.pendingOnewayBreak;
+      if (p && p.dx === dx && p.dy === dy && p.owx === owx && p.owy === owy) {
+        // Second press into the same blocked one-way — backtrack to last entry-side gear.
+        state.pendingOnewayBreak = null;
+        const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
+        if (entryIdx >= 0) _executeBacktrack(entryIdx);
+      } else {
+        state.pendingOnewayBreak = { dx, dy, owx, owy };
+      }
+    } else {
+      state.pendingOnewayBreak = null;
+    }
+    return;
+  }
+  state.pendingOnewayBreak = null;
 
   // Moving into the boat (above the grid) is a free move — no gear consumed.
   const isBoatEntry = target.y < 0;

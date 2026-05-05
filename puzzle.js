@@ -156,8 +156,9 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
-  let crumble      = null;
-  let keyCollected = null;
+  let crumble        = null;
+  let keyCollected   = null;
+  let blockedByOneway = null;
 
   const DIR_NAME = { '1,0': 'RIGHT', '-1,0': 'LEFT', '0,1': 'DOWN', '0,-1': 'UP' };
   const dirLabel = DIR_NAME[`${dx},${dy}`] ?? `(${dx},${dy})`;
@@ -226,6 +227,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
     // ── ONEWAY: stop if approaching from the wrong direction ──────────────
     if (isOneway(cell) && !onewayAllows(cell, dx, dy)) {
+      blockedByOneway = { x: nx, y: ny };
       steps.push(`(${x},${y}) — oneway blocked at (${nx},${ny})`);
       break;
     }
@@ -253,7 +255,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     steps.push(`(${x},${y})`);
   }
 
-  const result = { x, y, crumble, keyCollected };
+  const result = { x, y, crumble, keyCollected, blockedByOneway };
   const moved  = result.x !== pos.x || result.y !== pos.y;
   if (!silent) console.log(
     `[move] ${dirLabel}  (${pos.x},${pos.y}) → (${result.x},${result.y})` +

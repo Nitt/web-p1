@@ -122,7 +122,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX, fromY, toX, toY, label });
   }
 
-  // DFS carving — mirrors the reference goDirection
+  // Carving — slide physics respected: recursion continues same-direction slides
+  // through empty/oneway cells (one slide = one logical step).  The only place
+  // we enqueue instead of recurse is the post-crumble universe continuation,
+  // because that is a genuinely new branch that belongs in the next BFS wave.
   function carve(dirKey, x, y) {
     const i = idx(x, y);
     if (hasVisited(i, dirKey)) return;
@@ -140,7 +143,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (type === 'empty') {
           cells[ni] = G.EMPTY;
           rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-          carve(dirKey, nx, ny);
+          carve(dirKey, nx, ny);          // same slide, continue in same direction
         } else if (type === 'oneway') {
           // Only place a one-way if the cell beyond it is reachable
           const nnx = nx + dir.dx;
@@ -154,7 +157,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
             cells[ni] = G.EMPTY;
           }
           rec(x, y, nx, ny, `oneway-${dirKey} (${nx-1},${ny-1})`);
-          carve(dirKey, nx, ny);
+          carve(dirKey, nx, ny);          // same slide, continue through oneway
         } else if (type === 'block') {
           cells[ni] = G.BLOCK;
           rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
@@ -162,8 +165,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         } else if (type === 'crumble') {
           cells[ni] = G.CRUMBLE;
           rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
-          enqueue(x, y);           // stop before crumble — explore other directions from here
-          carve(dirKey, nx, ny);   // post-crumble universe — continue through it in same direction
+          enqueue(x, y);                  // stop before crumble — explore other dirs from here
+          // Post-crumble parallel universe: from the same pre-crumble cell, the crumble
+          // is gone so the slide continues through it.  Re-queue (x,y) with a resumeDir
+          // so the continuation fires in BFS order from the actual landing position.
+          branchQueue.push({ x, y, resumeDir: dirKey });
         } else { // sticky
           cells[ni] = G.STICKY;
           rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
@@ -172,7 +178,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         break;
       }
       case G.EMPTY:
-        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);
+        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // slide through existing empty
+        break;
+      case G.CRUMBLE:
+        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // parallel universe: crumble is gone, slide through
         break;
       case G.BLOCK:
         enqueue(x, y);
@@ -193,9 +202,15 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // where the first slide always passes through the entry cell.
   carve('DOWN', startX, startY + 1);
   while (branchQueue.length > 0) {
-    const { x, y } = branchQueue.shift();
-    if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
-    for (const dir of DIRS) carve(dir.key, x, y);
+    const { x, y, resumeDir } = branchQueue.shift();
+    if (resumeDir) {
+      // Post-crumble parallel universe: un-mark dirKey so carve can slide through the crumble.
+      visitedDirs.get(idx(x, y))?.delete(resumeDir);
+      carve(resumeDir, x, y);
+    } else {
+      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
+      for (const dir of DIRS) carve(dir.key, x, y);
+    }
   }
 
   // ── Convert padded grid → output level cells ──
