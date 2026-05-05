@@ -1,4 +1,4 @@
-import { slidePlayer, buildToggleMap } from './puzzle.js';
+import { slidePlayer, buildToggleMap, canReachGoal } from './puzzle.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor } from './renderer.js';
 import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
@@ -9,7 +9,11 @@ import { getRecipe } from './levelConfig.js';
 let gridContainer    = null;
 let dpadEl           = null;
 let winBanner        = null;
+let deadEndBanner    = null;
 let levelLabel       = null;
+
+// Timer that fires the dead-end popup 1 second after landing in a dead end.
+let _deadEndTimer = null;
 
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
@@ -60,10 +64,16 @@ export function init() {
   gridContainer  = document.getElementById('grid-container');
   dpadEl         = document.getElementById('dpad');
   winBanner      = document.getElementById('win-banner');
+  deadEndBanner  = document.getElementById('dead-end-banner');
   levelLabel     = document.getElementById('level-label');
 
   document.getElementById('restart-btn')
     .addEventListener('click', () => loadLevel(state.level));
+
+  // Backtick (`) skips to the next level — debug/testing shortcut.
+  document.addEventListener('keydown', e => {
+    if (e.key === '`') skipLevel();
+  });
 
   initInput(gridContainer, dpadEl, handleMove);
 
@@ -97,7 +107,10 @@ function loadLevel(level) {
   state.totalGears = budget;
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
-  winBanner.hidden = true;
+  winBanner.hidden     = true;
+  deadEndBanner.hidden = true;
+  clearTimeout(_deadEndTimer);
+  _deadEndTimer = null;
 
   buildGrid(gridContainer, level);
   placePlayer(state.playerPos, level);
@@ -194,6 +207,31 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
   animateSegment();
 }
 
+function _scheduleDeadEndCheck() {
+  // Skip the check if the player is in the boat (y < 0) — always reachable from there.
+  if (state.playerPos.y < 0) return;
+  if (!canReachGoal(state.level, state.playerPos, state.worldState, state.toggleMap)) {
+    _deadEndTimer = setTimeout(() => {
+      if (!state.won) {
+        deadEndBanner.hidden = false;
+        function _restart() {
+          deadEndBanner.hidden = true;
+          deadEndBanner.removeEventListener('pointerdown', _restart);
+          document.removeEventListener('keyup', _restart);
+          loadLevel(state.level);
+        }
+        deadEndBanner.addEventListener('pointerdown', _restart, { once: true });
+        document.addEventListener('keyup', _restart, { once: true });
+      }
+    }, 1000);
+  }
+}
+
+/** Skip to the next level (debug/test shortcut). */
+export function skipLevel() {
+  _nextLevel();
+}
+
 function _flushQueuedMove() {
   const q = state.queuedMove;
   state.queuedMove = null;
@@ -204,6 +242,10 @@ function _flushQueuedMove() {
 
 function _executeMove(dx, dy) {
   _retractToken++; // cancel any in-progress retraction animation
+  // Cancel any pending dead-end popup when a new move starts.
+  clearTimeout(_deadEndTimer);
+  _deadEndTimer = null;
+  deadEndBanner.hidden = true;
   const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
   const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
@@ -267,6 +309,7 @@ function _executeMove(dx, dy) {
       _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
         state.isMoving = false;
         setChainSpinning(false);
+        _scheduleDeadEndCheck();
         _flushQueuedMove();
       });
     } else {
@@ -322,6 +365,7 @@ function _executeMove(dx, dy) {
     // (needsRetractAnim defers this until after the retraction animation.)
     if (!needsRetractAnim) {
       setChainSpinning(false);
+      _scheduleDeadEndCheck();
       _flushQueuedMove();
     }
   });

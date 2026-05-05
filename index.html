@@ -40,15 +40,25 @@
     <span class="win-hint">Tap anywhere to continue</span>
   </div>
 
+  <!-- ── Dead-end overlay ─────────────────────────────────────────────── -->
+  <div id="dead-end-banner" hidden>
+    <p>No way out!</p>
+    <span class="win-hint">Tap anywhere to restart</span>
+  </div>
+
   <button id="debug-btn" class="btn-ghost">dbg</button>
+  <button id="skip-btn" class="btn-ghost debug-only">skip</button>
 
   <script type="module">
-    import { init } from './game.js';
+    import { init, skipLevel } from './game.js';
 
     document.getElementById('debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('debug'));
 
+    document.getElementById('skip-btn')
+      .addEventListener('click', () => skipLevel());
+
     init();
-  </script>
+</script>
 </body>
 </html>

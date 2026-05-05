@@ -110,6 +110,45 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  *   In both cases the caller computes the new worldState:
  *     newWS = worldState | (1 << toggleIdx)
  */
+/**
+ * BFS reachability check: can the player reach the goal from (pos, worldState)?
+ * Ignores gear budget — only tests topological reachability (walls, one-ways,
+ * crumbles, keys, doors).  Used for dead-end detection after each move.
+ *
+ * @param {object} level
+ * @param {{x,y}} pos
+ * @param {number} worldState
+ * @param {Map<number,number>} toggleMap
+ * @returns {boolean}
+ */
+export function canReachGoal(level, pos, worldState, toggleMap) {
+  const { width, height, goal } = level;
+  if (!goal) return true;
+  const DIRS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  const visited = new Set();
+  const queue = [{ x: pos.x, y: pos.y, ws: worldState }];
+  visited.add(worldState * width * height + pos.y * width + pos.x);
+
+  while (queue.length) {
+    const { x, y, ws } = queue.shift();
+    if (x === goal.x && y === goal.y) return true;
+
+    for (const { dx, dy } of DIRS) {
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws);
+      let nws = ws;
+      if (r.crumble      ?.toggleIdx !== undefined) nws |= (1 << r.crumble.toggleIdx);
+      if (r.keyCollected ?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
+
+      const k = nws * width * height + r.y * width + r.x;
+      if (!visited.has(k)) {
+        visited.add(k);
+        queue.push({ x: r.x, y: r.y, ws: nws });
+      }
+    }
+  }
+  return false;
+}
+
 export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;

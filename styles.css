@@ -409,3 +409,41 @@ body.debug #debug-btn {
   font-size: 0.95rem;
   opacity: 0.5;
 }
+
+/* ── Dead-end banner ────────────────────────────────────────────────────────── */
+#dead-end-banner {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+  background: rgba(232, 237, 240, 0.88);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+}
+
+#dead-end-banner[hidden] { display: none; }
+
+#dead-end-banner p {
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+/* ── Skip / debug buttons ───────────────────────────────────────────────────── */
+#skip-btn {
+  position: fixed;
+  top: 0.5rem;
+  right: 3.5rem;
+  font-size: 0.65rem;
+  padding: 0.2rem 0.45rem;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 200;
+}
+
+body.debug #skip-btn {
+  opacity: 0.4;
+  pointer-events: auto;
+}
