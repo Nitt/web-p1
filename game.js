@@ -219,6 +219,8 @@ function _executeMove(dx, dy) {
   const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
   const willUseGear = !isBoatEntry && revisitIdx < 0;
   if (willUseGear && state.gearsLeft === 0) return;  // silently blocked — no gears left
+  // With 0 gears, only the immediately previous cog can be revisited (not older ones).
+  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) return;
 
   state.isMoving = true;
 
