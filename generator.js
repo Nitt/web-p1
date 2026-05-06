@@ -119,7 +119,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // ── Step recorder (no-op when _steps is null) ──
   function rec(fromX, fromY, toX, toY, label) {
     if (!_steps) return;
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX, fromY, toX, toY, label });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, s]) => [k, new Set(s)])), pw, ph, fromX, fromY, toX, toY, label });
   }
 
   // Carving — slide physics respected: recursion continues same-direction slides
@@ -178,20 +178,32 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         break;
       }
       case G.EMPTY:
-        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // slide through existing empty
+        rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
+        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // continue slide if direction is new
         break;
       case G.CRUMBLE:
+        rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
         if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // parallel universe: crumble is gone, slide through
         break;
       case G.BLOCK:
+        rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
         enqueue(x, y);
         break;
       case G.STICKY:
+        rec(x, y, nx, ny, `stopped-sticky (${nx-1},${ny-1})`);
         enqueue(nx, ny);
         break;
-      case G.ONEWAY:
-        enqueue(x, y);
+      case G.ONEWAY: {
+        const allowedDir = onewayDir.get(ni);
+        if (allowedDir === dirKey) {
+          rec(x, y, nx, ny, `slide-oneway-allowed (${nx-1},${ny-1})`);
+          carve(dirKey, nx, ny);  // correct direction — slide through
+        } else {
+          rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
+          enqueue(x, y);          // wrong direction — blocked before it
+        }
         break;
+      }
     }
   }
 
@@ -208,7 +220,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       visitedDirs.get(idx(x, y))?.delete(resumeDir);
       carve(resumeDir, x, y);
     } else {
-      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
+      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, s]) => [k, new Set(s)])), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
       for (const dir of DIRS) carve(dir.key, x, y);
     }
   }
@@ -260,7 +272,16 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   _logLevel(outCells, width, height, start, goal, id, goalDifficulty);
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements, seed };
+  // Translate visitedDirs from padded indices → unpadded flat indices for export
+  const visitedDirsOut = new Map();
+  for (const [pi, dirs] of visitedDirs) {
+    const px = pi % pw, py = Math.floor(pi / pw);
+    if (px >= 1 && px < pw - 1 && py >= 1 && py < ph - 1) {
+      visitedDirsOut.set((py - 1) * width + (px - 1), new Set(dirs));
+    }
+  }
+
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements, seed, visitedDirs: visitedDirsOut };
 }
 
 /**
@@ -568,114 +589,62 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
   // Key functions.
   // posKey    — identifies a grid cell for the output arrays (position only).
-  // stateKey  — identifies a (position, worldState) pair for visited tracking.
-  const posKey   = (p)     => p.y * width + p.x;
-  const stateKey = (p, ws) => ws * width * height + p.y * width + p.x;
+  // stateKey  — identifies a (position, incoming-slide-direction, worldState) triple
+  //             for visited tracking.  Including direction means the same cell reached
+  //             via a RIGHT slide vs. a LEFT slide is treated as a distinct BFS node,
+  //             so one-way interactions are explored correctly from every approach angle.
+  const posKey   = (p)          => p.y * width + p.x;
+  const stateKey = (p, di, ws)  => (ws * width * height + p.y * width + p.x) * 5 + di;
+  // di = 0..3 index into DIRS4, or 4 for the start node (no incoming direction).
 
-  // ── Pass 1: BFS for move-count depths (uniform cost) ──────────────────────
-  // depths tracks the minimum number of moves to reach a position across ALL
-  // universes (worldStates).  landingVisited prevents re-expanding the same
-  // (pos, worldState) node twice.
+  // ── Pass 1: BFS for move-count depths ────────────────────────────────────
+  // depths tracks the minimum slide-count at which a cell is reachable (either
+  // as a landing or as a cell the player passes through on that slide).
+  // Depths are set per-cell as the slide is simulated inline — no path list.
   const landingVisited  = new Map();
-  const depths          = new Map(); // posKey → min depth over all worldStates
-  const landingsOnly    = new Set(); // posKeys of actual landing positions (for pass 1b gearSet)
+  const depths          = new Map();
 
-  landingVisited.set(stateKey(start, 0), 0);
+  landingVisited.set(stateKey(start, 4, 0), 0);
   depths.set(posKey(start), 0);
-  const bfsQueue = [{ pos: start, depth: 0, worldState: 0 }];
+  const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4 }];
 
   while (bfsQueue.length > 0) {
-    const { pos, depth, worldState } = bfsQueue.shift();
+    const { pos, depth, worldState, di } = bfsQueue.shift();
 
-    if ((landingVisited.get(stateKey(pos, worldState)) ?? depth) < depth) continue;
+    if ((landingVisited.get(stateKey(pos, di, worldState)) ?? depth) < depth) continue;
 
-    for (const { dx, dy } of DIRS4) {
+    for (let i = 0; i < DIRS4.length; i++) {
+      const { dx, dy } = DIRS4[i];
       const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = depth + 1;
 
+      // Set depth for every cell reached on this slide (same nd — one slide action).
       for (const p of path) {
         const k = posKey(p);
         if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
       }
 
       if (path.length > 0) {
-        const landing = path[path.length - 1];
-        landingsOnly.add(posKey(landing));
-        // Key collection happens at the landing cell — fold it into worldState.
+        const landing    = path[path.length - 1];
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
-        const lk = stateKey(landing, effectiveWS);
+        const lk = stateKey(landing, i, effectiveWS);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS });
+          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
         }
       }
 
-      // Crumble break: transition to a new universe where that crumble is gone.
-      // The player remains at their landing position (or start pos if no movement)
-      // in the new worldState — no extra move is charged for the break itself.
       if (crumblePos && crumblePos.toggleIdx !== undefined) {
         const newWorldState = worldState | (1 << crumblePos.toggleIdx);
         const from = path.length > 0 ? path[path.length - 1] : pos;
-        const fk  = posKey(from);
-        landingsOnly.add(fk);
+        const fk   = posKey(from);
         if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
-        const lk = stateKey(from, newWorldState);
+        const lk = stateKey(from, i, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState });
-        }
-      }
-    }
-  }
-
-  // ── Pass 1b: gear-aware BFS ────────────────────────────────────────────────
-  // Re-run BFS treating every position reachable in Pass 1 as a placed cog
-  // (stops the player mid-slide like a sticky). This models the fact that
-  // previously-visited cells act as stopping points in the live game.
-  // The resulting depths are a lower bound; we take min(pass1, pass1b) per cell.
-  {
-    const gearSet = landingsOnly; // only actual landing positions become stoppers
-    const lv2     = new Map();
-    lv2.set(stateKey(start, 0), 0);
-    const q2 = [{ pos: start, depth: 0, worldState: 0 }];
-
-    while (q2.length > 0) {
-      const { pos, depth, worldState } = q2.shift();
-      if ((lv2.get(stateKey(pos, worldState)) ?? depth) < depth) continue;
-
-      for (const { dx, dy } of DIRS4) {
-        const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, gearSet);
-        if (path.length === 0 && !crumblePos) continue;
-
-        const nd = depth + 1;
-
-        for (const p of path) {
-          const k = posKey(p);
-          if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
-        }
-
-        if (path.length > 0) {
-          const landing = path[path.length - 1];
-          const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
-          const lk = stateKey(landing, effectiveWS);
-          if ((lv2.get(lk) ?? Infinity) > nd) {
-            lv2.set(lk, nd);
-            q2.push({ pos: landing, depth: nd, worldState: effectiveWS });
-          }
-        }
-
-        if (crumblePos && crumblePos.toggleIdx !== undefined) {
-          const newWorldState = worldState | (1 << crumblePos.toggleIdx);
-          const from = path.length > 0 ? path[path.length - 1] : pos;
-          const fk  = posKey(from);
-          if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
-          const lk = stateKey(from, newWorldState);
-          if ((lv2.get(lk) ?? Infinity) > nd) {
-            lv2.set(lk, nd);
-            q2.push({ pos: from, depth: nd, worldState: newWorldState });
-          }
+          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i });
         }
       }
     }
@@ -686,9 +655,9 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const diffLandingVis = new Map();
 
   difficulties.set(posKey(start), 0);
-  diffLandingVis.set(stateKey(start, 0), 0);
+  diffLandingVis.set(stateKey(start, 4, 0), 0);
 
-  const heap = [{ pos: start, diff: 0, worldState: 0 }];
+  const heap = [{ pos: start, diff: 0, worldState: 0, di: 4 }];
 
   function heapPush(entry) {
     heap.push(entry);
@@ -720,10 +689,11 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   }
 
   while (heap.length > 0) {
-    const { pos, diff, worldState } = heapPop();
-    if ((diffLandingVis.get(stateKey(pos, worldState)) ?? Infinity) < diff) continue;
+    const { pos, diff, worldState, di } = heapPop();
+    if ((diffLandingVis.get(stateKey(pos, di, worldState)) ?? Infinity) < diff) continue;
 
-    for (const { dx, dy } of DIRS4) {
+    for (let i = 0; i < DIRS4.length; i++) {
+      const { dx, dy } = DIRS4[i];
       const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
 
@@ -737,10 +707,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       if (path.length > 0) {
         const landing = path[path.length - 1];
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
-        const lk = stateKey(landing, effectiveWS);
+        const lk = stateKey(landing, i, effectiveWS);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: landing, diff: nd, worldState: effectiveWS });
+          heapPush({ pos: landing, diff: nd, worldState: effectiveWS, di: i });
         }
       }
 
@@ -750,10 +720,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk  = posKey(from);
         if (!difficulties.has(fk) || difficulties.get(fk) > nd) difficulties.set(fk, nd);
-        const lk = stateKey(from, newWorldState);
+        const lk = stateKey(from, i, newWorldState);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: from, diff: nd, worldState: newWorldState });
+          heapPush({ pos: from, diff: nd, worldState: newWorldState, di: i });
         }
       }
     }
@@ -766,13 +736,15 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   for (const [k, d] of difficulties) difficultyArray[k] = d;
 
   // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
-  // Exclude walls, crumbles (goal hidden under crumble = unreachable), keys, doors.
+  // Exclude walls, crumbles (goal hidden under crumble = unreachable), keys, doors,
+  // and one-ways (player slides through them — can never land on a one-way tile).
   let bestPos        = start;
   let bestDifficulty = 0;
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
     if (k < 0 || k >= width * height) continue;                        // skip off-grid keys (e.g. boat at y=-1)
     if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, crumbles, keys, doors
+    if (cells[k] >= 3 && cells[k] <= 6) continue;                          // skip one-ways (player slides through, never lands on them)
     if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
     const x  = k % width;
     const y  = Math.floor(k / width);

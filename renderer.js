@@ -87,6 +87,22 @@ export function buildGrid(container, level) {
         }
       }
 
+      if (level.visitedDirs) {
+        const dirs = level.visitedDirs.get(y * level.width + x);
+        if (dirs) {
+          const ARROW = { UP: '↑', DOWN: '↓', LEFT: '←', RIGHT: '→' };
+          for (const dir of ['UP', 'DOWN', 'LEFT', 'RIGHT']) {
+            if (dirs.has(dir)) {
+              const arrow = document.createElement('span');
+              arrow.className = 'cell-dir';
+              arrow.dataset.dir = dir.toLowerCase();
+              arrow.textContent = ARROW[dir];
+              cell.appendChild(arrow);
+            }
+          }
+        }
+      }
+
       gridEl.appendChild(cell);
     }
   }

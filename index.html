@@ -123,7 +123,6 @@
     let _levelW      = 0;
     let _levelH      = 0;
     let _levelStart  = null;
-    let _stepAnalysisCache = [];
 
     function runGenerate(weights) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
@@ -136,7 +135,6 @@
       _levelW       = w;
       _levelH       = h;
       _levelStart   = result.start;
-      _stepAnalysisCache = new Array(_steps.length).fill(null);
       slider.max   = Math.max(0, _steps.length - 1);
       slider.value = _steps.length - 1;
       renderStep(_steps.length - 1);
@@ -166,13 +164,9 @@
       const step = _steps[Math.min(i, _steps.length - 1)];
       label.textContent   = step.label;
       counter.textContent = `${i + 1} / ${_steps.length}`;
-
-      // Lazily compute per-step depth/difficulty analysis and cache it.
-      if (!_stepAnalysisCache[i] && _levelStart) {
-        _stepAnalysisCache[i] = computeStepAnalysis(step, _levelW, _levelH, _levelStart);
-      }
-      const analysis = _stepAnalysisCache[i];
-      drawStep(step, analysis?.depths ?? null, analysis?.difficulties ?? null);
+      // Use final depth/difficulty values so numbers stay stable as the slider advances.
+      // The per-step recomputation caused values to jump as partial grids opened new paths.
+      drawStep(step, _depths, _difficulties);
     }
 
     // G enum values → fill colours (matches generator.js G object)
@@ -224,6 +218,41 @@
               const txt = df % 1 === 0 ? df : df.toFixed(1);
               const tw  = ctx.measureText(txt).width;
               ctx.fillText(txt, cx * size + size - tw - 2, cy * size + size - 3);
+            }
+          }
+
+          // Direction arrows: show which directions have been explored FROM this cell.
+          // visitedDirs uses padded indices (cy * pw + cx) directly.
+          if (step.visitedDirs && size >= 8 && cell !== 0 /* not UNTOUCHED */) {
+            const dirs = step.visitedDirs.get(cy * pw + cx);
+            if (dirs && dirs.size > 0) {
+              const px = cx * size, py = cy * size;
+              const half = (size - 1) / 2;
+              const aw = Math.max(2, size * 0.18); // half-width of arrow base
+              const margin = Math.max(1, size * 0.08); // gap from cell edge
+              ctx.fillStyle = 'rgba(255, 230, 0, 0.85)';
+              for (const dir of dirs) {
+                ctx.beginPath();
+                if (dir === 'UP') {
+                  ctx.moveTo(px + half - aw, py + aw * 2 + margin);
+                  ctx.lineTo(px + half + aw, py + aw * 2 + margin);
+                  ctx.lineTo(px + half,       py + margin);
+                } else if (dir === 'DOWN') {
+                  ctx.moveTo(px + half - aw, py + size - 1 - aw * 2 - margin);
+                  ctx.lineTo(px + half + aw, py + size - 1 - aw * 2 - margin);
+                  ctx.lineTo(px + half,       py + size - 1 - margin);
+                } else if (dir === 'LEFT') {
+                  ctx.moveTo(px + aw * 2 + margin, py + half - aw);
+                  ctx.lineTo(px + aw * 2 + margin, py + half + aw);
+                  ctx.lineTo(px + margin,            py + half);
+                } else if (dir === 'RIGHT') {
+                  ctx.moveTo(px + size - 1 - aw * 2 - margin, py + half - aw);
+                  ctx.lineTo(px + size - 1 - aw * 2 - margin, py + half + aw);
+                  ctx.lineTo(px + size - 1 - margin,            py + half);
+                }
+                ctx.closePath();
+                ctx.fill();
+              }
             }
           }
         }
