@@ -152,17 +152,13 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
   return false;
 }
 
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, silent = false) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
   let crumble        = null;
   let keyCollected   = null;
   let blockedByOneway = null;
-
-  const DIR_NAME = { '1,0': 'RIGHT', '-1,0': 'LEFT', '0,1': 'DOWN', '0,-1': 'UP' };
-  const dirLabel = DIR_NAME[`${dx},${dy}`] ?? `(${dx},${dy})`;
-  const steps = [];
 
   while (true) {
     const nx = x + dx;
@@ -171,12 +167,10 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     // Allow sliding up into the boat entry (one row above the grid at the start column).
     if (ny === -1 && nx === level.start.x && dx === 0 && dy === -1) {
       x = nx; y = ny;
-      steps.push(`(${x},${y}) — boat`);
       break;
     }
 
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-      steps.push(`(${x},${y}) — boundary`);
       break;
     }
 
@@ -185,7 +179,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
     // ── WALL ──────────────────────────────────────────────────────────────
     if (cell === CellType.WALL) {
-      steps.push(`(${x},${y}) — wall at (${nx},${ny})`);
       break;
     }
 
@@ -194,7 +187,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       if (!isToggleActive(toggleMap, worldState, flatIdx)) {
         const toggleIdx = toggleMap ? toggleMap.get(flatIdx) : undefined;
         crumble = { x: nx, y: ny, toggleIdx };
-        steps.push(`(${x},${y}) — crumble at (${nx},${ny})`);
         break;
       }
       // Broken — treat as empty, continue sliding
@@ -208,7 +200,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
         // Land on the key, collect it, stop here
         x = nx; y = ny;
         keyCollected = { x, y, toggleIdx };
-        steps.push(`(${x},${y}) — key collected`);
         break;
       }
       // Already collected — treat as empty, fall through to normal move
@@ -219,7 +210,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       const req = level.doorRequirements?.get(flatIdx);
       const open = req !== undefined && (worldState & (1 << req)) !== 0;
       if (!open) {
-        steps.push(`(${x},${y}) — door locked at (${nx},${ny})`);
         break;
       }
       // Open — treat as empty, fall through
@@ -228,7 +218,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     // ── ONEWAY: stop if approaching from the wrong direction ──────────────
     if (isOneway(cell) && !onewayAllows(cell, dx, dy)) {
       blockedByOneway = { x: nx, y: ny };
-      steps.push(`(${x},${y}) — oneway blocked at (${nx},${ny})`);
       break;
     }
 
@@ -237,32 +226,18 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     y = ny;
 
     if (level.goal && x === level.goal.x && y === level.goal.y) {
-      steps.push(`(${x},${y}) — goal`);
       break;
     }
 
     if (cell === CellType.STICKY) {
-      steps.push(`(${x},${y}) — sticky stop`);
       break;
     }
 
     // Gear waypoints act like stickies: stop on landing rather than sliding through
     if (gearSet && gearSet.has(y * width + x)) {
-      steps.push(`(${x},${y}) — gear stop`);
       break;
     }
-
-    steps.push(`(${x},${y})`);
   }
 
-  const result = { x, y, crumble, keyCollected, blockedByOneway };
-  const moved  = result.x !== pos.x || result.y !== pos.y;
-  if (!silent) console.log(
-    `[move] ${dirLabel}  (${pos.x},${pos.y}) → (${result.x},${result.y})` +
-    (crumble      ? `  crumble=(${crumble.x},${crumble.y}) toggleIdx=${crumble.toggleIdx}` : '') +
-    (keyCollected ? `  key=(${keyCollected.x},${keyCollected.y}) toggleIdx=${keyCollected.toggleIdx}` : '') +
-    (moved ? `  steps: ${steps.join(' → ')}` : '  (no movement)')
-  );
-
-  return result;
+  return { x, y, crumble, keyCollected, blockedByOneway };
 }

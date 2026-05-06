@@ -21,6 +21,7 @@ const QUEUE_WINDOW_MS = 300;
 
 // ─── background level pre-generation ─────────────────────────────────────────
 const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });
+_worker.onerror = (e) => console.error('[game] worker error:', e.message, e);
 let _pendingLevel  = null;   // Promise → level object when worker finishes
 let _pendingRecipe = null;   // recipe used for the pending pre-generation
 
@@ -100,11 +101,11 @@ function loadLevel(level) {
   state.toggleMap   = buildToggleMap(level.cells);
   state.pendingOnewayBreak = null;
 
-  // Gear budget: 25% above the minimum solution depth (easy to tune).
+  // Gear budget: exactly the minimum solution depth.
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
-  const budget = Math.ceil((goalDepth > 0 ? goalDepth : 1) * 1.25);
+  const budget = goalDepth > 0 ? goalDepth : 1;
   state.gears      = [];
   state.gearsLeft  = budget;
   state.totalGears = budget;
@@ -138,11 +139,12 @@ function _nextLevel() {
   const hadKeyDoor = state.level?.doorRequirements?.size > 0;
   state.levelsSinceKeyDoor = hadKeyDoor ? 0 : state.levelsSinceKeyDoor + 1;
 
-  // Use the pre-generated level if ready; otherwise generate synchronously.
+  // Use the pre-generated level if ready; otherwise generate synchronously with
+  // a reduced candidate count to avoid blocking the main thread too long.
   Promise.resolve(_pendingLevel).then(level => {
     if (!level) {
       const recipe = getRecipe(id, state.levelsSinceKeyDoor);
-      level = generateHardestLevel(9, 9, { seed, id, ...recipe });
+      level = generateHardestLevel(9, 9, { seed, id, ...recipe, candidates: 20 });
     }
     loadLevel(level);
   });

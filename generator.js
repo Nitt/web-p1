@@ -270,8 +270,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
-  _logLevel(outCells, width, height, start, goal, id, goalDifficulty);
-
   // Translate visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
   for (const [pi, dirs] of visitedDirs) {
@@ -593,9 +591,16 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   //             for visited tracking.  Including direction means the same cell reached
   //             via a RIGHT slide vs. a LEFT slide is treated as a distinct BFS node,
   //             so one-way interactions are explored correctly from every approach angle.
-  const posKey   = (p)          => p.y * width + p.x;
-  const stateKey = (p, di, ws)  => (ws * width * height + p.y * width + p.x) * 5 + di;
-  // di = 0..3 index into DIRS4, or 4 for the start node (no incoming direction).
+  const posKey   = (p)              => p.y * width + p.x;
+  // Fast path: return a plain number when no virtual gears are in play (the
+  // common case for all non-crumble universes).  Numbers are hashed ~5× faster
+  // than strings in V8 Maps, which matters across 240+ candidates × 2 passes.
+  // Non-empty gearSets get a string key (sorted for canonical form) so they
+  // never collide with the numeric keys — Map distinguishes 42 from "42".
+  const stateKey = (p, di, ws, gs) => {
+    const base = (ws * width * height + p.y * width + p.x) * 5 + di;
+    return gs.length === 0 ? base : `${base},${[...gs].sort((a, b) => a - b).join('|')}`;
+  };
 
   // ── Pass 1: BFS for move-count depths ────────────────────────────────────
   // depths tracks the minimum slide-count at which a cell is reachable (either
@@ -604,18 +609,19 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const landingVisited  = new Map();
   const depths          = new Map();
 
-  landingVisited.set(stateKey(start, 4, 0), 0);
+  landingVisited.set(stateKey(start, 4, 0, []), 0);
   depths.set(posKey(start), 0);
-  const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4 }];
+  const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4, gearSet: [] }];
 
   while (bfsQueue.length > 0) {
-    const { pos, depth, worldState, di } = bfsQueue.shift();
+    const { pos, depth, worldState, di, gearSet } = bfsQueue.shift();
 
-    if ((landingVisited.get(stateKey(pos, di, worldState)) ?? depth) < depth) continue;
+    if ((landingVisited.get(stateKey(pos, di, worldState, gearSet)) ?? depth) < depth) continue;
 
+    const gearSetObj = gearSet.length > 0 ? new Set(gearSet) : null;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, gearSetObj);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = depth + 1;
@@ -629,10 +635,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       if (path.length > 0) {
         const landing    = path[path.length - 1];
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
-        const lk = stateKey(landing, i, effectiveWS);
+        const lk = stateKey(landing, i, effectiveWS, gearSet);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
+          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS, di: i, gearSet });
         }
       }
 
@@ -641,10 +647,17 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk   = posKey(from);
         if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
-        const lk = stateKey(from, i, newWorldState);
+        // Record the gear placed at `from` when this crumble was hit.
+        // It acts as a virtual sticky in this universe and all deeper crumble universes.
+        // Insertion order is preserved so slice(-3) keeps the 3 most recently placed
+        // gears (closest to current position), bounding state-space growth on maps
+        // with many crumbles. stateKey sorts a copy for a stable key string.
+        const ordered = gearSet.includes(fk) ? gearSet : [...gearSet, fk];
+        const newGearSet = ordered.length > 3 ? ordered.slice(ordered.length - 3) : ordered;
+        const lk = stateKey(from, i, newWorldState, newGearSet);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i });
+          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i, gearSet: newGearSet });
         }
       }
     }
@@ -655,9 +668,9 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const diffLandingVis = new Map();
 
   difficulties.set(posKey(start), 0);
-  diffLandingVis.set(stateKey(start, 4, 0), 0);
+  diffLandingVis.set(stateKey(start, 4, 0, []), 0);
 
-  const heap = [{ pos: start, diff: 0, worldState: 0, di: 4 }];
+  const heap = [{ pos: start, diff: 0, worldState: 0, di: 4, gearSet: [] }];
 
   function heapPush(entry) {
     heap.push(entry);
@@ -689,12 +702,13 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   }
 
   while (heap.length > 0) {
-    const { pos, diff, worldState, di } = heapPop();
-    if ((diffLandingVis.get(stateKey(pos, di, worldState)) ?? Infinity) < diff) continue;
+    const { pos, diff, worldState, di, gearSet } = heapPop();
+    if ((diffLandingVis.get(stateKey(pos, di, worldState, gearSet)) ?? Infinity) < diff) continue;
 
+    const gearSetObj = gearSet.length > 0 ? new Set(gearSet) : null;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, gearSetObj);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = diff + cost;
@@ -707,10 +721,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       if (path.length > 0) {
         const landing = path[path.length - 1];
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
-        const lk = stateKey(landing, i, effectiveWS);
+        const lk = stateKey(landing, i, effectiveWS, gearSet);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: landing, diff: nd, worldState: effectiveWS, di: i });
+          heapPush({ pos: landing, diff: nd, worldState: effectiveWS, di: i, gearSet });
         }
       }
 
@@ -720,10 +734,16 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk  = posKey(from);
         if (!difficulties.has(fk) || difficulties.get(fk) > nd) difficulties.set(fk, nd);
-        const lk = stateKey(from, i, newWorldState);
+        // Record the gear placed at `from` when this crumble was hit.
+        // It acts as a virtual sticky in this universe and all deeper crumble universes.
+        // Insertion order is preserved so slice(-3) keeps the 3 most recently placed
+        // gears. stateKey sorts internally for canonical deduplication.
+        const ordered = gearSet.includes(fk) ? gearSet : [...gearSet, fk];
+        const newGearSet = ordered.length > 3 ? ordered.slice(ordered.length - 3) : ordered;
+        const lk = stateKey(from, i, newWorldState, newGearSet);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: from, diff: nd, worldState: newWorldState, di: i });
+          heapPush({ pos: from, diff: nd, worldState: newWorldState, di: i, gearSet: newGearSet });
         }
       }
     }
