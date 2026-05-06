@@ -24,6 +24,7 @@ let playerPx = { x: 0, y: 0 };
 let _chainState = null;
 // Gear spin state — driven by JS so rotation is continuous despite per-frame DOM recreation.
 let _chainSpinning  = false;
+let _playerAnimToken = 0;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 const SPIN_PERIOD_MS      = 500;
@@ -149,6 +150,7 @@ export function animatePlayer(from, to, level, onDone) {
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
   if (steps === 0) { onDone(); return; }
 
+  const token = ++_playerAnimToken;
   const duration = steps * SPEED_MS_PER_CELL;
   const startTime = performance.now();
   // Snap visual position to the logical start cell before reading startPx.
@@ -160,6 +162,7 @@ export function animatePlayer(from, to, level, onDone) {
   const startPx = { ...playerPx };
 
   function frame(now) {
+    if (token !== _playerAnimToken) return; // level changed — bail out
     const t = Math.max(0, Math.min((now - startTime) / duration, 1));
     // End position is recalculated every frame so mid-animation resizes stay correct.
     const endPx = _cellPixel(to.x, to.y, level);

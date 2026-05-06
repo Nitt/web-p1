@@ -92,6 +92,9 @@ export function init() {
 
 // ─── level loading ────────────────────────────────────────────────────────────
 function loadLevel(level) {
+  // Cancel any in-flight player or retraction animations from the previous level.
+  _moveToken++;
+  _retractToken++;
   state.level       = level;
   state.playerPos   = { ...level.start };
   state.isMoving    = false;
@@ -168,6 +171,7 @@ function handleMove(dx, dy) {
 // The tail smoothly rewinds along each path segment back to targetLength.
 // Total animation time is capped at TOTAL_MS regardless of segment count.
 let _retractToken = 0;
+let _moveToken    = 0;
 function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone) {
   const TOTAL_MS    = 100;
   const numSegments = fromGears.length - targetLength;
@@ -265,7 +269,9 @@ function _executeBacktrack(gearIdx) {
   state.isMoving = true;
   setChainSpinning(true, -1);
 
+  const moveToken = _moveToken;
   animatePlayer(state.playerPos, backtrackPos, state.level, () => {
+    if (moveToken !== _moveToken) return;
     state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
     state.isMoving  = false;
 
@@ -366,7 +372,9 @@ function _executeMove(dx, dy) {
   }
 
   setChainSpinning(true, willUseGear ? 1 : -1);
+  const moveToken = _moveToken;
   animatePlayer(state.playerPos, target, state.level, () => {
+    if (moveToken !== _moveToken) return;
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
 
