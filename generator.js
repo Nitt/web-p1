@@ -451,9 +451,10 @@ function _computeLandings(cells, width, height, startPos, toggleMap, worldState,
   const startFlat = startPos.y * width + startPos.x;
   visited.add(startFlat);
   const queue = [startPos];
+  let head = 0;
 
-  while (queue.length > 0) {
-    const pos = queue.shift();
+  while (head < queue.length) {
+    const pos = queue[head++];
     for (const { dx, dy } of DIRS4) {
       const { path } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length > 0) {
@@ -605,9 +606,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   landingVisited.set(stateKey(start, 4, 0), 0);
   depths.set(posKey(start), 0);
   const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4 }];
+  let bfsHead = 0;
 
-  while (bfsQueue.length > 0) {
-    const { pos, depth, worldState, di } = bfsQueue.shift();
+  while (bfsHead < bfsQueue.length) {
+    const { pos, depth, worldState, di } = bfsQueue[bfsHead++];
 
     if ((landingVisited.get(stateKey(pos, di, worldState)) ?? depth) < depth) continue;
 

@@ -334,13 +334,15 @@ function _executeMove(dx, dy) {
         // Second press into the same blocked one-way — backtrack to last entry-side gear.
         state.pendingOnewayBreak = null;
         const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
-        if (entryIdx >= 0) _executeBacktrack(entryIdx);
+        if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
       } else {
         state.pendingOnewayBreak = { dx, dy, owx, owy };
       }
     } else {
       state.pendingOnewayBreak = null;
     }
+    // No movement occurred — reschedule the dead-end check in case the timer was cleared above.
+    _scheduleDeadEndCheck();
     return;
   }
   state.pendingOnewayBreak = null;

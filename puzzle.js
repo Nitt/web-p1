@@ -130,10 +130,11 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
   const key = (x, y, ws) => ws * width * (height + 1) + (y + 1) * width + x;
   const visited = new Set();
   const queue = [{ x: pos.x, y: pos.y, ws: worldState }];
+  let head = 0;
   visited.add(key(pos.x, pos.y, worldState));
 
-  while (queue.length) {
-    const { x, y, ws } = queue.shift();
+  while (head < queue.length) {
+    const { x, y, ws } = queue[head++];
     if (x === goal.x && y === goal.y) return true;
 
     for (const { dx, dy } of DIRS) {
