@@ -4,6 +4,7 @@ import { initInput } from './input.js';
 import { generateHardestLevel } from './generator.js';
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
+import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin, playDeadEnd } from './sounds.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
@@ -223,6 +224,7 @@ function _scheduleDeadEndCheck() {
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
         deadEndBanner.hidden = false;
+        playDeadEnd();
         function _restart() {
           deadEndBanner.hidden = true;
           deadEndBanner.removeEventListener('pointerdown', _restart);
@@ -342,6 +344,7 @@ function _executeMove(dx, dy) {
       state.pendingOnewayBreak = null;
     }
     // No movement occurred — reschedule the dead-end check in case the timer was cleared above.
+    playBlocked();
     _scheduleDeadEndCheck();
     return;
   }
@@ -360,8 +363,7 @@ function _executeMove(dx, dy) {
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) return;
 
   state.isMoving = true;
-
-  // ── Pre-animation chain update for "one back" retraction ─────────────────
+  playSlide();
   // When moving into the cog immediately behind the latest one, shorten the
   // chain state before the animation so the retraction is visible during movement.
   const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === state.gears.length - 2)
@@ -379,6 +381,7 @@ function _executeMove(dx, dy) {
     if (moveToken !== _moveToken) return;
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
+    playLand();
 
     // ── Update gear chain ────────────────────────────────────────────────────
     const gearsBeforeUpdate = state.gears.slice();
@@ -420,6 +423,7 @@ function _executeMove(dx, dy) {
         state.worldState |= (1 << toggleIdx);
       }
       removeCrumble(cx, cy, state.level);
+      playCrumble();
     }
 
     // Key collected: activate its toggle, animate removal, and open paired doors.
@@ -431,11 +435,13 @@ function _executeMove(dx, dy) {
           for (const [flatIdx, reqToggle] of state.level.doorRequirements) {
             if (reqToggle === toggleIdx) {
               openDoor(flatIdx % state.level.width, Math.floor(flatIdx / state.level.width), state.level);
+              playDoorOpen();
             }
           }
         }
       }
       removeKey(kx, ky, state.level);
+      playKeyCollect();
     }
 
     if (
@@ -443,6 +449,7 @@ function _executeMove(dx, dy) {
       target.y === state.level.goal.y
     ) {
       state.won = true;
+      playWin();
       state.queuedMove = null;
       setChainSpinning(false);
       winBanner.hidden = false;
