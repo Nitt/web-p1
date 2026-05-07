@@ -22,13 +22,16 @@ const ONEWAY_OUT = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
 // Add new cell types here as they are introduced (crumbles, keys, doors, etc.).
 export const DIFFICULTY_WEIGHTS = {
   BASE_MOVE:       1.0,   // every slide, regardless of length
+  SLIDE_LENGTH:    0.15,  // bonus per cell traversed beyond the first (longer slides = harder to track)
   STICKY:          0.5,   // landing on a sticky cell (easy to predict, minor load)
   ONEWAY_TRAVERSE: 1.0,   // passing through a one-way in the allowed direction
   ONEWAY_BLOCKED:  2.5,   // stopped by a one-way approaching from the wrong direction
-  CRUMBLE:         3.0,   // stopped by a crumble block (topology change, high load)
+  CRUMBLE:         1.5,   // stopped by a crumble block (records the topology change)
+  CRUMBLE_TRAVERSE: 3.0,  // sliding through a cell where a crumble was previously broken
   KEY:             2.5,   // stopping to collect a key
   DOOR_TRAVERSE:   1.0,   // sliding through an already-open door
   DOOR_LOCKED:     3.5,   // stopped by a locked door (high load — player must find the key)
+  CHAIN_CROSSING:  3.0,   // shortest path requires revisiting a previous waypoint (chain shortens)
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -303,6 +306,8 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
       bestScore = score;
       bestSeed  = seed + i;
       best      = level;
+      // Close enough to the target — no point evaluating more candidates.
+      if (difficultyTarget !== null && bestScore < 0.5) break;
     }
   }
 
@@ -413,9 +418,11 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
 
   // Compute difficulty cost for this slide.
   let cost = (path.length === 0 && !blockedByOneway && !blockedByCrumble && !blockedByDoor) ? 0 : DIFFICULTY_WEIGHTS.BASE_MOVE;
+  if (path.length > 1) cost += (path.length - 1) * DIFFICULTY_WEIGHTS.SLIDE_LENGTH;
   for (const { cell } of path) {
     if (cell === 2)             cost += DIFFICULTY_WEIGHTS.STICKY;
     if (cell >= 3 && cell <= 6) cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE;
+    if (cell === 7)             cost += DIFFICULTY_WEIGHTS.CRUMBLE_TRAVERSE;
     if (cell === 8)             cost += DIFFICULTY_WEIGHTS.KEY;
     if (cell === 9)             cost += DIFFICULTY_WEIGHTS.DOOR_TRAVERSE;
   }
@@ -603,6 +610,15 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const landingVisited  = new Map();
   const depths          = new Map();
 
+  // Parent-pointer tables for path-crossing detection (added after BFS completes).
+  // parentOf     : stateKey → { fromKey, landing: {x,y} }
+  // bestKeyForPos: posFlat  → stateKey at minimum depth (in-grid cells only)
+  const parentOf      = new Map();
+  const bestKeyForPos = new Map();
+
+  const startKey = stateKey(start, 4, 0);
+  parentOf.set(startKey, { fromKey: null, landing: start });
+
   landingVisited.set(stateKey(start, 4, 0), 0);
   depths.set(posKey(start), 0);
   const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4 }];
@@ -632,6 +648,9 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const lk = stateKey(landing, i, effectiveWS);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
+          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing });
+          const pf = posKey(landing);
+          if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
           bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
         }
       }
@@ -644,6 +663,9 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const lk = stateKey(from, i, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
+          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from });
+          const pf = posKey(from);
+          if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
           bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i });
         }
       }
@@ -734,6 +756,35 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const difficultyArray = new Float32Array(width * height).fill(-1);
   for (const [k, d] of depths)       depthArray[k]      = d;
   for (const [k, d] of difficulties) difficultyArray[k] = d;
+
+  // ── Chain-crossing bonus ──────────────────────────────────────────────────
+  // For every valid goal candidate, trace back its shortest path via parentOf.
+  // If the traced sequence of landing cells contains any duplicate (i.e. the
+  // optimal solution requires revisiting a waypoint, shortening the chain),
+  // award a CHAIN_CROSSING difficulty bonus.  The goal-picker below then
+  // naturally favours these cells when comparing candidates.
+  for (let k = 0; k < width * height; k++) {
+    if (difficultyArray[k] < 0) continue;
+    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;
+    if (cells[k] >= 3 && cells[k] <= 6) continue;
+    const key = bestKeyForPos.get(k);
+    if (key === undefined) continue;
+    // Trace path back to start; detect any repeated in-grid landing position.
+    const seen = new Set();
+    let cur = key;
+    let hasCrossing = false;
+    while (cur !== null && cur !== undefined) {
+      const entry = parentOf.get(cur);
+      if (!entry) break;
+      if (entry.landing && entry.landing.y >= 0) {
+        const flat = posKey(entry.landing);
+        if (seen.has(flat)) { hasCrossing = true; break; }
+        seen.add(flat);
+      }
+      cur = entry.fromKey;
+    }
+    if (hasCrossing) difficultyArray[k] += DIFFICULTY_WEIGHTS.CHAIN_CROSSING;
+  }
 
   // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
   // Exclude walls, crumbles (goal hidden under crumble = unreachable), keys, doors,
