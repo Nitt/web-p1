@@ -16,6 +16,11 @@ let playerEl = null;
 let goalEl = null;
 let chainSvgEl = null;
 let counterSpan = null;
+let boatEl = null;
+let waterlineEl = null;
+let skyEl = null;
+let containerEl = null;
+let _currentLevel = null;
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
@@ -44,6 +49,9 @@ export function buildGrid(container, level) {
   container.innerHTML = '';
   container.style.setProperty('--cols', level.width);
   container.style.setProperty('--rows', level.height);
+
+  containerEl = container;
+  _currentLevel = level;
 
   gridEl = document.createElement('div');
   gridEl.className = 'grid';
@@ -130,6 +138,24 @@ export function buildGrid(container, level) {
   counterSpan.className = 'chain-counter';
   playerEl.appendChild(counterSpan);
   gridEl.appendChild(playerEl);
+
+  // Sky, waterline, and boat overlays (appended to container, above the grid)
+  skyEl = document.createElement('div');
+  skyEl.className = 'sky-gradient';
+  container.appendChild(skyEl);
+
+  waterlineEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  waterlineEl.setAttribute('class', 'waterline-svg');
+  container.appendChild(waterlineEl);
+
+  boatEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  boatEl.setAttribute('class', 'boat-svg');
+  boatEl.setAttribute('viewBox', '0 0 100 60');
+  _drawBoat();
+  container.appendChild(boatEl);
+
+  // Initial positioning (deferred one frame so layout is complete)
+  requestAnimationFrame(() => _updateBoatAndWaterline(level));
 }
 
 /**
@@ -186,6 +212,7 @@ export function animatePlayer(from, to, level, onDone) {
 export function repositionOverlays(playerPos, level) {
   _placeOverlay(playerEl, playerPos.x, playerPos.y, level);
   _placeOverlay(goalEl,   level.goal.x, level.goal.y, level);
+  _updateBoatAndWaterline(level);
 }
 
 /**
@@ -288,6 +315,11 @@ function _redrawChain(px, py) {
   const H = gridRect.height;
   chainSvgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
+  // Scale all gear/chain dimensions relative to the current cell size.
+  // 50px is the reference cell size at which the hardcoded values were tuned.
+  const cellSize = W / level.width;
+  const scale    = cellSize / 68;
+
   // Build the list of points: start cell → each gear → current player pixel
   const points = [
     _cellPixel(level.start.x, level.start.y, level),
@@ -299,10 +331,13 @@ function _redrawChain(px, py) {
 
   const NS = 'http://www.w3.org/2000/svg';
 
-  // Linked chain along the path (replaces the old rope polyline)
-  _drawChainLinks(points, NS);
+  // Linked chain along the path
+  _drawChainLinks(points, NS, scale);
 
   // Gear shapes at each waypoint (skip start and player positions)
+  const gearOuterR = 22.5 * scale;
+  const gearInnerR = 15   * scale;
+  const gearHoleR  = 6.25 * scale;
   const spinAngle = _chainSpinning
     ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
     : 0;
@@ -312,16 +347,16 @@ function _redrawChain(px, py) {
     gGroup.setAttribute('transform', `translate(${points[i].x},${points[i].y}) rotate(${spinAngle})`);
 
     const g = document.createElementNS(NS, 'path');
-    g.setAttribute('d', _gearPath(0, 0, 22.5, 15, 8));
+    g.setAttribute('d', _gearPath(0, 0, gearOuterR, gearInnerR, 8));
     g.setAttribute('fill', 'rgb(50,70,110)');
     g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
-    g.setAttribute('stroke-width', '0.8');
+    g.setAttribute('stroke-width', String(0.8 * scale));
     gGroup.appendChild(g);
 
     const hole = document.createElementNS(NS, 'circle');
     hole.setAttribute('cx', '0');
     hole.setAttribute('cy', '0');
-    hole.setAttribute('r', '6.25');
+    hole.setAttribute('r', String(gearHoleR));
     hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
     gGroup.appendChild(hole);
 
@@ -338,10 +373,15 @@ function _redrawChain(px, py) {
  * the next perpendicular) to mimic the look of a real linked chain.
  * When _chainSpinning is true the links scroll at CHAIN_LINK_SPEED px/ms.
  */
-function _drawChainLinks(points, NS) {
+function _drawChainLinks(points, NS, scale = 1) {
   if (points.length < 2) return;
 
-  // Build segments with cumulative distance tracking
+  const orx  = CHAIN_LINK_OUTER_RX * scale;
+  const ory  = CHAIN_LINK_OUTER_RY * scale;
+  const irx  = CHAIN_LINK_INNER_RX * scale;
+  const iry  = CHAIN_LINK_INNER_RY * scale;
+  const pitch = CHAIN_LINK_PITCH   * scale;
+  const thinRy = 3.2 * scale;
   const segs = [];
   let totalLen = 0;
   for (let i = 1; i < points.length; i++) {
@@ -371,31 +411,21 @@ function _drawChainLinks(points, NS) {
     }
   }
 
-  // Scroll offset driven by actual chain path length — links shift exactly as
-  // fast as the chain grows or shrinks, matching the player animation speed.
+  // Scroll offset driven by actual chain path length
   const rawOff  = _chainSpinning ? totalLen : 0;
-  const offset  = ((rawOff % CHAIN_LINK_PITCH) + CHAIN_LINK_PITCH) % CHAIN_LINK_PITCH;
+  const offset  = ((rawOff % pitch) + pitch) % pitch;
 
   // Determine the starting link-index parity so the alternation is stable
-  const baseIdx = Math.floor(rawOff / CHAIN_LINK_PITCH);
+  const baseIdx = Math.floor(rawOff / pitch);
 
-  // Collect all link transforms in a single pass, then render odd-indexed links
-  // first (behind) and even-indexed links second (in front) — this creates the
-  // classic over-under interlocking illusion at crossings.
-  const orx = CHAIN_LINK_OUTER_RX;
-  const ory = CHAIN_LINK_OUTER_RY;
-  const irx = CHAIN_LINK_INNER_RX;
-  const iry = CHAIN_LINK_INNER_RY;
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
   const ringPath =
     `M ${orx},0 A ${orx},${ory},0,1,0,${-orx},0 A ${orx},${ory},0,1,0,${orx},0 Z ` +
     `M ${irx},0 A ${irx},${iry},0,1,1,${-irx},0 A ${irx},${iry},0,1,1,${irx},0 Z`;
-  // Edge-on link: pill/stadium shape (rounded rectangle, fully rounded ends)
-  const thinRy = 3.2;
 
   const linkTransforms = [];
   let linkIdx = 0;
-  for (let d = offset; d <= totalLen; d += CHAIN_LINK_PITCH) {
+  for (let d = offset; d <= totalLen; d += pitch) {
     const pt = sample(d);
     if (!pt) break;
     // Both link types keep long axis along the chain — no extraAngle rotation
@@ -413,7 +443,7 @@ function _drawChainLinks(points, NS) {
       path.setAttribute('fill', 'rgba(65,85,130,0.95)');
       path.setAttribute('fill-rule', 'evenodd');
       path.setAttribute('stroke', 'rgba(190,215,245,0.85)');
-      path.setAttribute('stroke-width', '0.6');
+      path.setAttribute('stroke-width', String(0.6 * scale));
       g.appendChild(path);
     } else {
       const rect = document.createElementNS(NS, 'rect');
@@ -425,7 +455,7 @@ function _drawChainLinks(points, NS) {
       rect.setAttribute('ry', thinRy);
       rect.setAttribute('fill', 'rgba(50,68,110,0.9)');
       rect.setAttribute('stroke', 'rgba(150,185,230,0.7)');
-      rect.setAttribute('stroke-width', '0.5');
+      rect.setAttribute('stroke-width', String(0.5 * scale));
       g.appendChild(rect);
     }
     return g;
@@ -466,6 +496,177 @@ function _gearPath(cx, cy, outerR, innerR, teeth = 8) {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Position and draw the boat SVG above the start cell,
+ * and the waterline SVG at the top edge of the grid.
+ */
+function _updateBoatAndWaterline(level) {
+  if (!boatEl || !waterlineEl || !gridEl || !containerEl) return;
+  const gridRect      = gridEl.getBoundingClientRect();
+  const containerRect = containerEl.getBoundingClientRect();
+
+  const gLeft = gridRect.left - containerRect.left;
+  const gTop  = gridRect.top  - containerRect.top;
+  const gW    = gridRect.width;
+  const cellW = gridRect.width  / level.width;
+  const cellH = gridRect.height / level.height;
+
+  // ── Waterline ────────────────────────────────────────────────────────
+  // Wave band height + extends 2.5 cells into the grid for water effect
+  const wlH    = Math.max(8, cellH * 0.18);
+  const waterH = wlH + cellH * 2.5;
+  waterlineEl.style.left   = gLeft + 'px';
+  waterlineEl.style.top    = (gTop - wlH * 0.5) + 'px';
+  waterlineEl.style.width  = gW    + 'px';
+  waterlineEl.style.height = waterH + 'px';
+  _drawWaterline(gW, wlH, waterH);
+
+  // ── Boat ─────────────────────────────────────────────────────────────
+  // Hull deck line is at y≈34 out of viewBox height 60
+  // Align that line with the waterline (gTop)
+  const boatW   = cellW * 5.7;
+  const boatH   = cellH * 3.0;
+  const startCx = gLeft + (level.start.x + 0.5) * cellW;
+  boatEl.style.left   = (startCx - boatW / 2) + 'px';
+  boatEl.style.top    = (gTop - boatH * (34 / 60)) + 'px';
+  boatEl.style.width  = boatW + 'px';
+  boatEl.style.height = boatH + 'px';
+
+  // ── Sky gradient ──────────────────────────────────────────────────────
+  if (skyEl) {
+    const skyH = Math.max(0, gTop - wlH * 0.5);
+    skyEl.style.left    = gLeft + 'px';
+    skyEl.style.top     = '0px';
+    skyEl.style.width   = gW    + 'px';
+    skyEl.style.height  = skyH  + 'px';
+    skyEl.style.background = 'linear-gradient(to bottom, #3a7abd 0%, #6aaee0 45%, #a8d4f0 80%, rgba(168,212,240,0.3) 100%)';
+  }
+}
+
+function _drawBoat() {
+  if (!boatEl) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  boatEl.innerHTML = '';
+
+  // Hull body
+  const hull = document.createElementNS(NS, 'path');
+  hull.setAttribute('d', 'M 12 34 Q 50 52 88 34 L 82 44 Q 50 60 18 44 Z');
+  hull.setAttribute('fill', '#5a3a1a');
+  hull.setAttribute('stroke', '#3a2010');
+  hull.setAttribute('stroke-width', '1');
+  hull.setAttribute('stroke-linejoin', 'round');
+  boatEl.appendChild(hull);
+
+  // Hull deck
+  const deck = document.createElementNS(NS, 'path');
+  deck.setAttribute('d', 'M 12 34 Q 50 22 88 34');
+  deck.setAttribute('fill', '#8a5a2a');
+  deck.setAttribute('stroke', '#5a3a1a');
+  deck.setAttribute('stroke-width', '1.5');
+  boatEl.appendChild(deck);
+
+  // Cabin
+  const cabin = document.createElementNS(NS, 'rect');
+  cabin.setAttribute('x', '36'); cabin.setAttribute('y', '15');
+  cabin.setAttribute('width', '28'); cabin.setAttribute('height', '18');
+  cabin.setAttribute('rx', '3'); cabin.setAttribute('ry', '3');
+  cabin.setAttribute('fill', '#c8a060');
+  cabin.setAttribute('stroke', '#8a6030'); cabin.setAttribute('stroke-width', '1');
+  boatEl.appendChild(cabin);
+
+  // Window
+  const win = document.createElementNS(NS, 'rect');
+  win.setAttribute('x', '43'); win.setAttribute('y', '18');
+  win.setAttribute('width', '8'); win.setAttribute('height', '7');
+  win.setAttribute('rx', '2');
+  win.setAttribute('fill', '#a8d8f0');
+  win.setAttribute('stroke', '#7a96b0'); win.setAttribute('stroke-width', '0.8');
+  boatEl.appendChild(win);
+
+  // Mast
+  const mast = document.createElementNS(NS, 'line');
+  mast.setAttribute('x1', '50'); mast.setAttribute('y1', '15');
+  mast.setAttribute('x2', '50'); mast.setAttribute('y2', '2');
+  mast.setAttribute('stroke', '#5a3a1a'); mast.setAttribute('stroke-width', '1.5');
+  boatEl.appendChild(mast);
+
+  // Flag
+  const flag = document.createElementNS(NS, 'path');
+  flag.setAttribute('d', 'M 50 2 L 61 6 L 50 10 Z');
+  flag.setAttribute('fill', '#e04020');
+  flag.setAttribute('stroke', '#a02800'); flag.setAttribute('stroke-width', '0.5');
+  boatEl.appendChild(flag);
+}
+
+function _drawWaterline(W, wlH, totalH) {
+  if (!waterlineEl) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  waterlineEl.innerHTML = '';
+  waterlineEl.setAttribute('viewBox', `0 0 ${W} ${totalH}`);
+
+  const amp    = wlH * 0.38;
+  const cy     = wlH * 0.55;
+  const period = Math.max(30, W / 5);
+  const cp     = period / 4;
+
+  // Wave scrolls LEFT (natural ocean motion).
+  // At t=0 visible area is x=[0,W]; at t=1 (translate=-period) visible is x=[period, W+period].
+  // So wave path must cover x=[0, W + period*2] to always fill the visible window.
+  const coverW   = W + period * 2;
+  const nPeriods = Math.ceil(coverW / period) + 1;
+
+  let waveLine = `M 0 ${cy}`;
+  for (let i = 0; i < nPeriods; i++) {
+    const x0 = i * period;
+    waveLine += ` C ${x0 + cp} ${cy - amp}, ${x0 + period - cp} ${cy + amp}, ${x0 + period} ${cy}`;
+  }
+  const waveRight = nPeriods * period;
+  const waveFill  = waveLine + ` L ${waveRight} ${totalH} L 0 ${totalH} Z`;
+
+  const g = document.createElementNS(NS, 'g');
+
+  // Gradient fill: solid water colour at the wave, fades to transparent lower
+  const defs = document.createElementNS(NS, 'defs');
+  const grad = document.createElementNS(NS, 'linearGradient');
+  grad.setAttribute('id', 'wlFade');
+  grad.setAttribute('x1', '0'); grad.setAttribute('y1', '0');
+  grad.setAttribute('x2', '0'); grad.setAttribute('y2', '1');
+  const s0 = document.createElementNS(NS, 'stop');
+  s0.setAttribute('offset', '0%');    s0.setAttribute('stop-color', 'rgba(70,145,210,0.45)');
+  const s1 = document.createElementNS(NS, 'stop');
+  s1.setAttribute('offset', '55%');   s1.setAttribute('stop-color', 'rgba(50,120,185,0.20)');
+  const s2 = document.createElementNS(NS, 'stop');
+  s2.setAttribute('offset', '100%');  s2.setAttribute('stop-color', 'rgba(50,120,185,0)');
+  grad.appendChild(s0); grad.appendChild(s1); grad.appendChild(s2);
+  defs.appendChild(grad);
+  waterlineEl.appendChild(defs);
+
+  const fill = document.createElementNS(NS, 'path');
+  fill.setAttribute('d', waveFill);
+  fill.setAttribute('fill', 'url(#wlFade)');
+  g.appendChild(fill);
+
+  const stroke = document.createElementNS(NS, 'path');
+  stroke.setAttribute('d', waveLine);
+  stroke.setAttribute('fill', 'none');
+  stroke.setAttribute('stroke', 'rgba(70,140,200,0.80)');
+  stroke.setAttribute('stroke-width', '1.5');
+  stroke.setAttribute('stroke-linecap', 'round');
+  g.appendChild(stroke);
+
+  // Scroll left by one period — seamless because wave covers extra width to the right
+  const anim = document.createElementNS(NS, 'animateTransform');
+  anim.setAttribute('attributeName', 'transform');
+  anim.setAttribute('type', 'translate');
+  anim.setAttribute('from', '0 0');
+  anim.setAttribute('to', `-${period} 0`);
+  anim.setAttribute('dur', '2.5s');
+  anim.setAttribute('repeatCount', 'indefinite');
+  g.appendChild(anim);
+
+  waterlineEl.appendChild(g);
+}
 
 function _cellPixel(x, y, level) {
   // Read the actual rendered position of the cell element rather than
