@@ -80,8 +80,6 @@ html, body {
   display: grid;
   grid-template-columns: repeat(var(--cols), 1fr);
   gap: 3px;
-  background: var(--color-grid-gap);
-  border: 3px solid var(--color-grid-gap);
   border-radius: 6px;
   overflow: hidden;
 
@@ -359,6 +357,9 @@ body.debug #debug-btn {
   #dpad { opacity: 0.35; }
   #dpad:hover { opacity: 1; }
 }
+
+/* Hide top-row wall cells — the entry tunnel sides the player never sees */
+.cell.entry-wall { visibility: hidden; }
 
 /* ─── start cell ─────────────────────────────────────────────────────────── */
 

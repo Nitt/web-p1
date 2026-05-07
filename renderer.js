@@ -61,6 +61,9 @@ export function buildGrid(container, level) {
     for (let x = 0; x < level.width; x++) {
       const cell = document.createElement('div');
       cell.className = 'cell';
+      // Hide top-row wall cells (entry tunnel sides) — boat/waterline covers them.
+      // The center entry cell (level.start.x) is kept visible for the chain.
+      if (y === 0 && x !== level.start.x) cell.classList.add('entry-wall');
       const type = level.cells[y * level.width + x];
       if (type === CellType.WALL)    cell.dataset.type = 'wall';
       if (type === CellType.STICKY)  cell.dataset.type = 'sticky';
@@ -517,7 +520,7 @@ function _updateBoatAndWaterline(level) {
   const wlH    = Math.max(8, cellH * 0.18);
   const waterH = wlH + cellH * 2.5;
   waterlineEl.style.left   = gLeft + 'px';
-  waterlineEl.style.top    = (gTop - wlH * 0.5) + 'px';
+  waterlineEl.style.top    = (gTop - wlH * 0.5 + cellH * 0.5) + 'px';
   waterlineEl.style.width  = gW    + 'px';
   waterlineEl.style.height = waterH + 'px';
   _drawWaterline(gW, wlH, waterH);
