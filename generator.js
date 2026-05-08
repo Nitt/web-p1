@@ -621,10 +621,14 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const stateKey = (p, di, ws) => (ws * width * height + p.y * width + p.x) * 5 + di;
   // di = 0..3 index into DIRS4, or 4 for the start node (no incoming direction).
 
-  // ── Pass 1: BFS for move-count depths ────────────────────────────────────
-  // depths tracks the minimum slide-count at which a cell is reachable (either
-  // as a landing or as a cell the player passes through on that slide).
-  // Depths are set per-cell as the slide is simulated inline — no path list.
+  // ── Pass 1: BFS for gear depths ──────────────────────────────────────────
+  // depths tracks the minimum *gear* cost at which a cell is reachable.
+  // Gear cost = minimum number of unique-new landing positions that must be
+  // visited from the start to reach this cell.  For most moves this equals
+  // slide count, but crumble-and-backtrack sequences break the equality:
+  // a player can break a crumble and immediately return to their source
+  // position for 0 net gears, so those crumble stops do not inflate the
+  // budget.  The "free-backtrack" enqueue below handles this case.
   const landingVisited  = new Map();
   const depths          = new Map();
 
@@ -685,6 +689,20 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           const pf = posKey(from);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
           bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i });
+        }
+
+        // "Free-backtrack" variant: the player can break the crumble and immediately
+        // return to pos for 0 net gears — the crumble-stop gear at `from` is reclaimed
+        // on the return slide.  Models the sequence: pos → from (crumble breaks) →
+        // pos (reclaim `from`) → anywhere through the now-broken crumble.
+        // Enqueue pos with the crumble broken at the same gear-depth as pos itself.
+        const freeKey = stateKey(pos, 4, newWorldState);
+        if ((landingVisited.get(freeKey) ?? Infinity) > depth) {
+          landingVisited.set(freeKey, depth);
+          parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: pos });
+          const pk = posKey(pos);
+          if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
+          bfsQueue.push({ pos: pos, depth: depth, worldState: newWorldState, di: 4 });
         }
       }
     }
