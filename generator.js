@@ -37,7 +37,7 @@ export const DIFFICULTY_WEIGHTS = {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Generate a level using a randomised DFS carving algorithm.
+ * Generate a level using a randomised BFS carving algorithm.
  *
  * @param {number} width   - inner column count (no padding)
  * @param {number} height  - inner row count
