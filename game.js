@@ -221,14 +221,16 @@ function _scheduleDeadEndCheck() {
 // ─── one-way backtrack helpers ────────────────────────────────────────────────
 
 /**
- * Returns the index in state.gears of the last gear that is on the "entry side"
+ * Returns the index in state.gears of the last gear that is on the far side
  * of the one-way at (owx, owy) when approaching in direction (dx, dy).
- * Entry side: (g.x - owx)*dx + (g.y - owy)*dy < 0
+ * Far side: (g.x - owx)*dx + (g.y - owy)*dy > 0  (ahead of the one-way in travel direction).
+ * This is the gear the chain originally passed through when traversing the one-way,
+ * so backtracking always lands on an existing chain position rather than sliding past.
  */
 function _findOnewayEntryGear(owx, owy, dx, dy) {
   for (let i = state.gears.length - 1; i >= 0; i--) {
     const g = state.gears[i];
-    if ((g.x - owx) * dx + (g.y - owy) * dy < 0) return i;
+    if ((g.x - owx) * dx + (g.y - owy) * dy > 0) return i;
   }
   return -1;
 }
@@ -238,45 +240,36 @@ function _findOnewayEntryGear(owx, owy, dx, dy) {
  * Mirrors the revisit path in _executeMove.
  */
 function _executeBacktrack(gearIdx) {
-  const backtrackPos = state.gears[gearIdx];
-
-  const isOneBack = gearIdx === state.gears.length - 2;
-  if (isOneBack) {
-    drawChain(
-      state.gears.slice(0, gearIdx + 1),
-      state.playerPos, state.gearsLeft + 1, state.totalGears, state.level,
-    );
-  }
+  // gearIdx = -1 is a special signal meaning "backtrack all the way to the boat".
+  const backtrackPos = gearIdx < 0 ? state.level.start : state.gears[gearIdx];
 
   state.isMoving = true;
   setChainSpinning(true, -1);
 
+  // Pre-apply gear state so the count is correct during retract animation.
+  const gearsBeforeRetract = state.gears.slice();
+  const freed = state.gears.length - gearIdx - 1;   // works for gearIdx=-1: length+1-1 = length
+  state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
+  state.gearsLeft += freed;
+
   const moveToken = _moveToken;
-  animatePlayer(state.playerPos, backtrackPos, state.level, () => {
+
+  // Phase 1: retract tail of chain back to the backtrack gear while player stands still.
+  // Keeps gears[0..gearIdx] visible; gearIdx+1 = 0 for boat (retract everything).
+  _animateChainRetract(gearsBeforeRetract, Math.max(0, gearIdx + 1), state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
     if (moveToken !== _moveToken) return;
-    state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
-    state.isMoving  = false;
 
-    const gearsBeforeUpdate = state.gears.slice();
-    const freed = state.gears.length - gearIdx - 1;
-    state.gears     = state.gears.slice(0, gearIdx + 1);
-    state.gearsLeft += freed;
+    // Phase 2: player slides back through the one-way to the backtrack gear.
+    animatePlayer(state.playerPos, backtrackPos, state.level, () => {
+      if (moveToken !== _moveToken) return;
+      state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
+      state.isMoving  = false;
 
-    const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length;
-    if (needsRetractAnim) {
-      state.isMoving = true;
-      _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
-        state.isMoving = false;
-        setChainSpinning(false);
-        _scheduleDeadEndCheck();
-        _flushQueuedMove();
-      });
-    } else {
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       setChainSpinning(false);
       _scheduleDeadEndCheck();
       _flushQueuedMove();
-    }
+    });
   });
 }
 
@@ -311,15 +304,13 @@ function _executeMove(dx, dy) {
   if (!didMove && !hasCrumble) {
     if (target.blockedByOneway) {
       const { x: owx, y: owy } = target.blockedByOneway;
-      const p = state.pendingOnewayBreak;
-      if (p && p.dx === dx && p.dy === dy && p.owx === owx && p.owy === owy) {
-        // Second press into the same blocked one-way — backtrack to last entry-side gear.
-        state.pendingOnewayBreak = null;
-        const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
-        if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
-      } else {
-        state.pendingOnewayBreak = { dx, dy, owx, owy };
-      }
+      // Single press: immediately backtrack to the last gear on the far side of the one-way.
+      state.pendingOnewayBreak = null;
+      const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
+      if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
+      // No gear on the far side — check if the boat (start position) is there.
+      const s = state.level.start;
+      if ((s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
     } else {
       state.pendingOnewayBreak = null;
     }
@@ -338,9 +329,9 @@ function _executeMove(dx, dy) {
   // no new gear consumed) or on a fresh cell (requires a free gear).
   const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
   const willUseGear = !isBoatEntry && revisitIdx < 0;
-  if (willUseGear && state.gearsLeft === 0) return;  // silently blocked — no gears left
+  if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return; }  // no gears left
   // With 0 gears, only the immediately previous cog can be revisited (not older ones).
-  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) return;
+  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return; }
 
   state.isMoving = true;
   playSlide();
