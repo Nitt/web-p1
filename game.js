@@ -1,7 +1,7 @@
 import { slidePlayer, buildToggleMap, canReachGoal } from './puzzle.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor } from './renderer.js';
 import { initInput } from './input.js';
-import { generateHardestLevel } from './generator.js';
+import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
 import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin, playDeadEnd } from './sounds.js';
@@ -19,26 +19,6 @@ let _deadEndTimer = null;
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
 const QUEUE_WINDOW_MS = 300;
-
-// ─── background level pre-generation ─────────────────────────────────────────
-const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });
-_worker.onerror = (e) => console.error('[game] worker error:', e.message, e);
-let _pendingLevel  = null;   // Promise → level object when worker finishes
-let _pendingRecipe = null;   // recipe used for the pending pre-generation
-
-function _pregenNext(seed, id, recipe) {
-  _pendingRecipe = recipe;
-  _pendingLevel = new Promise(resolve => {
-    _worker.onmessage = ({ data }) => resolve(data);
-  });
-  _worker.postMessage({
-    width: 9, height: 9, seed, id,
-    candidates:       recipe.candidates,
-    weights:          recipe.weights,
-    useKeyDoor:       recipe.useKeyDoor,
-    difficultyTarget: recipe.difficultyTarget,
-  });
-}
 
 // ─── game state ───────────────────────────────────────────────────────────────
 const state = {
@@ -126,7 +106,7 @@ function loadLevel(level) {
 
   // Kick off background generation of the next level immediately.
   const nextRecipe = getRecipe(state.nextId, state.levelsSinceKeyDoor);
-  _pregenNext(state.nextSeed, state.nextId, nextRecipe);
+  pregenNext(state.nextSeed, state.nextId, nextRecipe);
 
   // Auto-slide the diver down from the surface into the water.
   _executeMove(0, 1);
@@ -135,7 +115,7 @@ function loadLevel(level) {
 function _nextLevel() {
   const seed = state.nextSeed;
   const id   = state.nextId;
-  state.nextSeed += _pendingRecipe?.candidates ?? 300;
+  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
   state.nextId   += 1;
 
   // Update progression counters before loading so loadLevel's pre-gen is accurate.
@@ -145,10 +125,10 @@ function _nextLevel() {
 
   // Use the pre-generated level if ready; otherwise generate synchronously with
   // a reduced candidate count to avoid blocking the main thread too long.
-  Promise.resolve(_pendingLevel).then(level => {
+  Promise.resolve(takePendingLevel()).then(level => {
     if (!level) {
       const recipe = getRecipe(id, state.levelsSinceKeyDoor);
-      level = generateHardestLevel(9, 9, { seed, id, ...recipe, candidates: 20 });
+      level = generateFallback(seed, id, recipe);
     }
     loadLevel(level);
   });

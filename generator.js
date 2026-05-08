@@ -4,17 +4,18 @@ import { makeRng } from './random.js';
 const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5 };
 
 const DIRS = [
-  { key: 'LEFT',  dx: -1, dy:  0 },
-  { key: 'UP',    dx:  0, dy: -1 },
-  { key: 'RIGHT', dx:  1, dy:  0 },
-  { key: 'DOWN',  dx:  0, dy:  1 },
+  { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
+  { key: 'UP',    idx: 1, dx:  0, dy: -1 },
+  { key: 'RIGHT', idx: 2, dx:  1, dy:  0 },
+  { key: 'DOWN',  idx: 3, dx:  0, dy:  1 },
 ];
 
 // Probability weights for choosing a cell type when carving into UNTOUCHED — used as defaults
 const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.00 };
 
-// Maps a ONEWAY direction key → the CellType value used in the output level
-const ONEWAY_OUT = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
+// Maps a ONEWAY direction index (matching DIRS .idx) → the CellType value used in the output level
+// Order: LEFT(0)→3, UP(1)→5, RIGHT(2)→4, DOWN(3)→6
+const ONEWAY_OUT = [3, 5, 4, 6];
 
 // ── Difficulty weights ────────────────────────────────────────────────────────
 // Each entry represents the cognitive cost added to a move when that interaction
@@ -83,19 +84,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   // ── State tracking ──
-  // visitedDirs: cellIndex → Set<dirKey> (directions already explored from here)
+  // visitedDirs: cellIndex → number  (4-bit bitmask, one bit per direction index)
   const visitedDirs  = new Map();
-  // onewayDir: cellIndex → dirKey  (the direction a ONEWAY cell allows)
+  // onewayDir: cellIndex → dirIdx  (the direction index a ONEWAY cell allows)
   const onewayDir    = new Map();
   const branchPosSet = new Set();
   const branchQueue  = [];
 
-  function hasVisited(i, dirKey) {
-    return visitedDirs.get(i)?.has(dirKey) ?? false;
+  // Direction-index helpers — faster than Set<string> operations.
+  function hasVisited(i, dirIdx) {
+    return ((visitedDirs.get(i) ?? 0) & (1 << dirIdx)) !== 0;
   }
-  function markVisited(i, dirKey) {
-    if (!visitedDirs.has(i)) visitedDirs.set(i, new Set());
-    visitedDirs.get(i).add(dirKey);
+  function markVisited(i, dirIdx) {
+    visitedDirs.set(i, (visitedDirs.get(i) ?? 0) | (1 << dirIdx));
   }
   function enqueue(x, y) {
     const key = `${x},${y}`;
@@ -105,10 +106,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // For exporting/snapshotting visitedDirs in the Set<string> format expected
+  // by the renderer and debug visualiser.
+  const DIR_KEYS = ['LEFT', 'UP', 'RIGHT', 'DOWN'];
+  function dirBitsToSet(bits) {
+    const set = new Set();
+    for (let i = 0; i < 4; i++) if (bits & (1 << i)) set.add(DIR_KEYS[i]);
+    return set;
+  }
+
   // Pre-mark the entry cell visited in all directions so carve() can never
   // enqueue it or explore laterally from it.  It remains G.EMPTY so the player
   // slides through it, but it is never a BFS decision point.
-  for (const d of DIRS) markVisited(idx(startX, startY), d.key);
+  for (let i = 0; i < DIRS.length; i++) markVisited(idx(startX, startY), i);
 
   function pickType() {
     let r = rng() * weightTotal;
@@ -122,19 +132,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // ── Step recorder (no-op when _steps is null) ──
   function rec(fromX, fromY, toX, toY, label) {
     if (!_steps) return;
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, s]) => [k, new Set(s)])), pw, ph, fromX, fromY, toX, toY, label });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, bits]) => [k, dirBitsToSet(bits)])), pw, ph, fromX, fromY, toX, toY, label });
   }
 
   // Carving — slide physics respected: recursion continues same-direction slides
   // through empty/oneway cells (one slide = one logical step).  The only place
   // we enqueue instead of recurse is the post-crumble universe continuation,
   // because that is a genuinely new branch that belongs in the next BFS wave.
-  function carve(dirKey, x, y) {
+  function carve(dirIdx, x, y) {
     const i = idx(x, y);
-    if (hasVisited(i, dirKey)) return;
-    markVisited(i, dirKey);
+    if (hasVisited(i, dirIdx)) return;
+    markVisited(i, dirIdx);
 
-    const dir = DIRS.find(d => d.key === dirKey);
+    const dir = DIRS[dirIdx];
     const nx = x + dir.dx;
     const ny = y + dir.dy;
     const ni = idx(nx, ny);
@@ -146,7 +156,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (type === 'empty') {
           cells[ni] = G.EMPTY;
           rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-          carve(dirKey, nx, ny);          // same slide, continue in same direction
+          carve(dirIdx, nx, ny);          // same slide, continue in same direction
         } else if (type === 'oneway') {
           // Only place a one-way if the cell beyond it is reachable
           const nnx = nx + dir.dx;
@@ -155,12 +165,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (cells[nni] === G.UNTOUCHED || cells[nni] === G.EMPTY) {
             cells[nni] = G.EMPTY;
             cells[ni]  = G.ONEWAY;
-            onewayDir.set(ni, dirKey);
+            onewayDir.set(ni, dirIdx);
           } else {
             cells[ni] = G.EMPTY;
           }
-          rec(x, y, nx, ny, `oneway-${dirKey} (${nx-1},${ny-1})`);
-          carve(dirKey, nx, ny);          // same slide, continue through oneway
+          rec(x, y, nx, ny, `oneway-${dir.key} (${nx-1},${ny-1})`);
+          carve(dirIdx, nx, ny);          // same slide, continue through oneway
         } else if (type === 'block') {
           cells[ni] = G.BLOCK;
           rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
@@ -172,7 +182,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           // Post-crumble parallel universe: from the same pre-crumble cell, the crumble
           // is gone so the slide continues through it.  Re-queue (x,y) with a resumeDir
           // so the continuation fires in BFS order from the actual landing position.
-          branchQueue.push({ x, y, resumeDir: dirKey });
+          branchQueue.push({ x, y, resumeDir: dirIdx });
         } else { // sticky
           cells[ni] = G.STICKY;
           rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
@@ -182,11 +192,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       }
       case G.EMPTY:
         rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // continue slide if direction is new
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);  // continue slide if direction is new
         break;
       case G.CRUMBLE:
         rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirKey)) carve(dirKey, nx, ny);  // parallel universe: crumble is gone, slide through
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);  // parallel universe: crumble is gone, slide through
         break;
       case G.BLOCK:
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
@@ -198,9 +208,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         break;
       case G.ONEWAY: {
         const allowedDir = onewayDir.get(ni);
-        if (allowedDir === dirKey) {
+        if (allowedDir === dirIdx) {
           rec(x, y, nx, ny, `slide-oneway-allowed (${nx-1},${ny-1})`);
-          carve(dirKey, nx, ny);  // correct direction — slide through
+          carve(dirIdx, nx, ny);  // correct direction — slide through
         } else {
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
           enqueue(x, y);          // wrong direction — blocked before it
@@ -215,16 +225,17 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // boat entry.  This ensures the entry cell (startY) is never enqueued as a
   // BFS source and so is never explored laterally — matching the player physics
   // where the first slide always passes through the entry cell.
-  carve('DOWN', startX, startY + 1);
+  carve(3 /* DOWN */, startX, startY + 1);
   while (branchQueue.length > 0) {
     const { x, y, resumeDir } = branchQueue.shift();
-    if (resumeDir) {
-      // Post-crumble parallel universe: un-mark dirKey so carve can slide through the crumble.
-      visitedDirs.get(idx(x, y))?.delete(resumeDir);
+    if (resumeDir !== undefined) {
+      // Post-crumble parallel universe: un-mark dirIdx so carve can slide through the crumble.
+      const ci = idx(x, y);
+      visitedDirs.set(ci, (visitedDirs.get(ci) ?? 0) & ~(1 << resumeDir));
       carve(resumeDir, x, y);
     } else {
-      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, s]) => [k, new Set(s)])), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
-      for (const dir of DIRS) carve(dir.key, x, y);
+      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, bits]) => [k, dirBitsToSet(bits)])), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
+      for (let i = 0; i < DIRS.length; i++) carve(i, x, y);
     }
   }
 
@@ -240,7 +251,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         case G.STICKY:  out = 2; break;   // CellType.STICKY
         case G.ONEWAY: {
           const dk = onewayDir.get(pi);
-          out = dk ? ONEWAY_OUT[dk] : 0;
+          out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
           break;
         }
         case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
@@ -262,23 +273,31 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   const start = { x: startX - 1, y: -1 };
 
-  // First pass: find the goal without any key-door pair, so _tryPlaceKeyDoor
-  // knows which cell to gate behind the door.
-  const initial    = _findGoal(outCells, width, height, start, new Map(), carvedMask);
-  const kdResult   = useKeyDoor ? _tryPlaceKeyDoor(outCells, width, height, start, initial.goal, rng) : null;
-  const doorRequirements = kdResult ? kdResult.doorRequirements : new Map();
+  // Run _findGoal once without any key-door constraints so _tryPlaceKeyDoor knows
+  // which cell to gate.  If key-door placement either fails or is disabled, reuse
+  // this result directly — calling _findGoal a second time with an empty
+  // doorRequirements map would produce identical output.  Only when a door is
+  // actually placed do we need a second pass to recompute difficulty with the
+  // DOOR_LOCKED cost applied.
+  let doorRequirements = new Map();
+  let firstPass = null;
+  if (useKeyDoor) {
+    firstPass = _findGoal(outCells, width, height, start, new Map(), carvedMask);
+    const kdResult = _tryPlaceKeyDoor(outCells, width, height, start, firstPass.goal, rng);
+    if (kdResult) doorRequirements = kdResult.doorRequirements;
+  }
 
-  // Second pass: recompute goal / depths / difficulties now that KEY and DOOR
-  // are placed (reaching the goal may now require collecting the key first).
-  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
+  const { goal, depths, difficulties } = doorRequirements.size > 0 || firstPass === null
+    ? _findGoal(outCells, width, height, start, doorRequirements, carvedMask)
+    : firstPass;
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   // Translate visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
-  for (const [pi, dirs] of visitedDirs) {
+  for (const [pi, bits] of visitedDirs) {
     const px = pi % pw, py = Math.floor(pi / pw);
     if (px >= 1 && px < pw - 1 && py >= 1 && py < ph - 1) {
-      visitedDirsOut.set((py - 1) * width + (px - 1), new Set(dirs));
+      visitedDirsOut.set((py - 1) * width + (px - 1), dirBitsToSet(bits));
     }
   }
 
@@ -555,7 +574,6 @@ function _tryPlaceKeyDoor(cells, width, height, startPos, goalPos, rng) {
  */
 export function computeStepAnalysis(step, width, height, start) {
   const { grid, onewayDir, pw } = step;
-  const ONEWAY_OUT_MAP = { LEFT: 3, RIGHT: 4, UP: 5, DOWN: 6 };
   const outCells = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -567,7 +585,7 @@ export function computeStepAnalysis(step, width, height, start) {
         case 2: out = 2; break; // G.STICKY  → CellType.STICKY
         case 4: {               // G.ONEWAY  → directional CellType
           const dk = onewayDir?.get(pi);
-          out = dk ? ONEWAY_OUT_MAP[dk] : 0;
+          out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
           break;
         }
         case 5: out = 7; break; // G.CRUMBLE → CellType.CRUMBLE

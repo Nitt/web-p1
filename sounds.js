@@ -118,3 +118,11 @@ export function playDeadEnd() {
   osc('sine', 220, 0.20, t, 0.40, 90);
   osc('sine', 165, 0.12, t + 0.10, 0.35, 70);
 }
+
+// Browsers suspend AudioContext on tab hide and don't always auto-resume.
+// Resume as soon as the tab becomes visible again so sounds keep working.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && _ctx?.state === 'suspended') {
+    _ctx.resume();
+  }
+});
