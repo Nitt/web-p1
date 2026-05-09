@@ -346,10 +346,26 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
   // products flip sign, which cancels out in perp() — no negation needed.
   const localDirs = new Array(N).fill(1);
   if (N >= 3) {
-    const s = dirs[0];
-    let prevLD = Math.sign(Math.abs(s.x) - s.y) || 1;
-    for (let i = 1; i < N - 1; i++) {
-      const cross = dirs[i - 1].x * dirs[i].y - dirs[i - 1].y * dirs[i].x;
+    // Propagate prevLD in original placement order (boat→player), which in the reversed
+    // array means iterating from index N-2 (first gear, nearest boat) down to 1 (nearest player).
+    // This ensures straight-through gears inherit from the gear toward the boat, matching
+    // _redrawChain's behaviour.
+    //
+    // dirs[N-2] points from the first gear toward the boat (reversed direction), so the
+    // original boat→gear direction is its negation. The corrected seed formula is
+    // Math.sign(|dx| + dy) instead of Math.sign(|dx| - dy).
+    const seedDir = dirs[N - 2];
+    let prevLD = Math.sign(Math.abs(seedDir.x) + seedDir.y) || 1;
+
+    // When the player is standing on the nearest gear (rawPoints[0] ≈ rawPoints[1]),
+    // dirs[0] is a degenerate fallback (1,0). At i=1 use dirs[1] on both sides of the
+    // cross so it evaluates to 0 and falls back to the already-propagated prevLD.
+    const firstSegDegenerate =
+      Math.hypot(rawPoints[1].x - rawPoints[0].x, rawPoints[1].y - rawPoints[0].y) < 0.5;
+
+    for (let i = N - 2; i >= 1; i--) {
+      const dPrev = (i === 1 && firstSegDegenerate && dirs.length > 1) ? dirs[1] : dirs[i - 1];
+      const cross = dPrev.x * dirs[i].y - dPrev.y * dirs[i].x;
       const ld = cross !== 0 ? Math.sign(cross) : prevLD;
       prevLD = ld;
       localDirs[i] = ld;
@@ -357,8 +373,9 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
     localDirs[0]     = localDirs[1];       // player inherits first gear (reversed)
     localDirs[N - 1] = localDirs[N - 2];   // boat inherits last gear (reversed)
   } else {
+    // Only two points — use the single segment direction with the corrected formula.
     const s  = dirs[0];
-    const ld = Math.sign(Math.abs(s.x) - s.y) || 1;
+    const ld = Math.sign(Math.abs(s.x) + s.y) || 1;
     localDirs[0] = localDirs[1] = ld;
   }
 
