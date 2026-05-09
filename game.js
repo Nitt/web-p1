@@ -246,28 +246,56 @@ function _executeBacktrack(gearIdx) {
   state.isMoving = true;
   setChainSpinning(true, -1);
 
-  // Apply gear state immediately — freed gears are removed from the chain now.
-  const freed = state.gears.length - gearIdx - 1;  // works for gearIdx=-1: length+1-1 = length
+  const freed         = state.gears.length - gearIdx - 1; // works for gearIdx=-1
+  const gearsSnapshot = state.gears.slice();
+
   state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
   state.gearsLeft += freed;
 
   const moveToken = _moveToken;
 
-  // Update _chainState to reflect the freed gears while keeping the player at its
-  // current position. animatePlayer redraws the chain every frame, so the tail
-  // naturally follows the player as it slides back through the one-way.
-  drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+  // Freed gears in forward order (from just after the backtrack target toward the player).
+  // e.g. if gears were [A,B,C,D,E] and we backtrack to B: freedGears = [C,D,E].
+  const freedGears = gearsSnapshot.slice(gearIdx + 1);
 
-  animatePlayer(state.playerPos, backtrackPos, state.level, () => {
+  // Walk the player back one freed gear at a time: E→D, D→C, C→B.
+  // Before each step, strip the "from" gear from the displayed chain so the
+  // chain tail cleanly follows the player rather than snapping all at once.
+  // waypoints: freed gears in reverse (minus the player's starting pos) + backtrack target.
+  // e.g. [D, C, B]
+  const waypoints = [
+    ...freedGears.slice(0, -1).reverse(),
+    backtrackPos,
+  ];
+
+  let displayGears = gearsSnapshot.slice();
+
+  function step(waypointIdx, fromPos) {
     if (moveToken !== _moveToken) return;
-    state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
-    state.isMoving  = false;
 
-    drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-    setChainSpinning(false);
-    _scheduleDeadEndCheck();
-    _flushQueuedMove();
-  });
+    // Drop the gear the player is leaving before animating, so the chain tail
+    // never extends past the player toward a gear they have already left.
+    displayGears = displayGears.slice(0, displayGears.length - 1);
+    drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
+
+    const toPos = waypoints[waypointIdx];
+    animatePlayer(fromPos, toPos, state.level, () => {
+      if (moveToken !== _moveToken) return;
+      state.playerPos = { x: toPos.x, y: toPos.y };
+
+      if (waypointIdx === waypoints.length - 1) {
+        state.isMoving = false;
+        drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+        setChainSpinning(false);
+        _scheduleDeadEndCheck();
+        _flushQueuedMove();
+      } else {
+        step(waypointIdx + 1, toPos);
+      }
+    });
+  }
+
+  step(0, state.playerPos);
 }
 
 /** Skip to the next level (debug/test shortcut). */
