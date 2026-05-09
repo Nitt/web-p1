@@ -9,7 +9,7 @@ const ONEWAY_DIR_ATTR = {
 };
 
 // ms per grid cell of travel — feel free to tune
-const SPEED_MS_PER_CELL = 80;
+const SPEED_MS_PER_CELL = 320; // 25% speed (4× slow-mo)
 
 let gridEl = null;
 let playerEl = null;
@@ -32,7 +32,7 @@ let _chainSpinning  = false;
 let _playerAnimToken = 0;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
-const SPIN_PERIOD_MS      = 500;
+const SPIN_PERIOD_MS      = 2000; // 25% speed (4× slow-mo)
 const CHAIN_LINK_OUTER_RX = 17;   // half long-axis  — outer ring
 const CHAIN_LINK_OUTER_RY = 10.5; // half short-axis — outer ring
 const CHAIN_LINK_INNER_RX = 10.5; // half long-axis  — hole
@@ -458,10 +458,27 @@ function _redrawChain(px, py) {
   const gearOuterR = 22.5 * scale;
   const gearInnerR = 15   * scale;
   const gearHoleR  = 6.25 * scale;
-  const spinAngle = _chainSpinning
-    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
+  const _spinProgress = _chainSpinning
+    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360
     : 0;
+  // Seed prevLocalDir from the first chain segment so straight-through gears
+  // at the start of the path get the correct direction without a prior turn.
+  const _seed_dx = rawPoints.length > 1 ? rawPoints[1].x - rawPoints[0].x : 1;
+  const _seed_dy = rawPoints.length > 1 ? rawPoints[1].y - rawPoints[0].y : 0;
+  let prevLocalDir = Math.sign(Math.abs(_seed_dx) - _seed_dy);
   for (let i = 1; i < rawPoints.length - 1; i++) {
+    // Compute local chain direction using both incoming and outgoing segments.
+    // The cross product of (d_in × d_out) matches the arc-sweep direction from
+    // _buildChainPath: positive → CW on screen, negative → CCW on screen.
+    // For straight-through (cross≈0), inherit the previous gear's direction.
+    const ddx_in  = rawPoints[i].x - rawPoints[i - 1].x;
+    const ddy_in  = rawPoints[i].y - rawPoints[i - 1].y;
+    const ddx_out = rawPoints[i + 1].x - rawPoints[i].x;
+    const ddy_out = rawPoints[i + 1].y - rawPoints[i].y;
+    const cross   = ddx_in * ddy_out - ddy_in * ddx_out;
+    const localDir  = cross !== 0 ? Math.sign(cross) : prevLocalDir;
+    prevLocalDir    = localDir;
+    const spinAngle = _spinProgress * localDir * _spinDirection;
     const gGroup = document.createElementNS(NS, 'g');
     gGroup.setAttribute('class', 'gear-group');
     gGroup.setAttribute('transform', `translate(${rawPoints[i].x},${rawPoints[i].y}) rotate(${spinAngle})`);

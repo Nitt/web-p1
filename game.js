@@ -154,7 +154,7 @@ function handleMove(dx, dy) {
 let _retractToken = 0;
 let _moveToken    = 0;
 function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone) {
-  const TOTAL_MS    = 100;
+  const TOTAL_MS    = 400; // 25% speed (4× slow-mo)
   const numSegments = fromGears.length - targetLength;
   const segmentMs   = TOTAL_MS / numSegments;
   const token = ++_retractToken;
