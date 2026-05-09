@@ -246,30 +246,27 @@ function _executeBacktrack(gearIdx) {
   state.isMoving = true;
   setChainSpinning(true, -1);
 
-  // Pre-apply gear state so the count is correct during retract animation.
-  const gearsBeforeRetract = state.gears.slice();
-  const freed = state.gears.length - gearIdx - 1;   // works for gearIdx=-1: length+1-1 = length
+  // Apply gear state immediately — freed gears are removed from the chain now.
+  const freed = state.gears.length - gearIdx - 1;  // works for gearIdx=-1: length+1-1 = length
   state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
   state.gearsLeft += freed;
 
   const moveToken = _moveToken;
 
-  // Phase 1: retract tail of chain back to the backtrack gear while player stands still.
-  // Keeps gears[0..gearIdx] visible; gearIdx+1 = 0 for boat (retract everything).
-  _animateChainRetract(gearsBeforeRetract, Math.max(0, gearIdx + 1), state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+  // Update _chainState to reflect the freed gears while keeping the player at its
+  // current position. animatePlayer redraws the chain every frame, so the tail
+  // naturally follows the player as it slides back through the one-way.
+  drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+
+  animatePlayer(state.playerPos, backtrackPos, state.level, () => {
     if (moveToken !== _moveToken) return;
+    state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
+    state.isMoving  = false;
 
-    // Phase 2: player slides back through the one-way to the backtrack gear.
-    animatePlayer(state.playerPos, backtrackPos, state.level, () => {
-      if (moveToken !== _moveToken) return;
-      state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
-      state.isMoving  = false;
-
-      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-      setChainSpinning(false);
-      _scheduleDeadEndCheck();
-      _flushQueuedMove();
-    });
+    drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    setChainSpinning(false);
+    _scheduleDeadEndCheck();
+    _flushQueuedMove();
   });
 }
 
