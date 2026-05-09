@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, canReachGoal } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -154,7 +154,7 @@ function handleMove(dx, dy) {
 let _retractToken = 0;
 let _moveToken    = 0;
 function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone) {
-  const TOTAL_MS    = 400; // 25% speed (4× slow-mo)
+  const TOTAL_MS    = 100 * getSpeedMultiplier();
   const numSegments = fromGears.length - targetLength;
   const segmentMs   = TOTAL_MS / numSegments;
   const token = ++_retractToken;

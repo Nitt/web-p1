@@ -155,8 +155,21 @@ body.debug .cell-dir[data-dir="right"] { right: 1px;  top: 50%;  transform: tran
   right: 0.5rem;
   display: flex;
   gap: 0.4rem;
+  align-items: center;
   z-index: 200;
 }
+
+#speed-control {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: #ccc;
+}
+
+#speed-label { min-width: 2rem; text-align: right; }
+
+#speed-slider { width: 80px; accent-color: #aaa; }
 
 #debug-btn,
 #chain-debug-btn {

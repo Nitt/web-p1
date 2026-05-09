@@ -8,8 +8,16 @@ const ONEWAY_DIR_ATTR = {
   [CellType.ONEWAY_DOWN]:  'down',
 };
 
-// ms per grid cell of travel — feel free to tune
-const SPEED_MS_PER_CELL = 320; // 25% speed (4× slow-mo)
+// ── Speed control ─────────────────────────────────────────────────────────────
+// Adjust _speedMult to slow down or speed up the whole game.
+// 1 = normal, 2 = half speed, 0.5 = double speed, etc.
+let _speedMult = 1;
+export function setSpeedMultiplier(m) { _speedMult = Math.max(0.1, m); }
+export function getSpeedMultiplier()  { return _speedMult; }
+
+// ms per grid cell of travel (base value × multiplier)
+const SPEED_MS_PER_CELL_BASE = 80;
+const speedMs = () => SPEED_MS_PER_CELL_BASE * _speedMult;
 
 let gridEl = null;
 let playerEl = null;
@@ -33,7 +41,8 @@ let _playerAnimToken = 0;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
-const SPIN_PERIOD_MS      = 2000; // 25% speed (4× slow-mo)
+const SPIN_PERIOD_MS_BASE = 500;
+const spinPeriodMs = () => SPIN_PERIOD_MS_BASE * _speedMult;
 const CHAIN_LINK_OUTER_RX = 17;   // half long-axis  — outer ring
 const CHAIN_LINK_OUTER_RY = 10.5; // half short-axis — outer ring
 const CHAIN_LINK_INNER_RX = 10.5; // half long-axis  — hole
@@ -181,7 +190,7 @@ export function animatePlayer(from, to, level, onDone) {
   if (steps === 0) { onDone(); return; }
 
   const token = ++_playerAnimToken;
-  const duration = steps * SPEED_MS_PER_CELL;
+  const duration = steps * speedMs();
   const startTime = performance.now();
   // Snap visual position to the logical start cell before reading startPx.
   // This eliminates any accumulated desync between playerPx and state.playerPos
@@ -306,7 +315,7 @@ export function getCellPixel(x, y, level) {
 export function setChainSpinning(spinning, direction = 1) {
   if (!spinning && _chainSpinning) {
     // Freeze current motion into the base so gears hold their angle when stopped.
-    _spinAngleBase += ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection;
+    _spinAngleBase += ((performance.now() - _spinStartTime) / spinPeriodMs()) * 360 * _spinDirection;
   }
   if (spinning && !_chainSpinning) _spinStartTime = performance.now();
   _chainSpinning = spinning;
@@ -547,7 +556,7 @@ function _redrawChain(px, py) {
   const gearInnerR = 15   * scale;
   const gearHoleR  = 6.25 * scale;
   const _spinProgress = _spinAngleBase + (_chainSpinning
-    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
+    ? ((performance.now() - _spinStartTime) / spinPeriodMs()) * 360 * _spinDirection
     : 0);
   // Seed prevLocalDir from the first chain segment so straight-through gears
   // at the start of the path get the correct direction without a prior turn.
