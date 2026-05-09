@@ -384,7 +384,7 @@ function _executeMove(dx, dy) {
         _flushQueuedMove();
       });
     } else {
-      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      // drawChain is called below, after setChainSpinning(false), so centerLastGear is correct.
     }
 
     // Activate the crumble toggle: set its bit in worldState and update the DOM.
@@ -440,6 +440,7 @@ function _executeMove(dx, dy) {
     // (needsRetractAnim defers this until after the retraction animation.)
     if (!needsRetractAnim) {
       setChainSpinning(false);
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       _scheduleDeadEndCheck();
       _flushQueuedMove();
     }

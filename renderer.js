@@ -32,6 +32,7 @@ let _chainSpinning  = false;
 let _playerAnimToken = 0;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
+let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
 const SPIN_PERIOD_MS      = 2000; // 25% speed (4× slow-mo)
 const CHAIN_LINK_OUTER_RX = 17;   // half long-axis  — outer ring
 const CHAIN_LINK_OUTER_RY = 10.5; // half short-axis — outer ring
@@ -303,6 +304,10 @@ export function getCellPixel(x, y, level) {
 
 /** Start or stop gear spinning. direction: 1 = clockwise, -1 = counterclockwise. */
 export function setChainSpinning(spinning, direction = 1) {
+  if (!spinning && _chainSpinning) {
+    // Freeze current motion into the base so gears hold their angle when stopped.
+    _spinAngleBase += ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection;
+  }
   if (spinning && !_chainSpinning) _spinStartTime = performance.now();
   _chainSpinning = spinning;
   _spinDirection = direction;
@@ -320,7 +325,7 @@ export function setChainSpinning(spinning, direction = 1) {
  * chain offset consistent with the visible rotation direction.
  *
  */
-function _buildChainPath(rawPoints, R) {
+function _buildChainPath(rawPoints, R, centerLastGear = false) {
   if (rawPoints.length < 2) return rawPoints;
 
   const N = rawPoints.length;
@@ -382,11 +387,17 @@ function _buildChainPath(rawPoints, R) {
 
   const out = [];
 
-  // ── First point (boat / anchor): offset by perp of outgoing direction ──
-  out.push(tangentPt(rawPoints[0], dirs[0], localDirs[0]));
+  // ── First point (boat / anchor): centered, no offset ──
+  out.push({ x: rawPoints[0].x, y: rawPoints[0].y });
 
   // ── Interior gear points ──
   for (let i = 1; i < N - 1; i++) {
+    // While stationary, the last placed gear connects chain to its center.
+    if (centerLastGear && i === N - 2) {
+      out.push({ x: rawPoints[i].x, y: rawPoints[i].y });
+      continue;
+    }
+
     const d_in  = dirs[i - 1];
     const d_out = dirs[i];
     const center = rawPoints[i];
@@ -430,8 +441,8 @@ function _buildChainPath(rawPoints, R) {
     out.push(...arcPoints(center, a0, dAngle));
   }
 
-  // ── Last point (player): offset by perp of incoming direction ──
-  out.push(tangentPt(rawPoints[N - 1], dirs[N - 2], localDirs[N - 1]));
+  // ── Last point (player): centered, no offset ──
+  out.push({ x: rawPoints[N - 1].x, y: rawPoints[N - 1].y });
 
   return out;
 }
@@ -466,7 +477,7 @@ function _redrawChain(px, py) {
   // (down→left, up→right, right→down, left→up).
   // The chain wrap radius matches the gear's inner sprocket circle.
   const COG_R = 15 * scale; // matches gearInnerR — chain rides on inner teeth
-  const chainPoints = _buildChainPath(rawPoints, COG_R);
+  const chainPoints = _buildChainPath(rawPoints, COG_R, !_chainSpinning);
 
   const NS = 'http://www.w3.org/2000/svg';
 
@@ -477,9 +488,9 @@ function _redrawChain(px, py) {
   const gearOuterR = 22.5 * scale;
   const gearInnerR = 15   * scale;
   const gearHoleR  = 6.25 * scale;
-  const _spinProgress = _chainSpinning
-    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360
-    : 0;
+  const _spinProgress = _spinAngleBase + (_chainSpinning
+    ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
+    : 0);
   // Seed prevLocalDir from the first chain segment so straight-through gears
   // at the start of the path get the correct direction without a prior turn.
   const _seed_dx = rawPoints.length > 1 ? rawPoints[1].x - rawPoints[0].x : 1;
@@ -497,7 +508,7 @@ function _redrawChain(px, py) {
     const cross   = ddx_in * ddy_out - ddy_in * ddx_out;
     const localDir  = cross !== 0 ? Math.sign(cross) : prevLocalDir;
     prevLocalDir    = localDir;
-    const spinAngle = _spinProgress * localDir * _spinDirection;
+    const spinAngle = _spinProgress * localDir;
     const gGroup = document.createElementNS(NS, 'g');
     gGroup.setAttribute('class', 'gear-group');
     gGroup.setAttribute('transform', `translate(${rawPoints[i].x},${rawPoints[i].y}) rotate(${spinAngle})`);
@@ -516,6 +527,29 @@ function _redrawChain(px, py) {
     hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
     gGroup.appendChild(hole);
 
+    chainSvgEl.appendChild(gGroup);
+  }
+
+  // Gear at the player position — spins the same as the last placed gear.
+  if (rawPoints.length >= 2) {
+    const px = rawPoints[rawPoints.length - 1].x;
+    const py = rawPoints[rawPoints.length - 1].y;
+    const spinAngle = _spinProgress * prevLocalDir;
+    const gGroup = document.createElementNS(NS, 'g');
+    gGroup.setAttribute('class', 'gear-group');
+    gGroup.setAttribute('transform', `translate(${px},${py}) rotate(${spinAngle})`);
+    const g = document.createElementNS(NS, 'path');
+    g.setAttribute('d', _gearPath(0, 0, gearOuterR, gearInnerR, 8));
+    g.setAttribute('fill', 'rgb(50,70,110)');
+    g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
+    g.setAttribute('stroke-width', String(0.8 * scale));
+    gGroup.appendChild(g);
+    const hole = document.createElementNS(NS, 'circle');
+    hole.setAttribute('cx', '0');
+    hole.setAttribute('cy', '0');
+    hole.setAttribute('r', String(gearHoleR));
+    hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
+    gGroup.appendChild(hole);
     chainSvgEl.appendChild(gGroup);
   }
 
