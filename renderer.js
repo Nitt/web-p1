@@ -311,36 +311,58 @@ export function setChainSpinning(spinning, direction = 1) {
 /**
  * Build a polyline approximating realistic chain routing through `rawPoints`.
  *
- * For start/end points (boat, player) the chain is simply offset 90° CCW of
- * the travel direction by radius R — there is no gear to wrap around.
+ * For start/end points the chain is offset tangentially with no gear wrap.
  *
- * For each interior gear point the chain:
- *   1. Arrives at the entry tangent point  = center + R * perp(d_in)
- *   2. Wraps around the gear arc to the exit tangent = center + R * perp(d_out)
- *   3. Leaves along the new travel direction
+ * Each interior gear has a localDir (+1 CW, -1 CCW) derived from the cross
+ * product of its incoming and outgoing directions — the same logic used in
+ * _redrawChain for the spin animation.  CW gears use -perp(d) = (d.y, -d.x)
+ * as the chain side; CCW gears use +perp(d) = (-d.y, d.x).  This keeps the
+ * chain offset consistent with the visible rotation direction.
  *
- * perp(d) = 90° CCW of d = (-d.y, d.x)  →  down→left, up→right, right→down, left→up.
- * The arc direction (CW / CCW in SVG pixel coords) is determined by the cross
- * product of the two perpendicular vectors so the chain always takes the short arc.
  */
 function _buildChainPath(rawPoints, R) {
   if (rawPoints.length < 2) return rawPoints;
 
+  const N = rawPoints.length;
+
   // Per-segment unit direction vectors.
   const dirs = [];
-  for (let i = 1; i < rawPoints.length; i++) {
+  for (let i = 1; i < N; i++) {
     const dx = rawPoints[i].x - rawPoints[i - 1].x;
     const dy = rawPoints[i].y - rawPoints[i - 1].y;
     const l = Math.hypot(dx, dy);
     dirs.push(l > 0.01 ? { x: dx / l, y: dy / l } : { x: 1, y: 0 });
   }
 
-  // 90° CCW perpendicular of a direction vector (SVG coords, y-down).
-  const perp = (d) => ({ x: -d.y, y: d.x });
+  // Per-point localDir: +1 = CW gear, -1 = CCW gear (same logic as _redrawChain).
+  // CW gear  → chain on -perp(d) side  (d.y, -d.x)
+  // CCW gear → chain on +perp(d) side  (-d.y, d.x)
+  const localDirs = new Array(N).fill(1);
+  if (N >= 3) {
+    const s = dirs[0];
+    let prevLD = Math.sign(Math.abs(s.x) - s.y) || 1;
+    for (let i = 1; i < N - 1; i++) {
+      const cross = dirs[i - 1].x * dirs[i].y - dirs[i - 1].y * dirs[i].x;
+      const ld = cross !== 0 ? Math.sign(cross) : prevLD;
+      prevLD = ld;
+      localDirs[i] = ld;
+    }
+    localDirs[0]     = localDirs[1];       // start inherits first gear
+    localDirs[N - 1] = localDirs[N - 2];   // player inherits last gear
+  } else {
+    const s  = dirs[0];
+    const ld = Math.sign(Math.abs(s.x) - s.y) || 1;
+    localDirs[0] = localDirs[1] = ld;
+  }
 
-  // Point on the gear circle in the perp(d) direction.
-  const tangentPt = (center, d) => {
-    const p = perp(d);
+  // perp(d, ld): CW gear uses -perp, CCW gear uses +perp.
+  const perp = (d, ld) => ld > 0
+    ? { x: d.y, y: -d.x }   // -perp for CW
+    : { x: -d.y, y: d.x };  // +perp for CCW
+
+  // Point on the gear circle using the ld-aware perp.
+  const tangentPt = (center, d, ld) => {
+    const p = perp(d, ld);
     return { x: center.x + p.x * R, y: center.y + p.y * R };
   };
 
@@ -361,26 +383,27 @@ function _buildChainPath(rawPoints, R) {
   const out = [];
 
   // ── First point (boat / anchor): offset by perp of outgoing direction ──
-  out.push(tangentPt(rawPoints[0], dirs[0]));
+  out.push(tangentPt(rawPoints[0], dirs[0], localDirs[0]));
 
   // ── Interior gear points ──
-  for (let i = 1; i < rawPoints.length - 1; i++) {
+  for (let i = 1; i < N - 1; i++) {
     const d_in  = dirs[i - 1];
     const d_out = dirs[i];
     const center = rawPoints[i];
+    const ld     = localDirs[i];
 
-    const entry = tangentPt(center, d_in);
-    const exit  = tangentPt(center, d_out);
+    const entry = tangentPt(center, d_in,  ld);
+    const exit  = tangentPt(center, d_out, ld);
 
     // Straight segment ends at entry tangent.
     out.push(entry);
 
     // Check whether the two perpendicular vectors are identical (straight path)
     // or anti-parallel (U-turn, 180° arc).
-    const evx = entry.x - center.x, evy = entry.y - center.y; // = R * perp(d_in)
-    const xvx = exit.x  - center.x, xvy = exit.y  - center.y; // = R * perp(d_out)
+    const evx = entry.x - center.x, evy = entry.y - center.y;
+    const xvx = exit.x  - center.x, xvy = exit.y  - center.y;
 
-    const cross = evx * xvy - evy * xvx; // positive → CCW arc (SVG y-down → appears CW on screen)
+    const cross = evx * xvy - evy * xvx;
 
     if (Math.hypot(entry.x - exit.x, entry.y - exit.y) < 0.5) {
       // Straight — entry and exit tangents coincide, no arc needed.
@@ -392,14 +415,10 @@ function _buildChainPath(rawPoints, R) {
     let dAngle = a1 - a0;
 
     if (cross > 0) {
-      // CCW sweep — force positive (↺ in math coords).
       if (dAngle <= 0) dAngle += 2 * Math.PI;
     } else if (cross < 0) {
-      // CW sweep — force negative (↻ in math coords).
       if (dAngle >= 0) dAngle -= 2 * Math.PI;
     } else {
-      // cross === 0: either straight (caught above) or 180° U-turn.
-      // Normalise to [-π, π] and keep whichever sign atan2 returned.
       if (dAngle >  Math.PI) dAngle -= 2 * Math.PI;
       if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
     }
@@ -412,7 +431,7 @@ function _buildChainPath(rawPoints, R) {
   }
 
   // ── Last point (player): offset by perp of incoming direction ──
-  out.push(tangentPt(rawPoints[rawPoints.length - 1], dirs[dirs.length - 1]));
+  out.push(tangentPt(rawPoints[N - 1], dirs[N - 2], localDirs[N - 1]));
 
   return out;
 }
