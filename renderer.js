@@ -308,6 +308,115 @@ export function setChainSpinning(spinning, direction = 1) {
   _spinDirection = direction;
 }
 
+/**
+ * Build a polyline approximating realistic chain routing through `rawPoints`.
+ *
+ * For start/end points (boat, player) the chain is simply offset 90° CCW of
+ * the travel direction by radius R — there is no gear to wrap around.
+ *
+ * For each interior gear point the chain:
+ *   1. Arrives at the entry tangent point  = center + R * perp(d_in)
+ *   2. Wraps around the gear arc to the exit tangent = center + R * perp(d_out)
+ *   3. Leaves along the new travel direction
+ *
+ * perp(d) = 90° CCW of d = (-d.y, d.x)  →  down→left, up→right, right→down, left→up.
+ * The arc direction (CW / CCW in SVG pixel coords) is determined by the cross
+ * product of the two perpendicular vectors so the chain always takes the short arc.
+ */
+function _buildChainPath(rawPoints, R) {
+  if (rawPoints.length < 2) return rawPoints;
+
+  // Per-segment unit direction vectors.
+  const dirs = [];
+  for (let i = 1; i < rawPoints.length; i++) {
+    const dx = rawPoints[i].x - rawPoints[i - 1].x;
+    const dy = rawPoints[i].y - rawPoints[i - 1].y;
+    const l = Math.hypot(dx, dy);
+    dirs.push(l > 0.01 ? { x: dx / l, y: dy / l } : { x: 1, y: 0 });
+  }
+
+  // 90° CCW perpendicular of a direction vector (SVG coords, y-down).
+  const perp = (d) => ({ x: -d.y, y: d.x });
+
+  // Point on the gear circle in the perp(d) direction.
+  const tangentPt = (center, d) => {
+    const p = perp(d);
+    return { x: center.x + p.x * R, y: center.y + p.y * R };
+  };
+
+  // Approximate an arc of radius R centred at `center` from angle `a0` to `a1`
+  // going in the signed direction indicated by `dAngle` (positive = CCW in math,
+  // but SVG has y-down so positive dAngle sweeps CW visually — we just use a
+  // consistent parameterisation here).
+  const arcPoints = (center, a0, dAngle) => {
+    const steps = Math.max(2, Math.ceil(Math.abs(dAngle) / (Math.PI / 6)));
+    const pts = [];
+    for (let s = 1; s <= steps; s++) {
+      const a = a0 + dAngle * (s / steps);
+      pts.push({ x: center.x + Math.cos(a) * R, y: center.y + Math.sin(a) * R });
+    }
+    return pts;
+  };
+
+  const out = [];
+
+  // ── First point (boat / anchor): offset by perp of outgoing direction ──
+  out.push(tangentPt(rawPoints[0], dirs[0]));
+
+  // ── Interior gear points ──
+  for (let i = 1; i < rawPoints.length - 1; i++) {
+    const d_in  = dirs[i - 1];
+    const d_out = dirs[i];
+    const center = rawPoints[i];
+
+    const entry = tangentPt(center, d_in);
+    const exit  = tangentPt(center, d_out);
+
+    // Straight segment ends at entry tangent.
+    out.push(entry);
+
+    // Check whether the two perpendicular vectors are identical (straight path)
+    // or anti-parallel (U-turn, 180° arc).
+    const evx = entry.x - center.x, evy = entry.y - center.y; // = R * perp(d_in)
+    const xvx = exit.x  - center.x, xvy = exit.y  - center.y; // = R * perp(d_out)
+
+    const cross = evx * xvy - evy * xvx; // positive → CCW arc (SVG y-down → appears CW on screen)
+
+    if (Math.hypot(entry.x - exit.x, entry.y - exit.y) < 0.5) {
+      // Straight — entry and exit tangents coincide, no arc needed.
+      continue;
+    }
+
+    const a0 = Math.atan2(evy, evx);
+    const a1 = Math.atan2(xvy, xvx);
+    let dAngle = a1 - a0;
+
+    if (cross > 0) {
+      // CCW sweep — force positive (↺ in math coords).
+      if (dAngle <= 0) dAngle += 2 * Math.PI;
+    } else if (cross < 0) {
+      // CW sweep — force negative (↻ in math coords).
+      if (dAngle >= 0) dAngle -= 2 * Math.PI;
+    } else {
+      // cross === 0: either straight (caught above) or 180° U-turn.
+      // Normalise to [-π, π] and keep whichever sign atan2 returned.
+      if (dAngle >  Math.PI) dAngle -= 2 * Math.PI;
+      if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+    }
+
+    // Clamp to short arc (|dAngle| ≤ π) for non-antiparallel cases.
+    if (dAngle >  Math.PI) dAngle -= 2 * Math.PI;
+    if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+
+    out.push(...arcPoints(center, a0, dAngle));
+  }
+
+  // ── Last point (player): offset by perp of incoming direction ──
+  out.push(tangentPt(rawPoints[rawPoints.length - 1], dirs[dirs.length - 1]));
+
+  return out;
+}
+
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
   const { gears, gearsLeft, level } = _chainState;
@@ -324,30 +433,38 @@ function _redrawChain(px, py) {
   const scale    = cellSize / 68;
 
   // Build the list of points: start cell → each gear → current player pixel
-  const points = [
+  const rawPoints = [
     _cellPixel(level.start.x, level.start.y, level),
     ...gears.map(g => _cellPixel(g.x, g.y, level)),
     { x: px, y: py },
   ];
 
-  if (points.length < 2) return;
+  if (rawPoints.length < 2) return;
+
+  // Build a realistic chain path where the chain enters and exits each gear
+  // tangentially and wraps around the gear arc between those points.
+  // The chain always runs on the 90° CCW side of its travel direction
+  // (down→left, up→right, right→down, left→up).
+  // The chain wrap radius matches the gear's inner sprocket circle.
+  const COG_R = 15 * scale; // matches gearInnerR — chain rides on inner teeth
+  const chainPoints = _buildChainPath(rawPoints, COG_R);
 
   const NS = 'http://www.w3.org/2000/svg';
 
-  // Linked chain along the path
-  _drawChainLinks(points, NS, scale);
+  // Linked chain along the offset path
+  _drawChainLinks(chainPoints, NS, scale);
 
-  // Gear shapes at each waypoint (skip start and player positions)
+  // Gear shapes at each waypoint (skip start and player positions) — at raw cell centres
   const gearOuterR = 22.5 * scale;
   const gearInnerR = 15   * scale;
   const gearHoleR  = 6.25 * scale;
   const spinAngle = _chainSpinning
     ? ((performance.now() - _spinStartTime) / SPIN_PERIOD_MS) * 360 * _spinDirection
     : 0;
-  for (let i = 1; i < points.length - 1; i++) {
+  for (let i = 1; i < rawPoints.length - 1; i++) {
     const gGroup = document.createElementNS(NS, 'g');
     gGroup.setAttribute('class', 'gear-group');
-    gGroup.setAttribute('transform', `translate(${points[i].x},${points[i].y}) rotate(${spinAngle})`);
+    gGroup.setAttribute('transform', `translate(${rawPoints[i].x},${rawPoints[i].y}) rotate(${spinAngle})`);
 
     const g = document.createElementNS(NS, 'path');
     g.setAttribute('d', _gearPath(0, 0, gearOuterR, gearInnerR, 8));
