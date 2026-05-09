@@ -49,8 +49,11 @@
     <span class="win-hint">Tap anywhere to restart</span>
   </div>
 
-  <button id="debug-btn" class="btn-ghost">dbg</button>
-  <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
+  <div id="debug-btns">
+    <button id="debug-btn" class="btn-ghost">dbg</button>
+    <button id="chain-debug-btn" class="btn-ghost">chain</button>
+    <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
+  </div>
 
   <!-- ── Generator debug panel ────────────────────────────────────────────── -->
   <div id="gen-debug-panel" hidden>
@@ -87,6 +90,9 @@
 
     document.getElementById('debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('debug'));
+
+    document.getElementById('chain-debug-btn')
+      .addEventListener('click', () => document.body.classList.toggle('chain-debug'));
 
     document.getElementById('skip-btn')
       .addEventListener('click', () => skipLevel());

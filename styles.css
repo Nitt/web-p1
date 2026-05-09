@@ -149,18 +149,33 @@ body.debug .cell-dir[data-dir="down"]  { bottom: 1px; left: 50%; transform: tran
 body.debug .cell-dir[data-dir="left"]  { left: 1px;   top: 50%;  transform: translateY(-50%); }
 body.debug .cell-dir[data-dir="right"] { right: 1px;  top: 50%;  transform: translateY(-50%); }
 
-#debug-btn {
+#debug-btns {
   position: fixed;
-  top: 0.5rem;
+  bottom: 0.5rem;
   right: 0.5rem;
+  display: flex;
+  gap: 0.4rem;
+  z-index: 200;
+}
+
+#debug-btn,
+#chain-debug-btn {
   font-size: 0.65rem;
   padding: 0.2rem 0.45rem;
   opacity: 0.4;
-  z-index: 200;
 }
 
 body.debug #debug-btn {
   opacity: 1;
+}
+
+body.chain-debug #chain-debug-btn {
+  opacity: 1;
+}
+
+body.chain-debug .gear-group,
+body.chain-debug .player {
+  visibility: hidden;
 }
 
 .cell[data-type="wall"] {
@@ -461,13 +476,9 @@ body.debug #debug-btn {
 /* ─── gen-debug open button ──────────────────────────────────────────────── */
 
 #gen-debug-open-btn {
-  position: fixed;
-  top: 0.5rem;
-  right: 3.2rem;
   font-size: 0.65rem;
   padding: 0.2rem 0.45rem;
   opacity: 0.4;
-  z-index: 200;
 }
 
 #gen-debug-open-btn:hover { opacity: 1; }
