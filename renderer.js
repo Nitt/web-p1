@@ -325,7 +325,7 @@ export function setChainSpinning(spinning, direction = 1) {
  * chain offset consistent with the visible rotation direction.
  *
  */
-function _buildChainPath(rawPoints, R, centerLastGear = false) {
+function _buildChainPath(rawPoints, R, gearLerpT = 0) {
   if (rawPoints.length < 2) return rawPoints;
 
   const N = rawPoints.length;
@@ -394,17 +394,44 @@ function _buildChainPath(rawPoints, R, centerLastGear = false) {
 
   // ── Interior gear points ──
   for (let i = 1; i < N - 1; i++) {
-    // While stationary, the last placed gear (nearest player) connects chain to its center.
-    // In reversed order (player→boat) that gear sits at index 1.
-    if (centerLastGear && i === 1) {
-      out.push({ x: rawPoints[i].x, y: rawPoints[i].y });
-      continue;
-    }
-
     const d_in  = dirs[i - 1];
     const d_out = dirs[i];
     const center = rawPoints[i];
     const ld     = localDirs[i];
+
+    // The gear nearest the player (index 1 in reversed path) lerps its tangent
+    // offset from 0 (centered) to full R based on gearLerpT.
+    // gearLerpT=0: chain connects to center (stationary); gearLerpT=1: full offset.
+    if (i === 1 && gearLerpT < 1) {
+      const t = gearLerpT;
+      const entryFull = tangentPt(center, d_in,  ld);
+      const exitFull  = tangentPt(center, d_out, ld);
+      out.push({ x: center.x + (entryFull.x - center.x) * t,
+                 y: center.y + (entryFull.y - center.y) * t });
+      // Arc with scaled radius — smooth collapse to center as t→0.
+      const a0 = Math.atan2(entryFull.y - center.y, entryFull.x - center.x);
+      const a1 = Math.atan2(exitFull.y  - center.y, exitFull.x  - center.x);
+      const evx = entryFull.x - center.x, evy = entryFull.y - center.y;
+      const xvx = exitFull.x  - center.x, xvy = exitFull.y  - center.y;
+      const cross2 = evx * xvy - evy * xvx;
+      let dAngle = a1 - a0;
+      if (cross2 > 0) { if (dAngle <= 0) dAngle += 2 * Math.PI; }
+      else if (cross2 < 0) { if (dAngle >= 0) dAngle -= 2 * Math.PI; }
+      if (dAngle >  Math.PI) dAngle -= 2 * Math.PI;
+      if (dAngle < -Math.PI) dAngle += 2 * Math.PI;
+      const Rt = R * t;
+      if (Rt > 0.5 && Math.abs(dAngle) > 0.01) {
+        const steps = Math.max(2, Math.ceil(Math.abs(dAngle) / (Math.PI / 6)));
+        for (let s = 1; s <= steps; s++) {
+          const a = a0 + dAngle * (s / steps);
+          out.push({ x: center.x + Math.cos(a) * Rt, y: center.y + Math.sin(a) * Rt });
+        }
+      } else {
+        out.push({ x: center.x + (exitFull.x - center.x) * t,
+                   y: center.y + (exitFull.y - center.y) * t });
+      }
+      continue;
+    }
 
     const entry = tangentPt(center, d_in,  ld);
     const exit  = tangentPt(center, d_out, ld);
@@ -480,7 +507,18 @@ function _redrawChain(px, py) {
   // (down→left, up→right, right→down, left→up).
   // The chain wrap radius matches the gear's inner sprocket circle.
   const COG_R = 15 * scale; // matches gearInnerR — chain rides on inner teeth
-  const chainPoints = _buildChainPath([...rawPoints].reverse(), COG_R, !_chainSpinning);
+  // Lerp factor for the gear nearest the player (index 1 in reversed path).
+  // Derived from spatial distance: 0 when player is on the gear (centered),
+  // 1 when player is ≥1 cell away (full tangent offset).
+  // Works automatically for both forward moves (player moves away) and
+  // backtrack (player approaches) with no flags or timing needed.
+  let gearLerpT = 0;
+  if (rawPoints.length >= 2) {
+    const lastGear = rawPoints[rawPoints.length - 2]; // gear nearest player in original order
+    const dist = Math.hypot(px - lastGear.x, py - lastGear.y);
+    gearLerpT = Math.min(1, dist / cellSize);
+  }
+  const chainPoints = _buildChainPath([...rawPoints].reverse(), COG_R, gearLerpT);
 
   const NS = 'http://www.w3.org/2000/svg';
 
