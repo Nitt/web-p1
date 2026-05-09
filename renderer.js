@@ -342,6 +342,8 @@ function _buildChainPath(rawPoints, R, centerLastGear = false) {
   // Per-point localDir: +1 = CW gear, -1 = CCW gear (same logic as _redrawChain).
   // CW gear  → chain on -perp(d) side  (d.y, -d.x)
   // CCW gear → chain on +perp(d) side  (-d.y, d.x)
+  // Path is traversed player→boat (reversed). Both segment directions and cross
+  // products flip sign, which cancels out in perp() — no negation needed.
   const localDirs = new Array(N).fill(1);
   if (N >= 3) {
     const s = dirs[0];
@@ -352,8 +354,8 @@ function _buildChainPath(rawPoints, R, centerLastGear = false) {
       prevLD = ld;
       localDirs[i] = ld;
     }
-    localDirs[0]     = localDirs[1];       // start inherits first gear
-    localDirs[N - 1] = localDirs[N - 2];   // player inherits last gear
+    localDirs[0]     = localDirs[1];       // player inherits first gear (reversed)
+    localDirs[N - 1] = localDirs[N - 2];   // boat inherits last gear (reversed)
   } else {
     const s  = dirs[0];
     const ld = Math.sign(Math.abs(s.x) - s.y) || 1;
@@ -387,13 +389,14 @@ function _buildChainPath(rawPoints, R, centerLastGear = false) {
 
   const out = [];
 
-  // ── First point (boat / anchor): centered, no offset ──
+  // ── First point (player): centered, no offset ──
   out.push({ x: rawPoints[0].x, y: rawPoints[0].y });
 
   // ── Interior gear points ──
   for (let i = 1; i < N - 1; i++) {
-    // While stationary, the last placed gear connects chain to its center.
-    if (centerLastGear && i === N - 2) {
+    // While stationary, the last placed gear (nearest player) connects chain to its center.
+    // In reversed order (player→boat) that gear sits at index 1.
+    if (centerLastGear && i === 1) {
       out.push({ x: rawPoints[i].x, y: rawPoints[i].y });
       continue;
     }
@@ -441,7 +444,7 @@ function _buildChainPath(rawPoints, R, centerLastGear = false) {
     out.push(...arcPoints(center, a0, dAngle));
   }
 
-  // ── Last point (player): centered, no offset ──
+  // ── Last point (boat / anchor): centered, no offset ──
   out.push({ x: rawPoints[N - 1].x, y: rawPoints[N - 1].y });
 
   return out;
@@ -477,7 +480,7 @@ function _redrawChain(px, py) {
   // (down→left, up→right, right→down, left→up).
   // The chain wrap radius matches the gear's inner sprocket circle.
   const COG_R = 15 * scale; // matches gearInnerR — chain rides on inner teeth
-  const chainPoints = _buildChainPath(rawPoints, COG_R, !_chainSpinning);
+  const chainPoints = _buildChainPath([...rawPoints].reverse(), COG_R, !_chainSpinning);
 
   const NS = 'http://www.w3.org/2000/svg';
 
@@ -601,12 +604,10 @@ function _drawChainLinks(points, NS, scale = 1) {
     }
   }
 
-  // Scroll offset driven by actual chain path length
-  const rawOff  = _chainSpinning ? totalLen : 0;
-  const offset  = ((rawOff % pitch) + pitch) % pitch;
-
-  // Determine the starting link-index parity so the alternation is stable
-  const baseIdx = Math.floor(rawOff / pitch);
+  // Anchor chain links to player (point 0). Path is player→boat so d=0 is always
+  // the player center — no scroll offset needed.
+  const offset  = 0;
+  const baseIdx = 0;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
   const ringPath =
