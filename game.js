@@ -285,9 +285,14 @@ function _executeBacktrack(gearIdx) {
   function step(waypointIdx, fromPos) {
     if (moveToken !== _moveToken) return;
 
-    // Drop the gear the player is leaving before animating, so the chain tail
-    // never extends past the player toward a gear they have already left.
-    displayGears = displayGears.slice(0, displayGears.length - 1);
+    // Drop a freed gear before animating so the chain tail never extends past the
+    // player toward a gear they have already left.  Guard against dropping below
+    // the permanent chain length (state.gears) — when there are no freed gears
+    // (e.g. backtracking directly to the only cog with nothing above it), the
+    // backtrack target must stay visible throughout the animation.
+    if (displayGears.length > state.gears.length) {
+      displayGears = displayGears.slice(0, displayGears.length - 1);
+    }
     drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
 
     const toPos = waypoints[waypointIdx];
