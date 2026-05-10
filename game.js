@@ -449,8 +449,7 @@ function _executeMove(dx, dy) {
   setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
   const departurePos = { x: state.playerPos.x, y: state.playerPos.y };
   // Show the departure cog BEFORE animating so the chain renders correctly during the slide.
-  if (isBend && !isAtLastCog) {
-    if (!isBoatEntry) {
+  if (isBend && !isAtLastCog && !isBoatEntry) {
       // Commit: push to state.gears and consume budget.
       state.gears.push({ x: departurePos.x, y: departurePos.y });
       state.gearsLeft--;
@@ -461,10 +460,6 @@ function _executeMove(dx, dy) {
       } else {
         drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       }
-    } else {
-      // Visual-only: boat entry resets the chain after landing, so don't commit.
-      drawChain([...state.gears, { x: departurePos.x, y: departurePos.y }], state.playerPos, state.gearsLeft, state.totalGears, state.level);
-    }
   }
   const moveToken = _moveToken;
   animatePlayer(state.playerPos, target, state.level, () => {
@@ -475,12 +470,13 @@ function _executeMove(dx, dy) {
 
     // ── Update gear chain ────────────────────────────────────────────────────
     const gearsBeforeUpdate = state.gears.slice();
+    let _freedOnRevisit = -1; // -1 = no revisit
     if (!isBoatEntry) {
       if (revisitIdx >= 0) {
         // Revisited a past cog — shorten chain back to it, reclaim gears.
-        const freed = state.gears.length - revisitIdx - 1;
+        _freedOnRevisit = state.gears.length - revisitIdx - 1;
         state.gears = state.gears.slice(0, revisitIdx + 1);
-        state.gearsLeft += freed;
+        state.gearsLeft += _freedOnRevisit;
       }
       // New bend gear was already pushed before animation; straight-through has no cog.
     } else {
@@ -490,9 +486,38 @@ function _executeMove(dx, dy) {
     }
     state.prevDir = isBoatEntry ? null : { dx, dy };
 
-    // Animate retraction for multi-back revisit or boat entry (when chain is non-empty).
+    // When retracting toward the last cog but stopping mid-segment (e.g. on a sticky),
+    // reset prevDir to the forward direction of that chain segment (from last cog toward
+    // player), so continuing forward from here doesn't falsely register as a bend.
+    if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0 && state.gears.length > 0) {
+      const last = state.gears[state.gears.length - 1];
+      state.prevDir = {
+        dx: Math.sign(state.playerPos.x - last.x),
+        dy: Math.sign(state.playerPos.y - last.y),
+      };
+    }
+
+    // Compute before the pending-cog pop so the pop doesn't trigger a spurious retraction.
     const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
                              && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
+
+    // ── Pending-cog pop ───────────────────────────────────────────────────────
+    // The last cog in the chain is always "under" the player — it hasn't committed
+    // to a turn until the player actually leaves in a new direction. Whenever the
+    // player lands directly on the last cog (and nothing was freed behind it),
+    // release it back to the budget so the counter reflects turns remaining.
+    // Gate on freed === 0 to avoid popping genuine bend cogs during multi-step revisits.
+    if (!isBoatEntry && state.gears.length > 0 && _freedOnRevisit === 0) {
+      const last = state.gears[state.gears.length - 1];
+      if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
+        // Compute arrival direction at this cog before popping, so prevDir is
+        // correct for the next move (chain came from boat/prev-cog direction, not retraction direction).
+        const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+        state.gears.pop();
+        state.gearsLeft++;
+        state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
+      }
+    }
     if (needsRetractAnim) {
       state.isMoving = true; // keep blocked during retraction
       _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
