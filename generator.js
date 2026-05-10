@@ -386,7 +386,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, gearSet = null) {
   const path = [];
   let x = pos.x, y = pos.y;
-  let blockedByOneway  = false;
+  let blockedByOneway  = null; // {x, y} of the oneway cell if blocked, else null
   let blockedByCrumble = false;
   let blockedByDoor    = false;
   let crumblePos       = null;
@@ -433,7 +433,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
     }
 
     if (cell >= 3 && cell <= 6 && !_onewayAllows(cell, dx, dy)) {
-      blockedByOneway = true;                                        // ONEWAY wrong dir
+      blockedByOneway = { x: nx, y: ny };                              // ONEWAY wrong dir
       break;
     }
     x = nx; y = ny;
@@ -666,11 +666,18 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
-      if (path.length === 0 && !crumblePos) continue;
+      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
 
-      // A cog is placed only when the player changes direction (bend/reversal).
-      const isBendMove = i !== di;
+      // A reversal (moving exactly opposite the arrival direction) is a free retraction —
+      // the pending cog at the current position retracts with the player.
+      const isReversal = di < 4 && dx === -DIRS4[di].dx && dy === -DIRS4[di].dy;
+
+      // Skip unproductive slides, but allow reversal-blocked-by-oneway through
+      // so we can generate the free-backtrack transition below.
+      if (path.length === 0 && !crumblePos && !(isReversal && blockedByOneway)) continue;
+
+      // Reversals are free; all other direction changes cost one gear.
+      const isBendMove = (i !== di) && !isReversal;
       const nd = depth + (isBendMove ? 1 : 0);
 
       // Set depth for every cell reached on this slide.
@@ -718,6 +725,26 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           const pk = posKey(pos);
           if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
           bfsCurr.push({ pos: pos, depth: depth, worldState: newWorldState, di: 4 }); // 0 extra cost
+        }
+      }
+
+      // "Free-backtrack via one-way" variant: the player slid in the reversal direction,
+      // hit a one-way they can't pass backward, and the game backtracks them to the origin
+      // of the segment (the parent BFS node).  This costs 0 extra gears and leaves the
+      // player at the parent position with the same incoming direction as before, mirroring
+      // how game.js sets prevDir after _executeBacktrack.
+      if (isReversal && blockedByOneway && path.length === 0) {
+        const parentInfo = parentOf.get(stateKey(pos, di, worldState));
+        if (parentInfo && (parentInfo.landing.x !== pos.x || parentInfo.landing.y !== pos.y)) {
+          const backPos = parentInfo.landing;
+          const freeKey = stateKey(backPos, di, worldState);
+          if ((landingVisited.get(freeKey) ?? Infinity) > nd) {
+            landingVisited.set(freeKey, nd);
+            parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: backPos });
+            const pf = posKey(backPos);
+            if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, freeKey);
+            bfsCurr.push({ pos: backPos, depth: nd, worldState, di });
+          }
         }
       }
     }

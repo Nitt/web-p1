@@ -402,15 +402,17 @@ function _executeMove(dx, dy) {
   const isBendRaw = !isStraightThrough && state.prevDir !== null &&
     (dx !== state.prevDir.dx || dy !== state.prevDir.dy);
 
-  // If the player reverses directly toward the last cog, treat it as a retraction
-  // rather than a new branch — no departure cog, so sticky stops along the return
-  // path don't accumulate phantom cogs.
+  // If the player reverses directly toward the last cog (or the boat when no cogs
+  // exist yet), treat it as a retraction rather than a new branch — no departure
+  // cog, so sticky stops along the return path don't accumulate phantom cogs.
   let isRetractingTowardLastCog = false;
-  if (isBendRaw && !isBoatEntry && state.gears.length > 0) {
-    const last = state.gears[state.gears.length - 1];
-    const toLastDx = Math.sign(last.x - state.playerPos.x);
-    const toLastDy = Math.sign(last.y - state.playerPos.y);
-    isRetractingTowardLastCog = (dx === toLastDx && dy === toLastDy);
+  if (isBendRaw && !isBoatEntry) {
+    const anchor = state.gears.length > 0
+      ? state.gears[state.gears.length - 1]
+      : state.level.start;
+    const toAnchorDx = Math.sign(anchor.x - state.playerPos.x);
+    const toAnchorDy = Math.sign(anchor.y - state.playerPos.y);
+    isRetractingTowardLastCog = (dx === toAnchorDx && dy === toAnchorDy);
   }
 
   const isBend = isBendRaw && !isRetractingTowardLastCog;
@@ -486,14 +488,16 @@ function _executeMove(dx, dy) {
     }
     state.prevDir = isBoatEntry ? null : { dx, dy };
 
-    // When retracting toward the last cog but stopping mid-segment (e.g. on a sticky),
-    // reset prevDir to the forward direction of that chain segment (from last cog toward
-    // player), so continuing forward from here doesn't falsely register as a bend.
-    if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0 && state.gears.length > 0) {
-      const last = state.gears[state.gears.length - 1];
+    // When retracting toward the last cog (or the boat) but stopping mid-segment
+    // (e.g. on a sticky), reset prevDir to the forward direction of that chain
+    // segment so continuing forward from here doesn't falsely register as a bend.
+    if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0) {
+      const anchor = state.gears.length > 0
+        ? state.gears[state.gears.length - 1]
+        : state.level.start;
       state.prevDir = {
-        dx: Math.sign(state.playerPos.x - last.x),
-        dy: Math.sign(state.playerPos.y - last.y),
+        dx: Math.sign(state.playerPos.x - anchor.x),
+        dy: Math.sign(state.playerPos.y - anchor.y),
       };
     }
 
