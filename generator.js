@@ -158,11 +158,18 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
           carve(dirIdx, nx, ny);          // same slide, continue in same direction
         } else if (type === 'oneway') {
-          // Only place a one-way if the cell beyond it is reachable
+          // Only place a one-way if at least two cells beyond it are reachable.
+          // This guarantees the player slides far enough past the one-way that they
+          // can turn around and collide with it from the wrong side, making its
+          // behaviour learnable rather than skippable on first encounter.
           const nnx = nx + dir.dx;
           const nny = ny + dir.dy;
           const nni = idx(nnx, nny);
-          if (cells[nni] === G.UNTOUCHED || cells[nni] === G.EMPTY) {
+          const nnnx = nnx + dir.dx;
+          const nnny = nny + dir.dy;
+          const nnni = idx(nnnx, nnny);
+          const beyondOk = (v) => v === G.UNTOUCHED || v === G.EMPTY;
+          if (beyondOk(cells[nni]) && beyondOk(cells[nnni])) {
             cells[nni] = G.EMPTY;
             cells[ni]  = G.ONEWAY;
             onewayDir.set(ni, dirIdx);
