@@ -152,51 +152,61 @@ function handleMove(dx, dy) {
 
 // Animate chain retraction after a multi-back revisit.
 // The tail smoothly rewinds along each path segment back to targetLength.
-// Total animation time is capped at TOTAL_MS regardless of segment count.
+// Each segment's duration is proportional to its grid distance (same speed as forward moves).
 let _retractToken = 0;
 let _moveToken    = 0;
 function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone) {
-  const TOTAL_MS    = 100 * getSpeedMultiplier();
-  const numSegments = fromGears.length - targetLength;
-  const segmentMs   = TOTAL_MS / numSegments;
+  // Retract at the same speed as forward movement — proportional to grid distance.
+  const MS_PER_CELL = 80;
   const token = ++_retractToken;
-  let gears = fromGears.slice();
 
-  function animateSegment() {
-    if (token !== _retractToken) { onDone(); return; }
-    if (gears.length <= targetLength) {
-      drawChain(gears, playerPos, gearsLeft, totalGears, level);
-      onDone();
-      return;
-    }
+  // Build ordered waypoints: fromGears[last] → fromGears[last-1] → … → playerPos.
+  const waypoints = [];
+  for (let i = fromGears.length - 1; i >= targetLength; i--) waypoints.push(fromGears[i]);
+  waypoints.push(targetLength > 0 ? fromGears[targetLength - 1] : playerPos);
 
-    const tailIdx  = gears.length - 1;
-    const prevIdx  = tailIdx - 1;
-    const fromPx   = getCellPixel(gears[tailIdx].x, gears[tailIdx].y, level);
-    const toPx     = prevIdx >= 0
-      ? getCellPixel(gears[prevIdx].x, gears[prevIdx].y, level)
-      : getCellPixel(playerPos.x, playerPos.y, level);
-    const duration = segmentMs;
-    const startTime = performance.now();
-    const gearsWithoutTail = gears.slice(0, tailIdx);
-
-    function frame(now) {
-      if (token !== _retractToken) { onDone(); return; }
-      const t  = Math.min((now - startTime) / duration, 1);
-      const cx = fromPx.x + (toPx.x - fromPx.x) * t;
-      const cy = fromPx.y + (toPx.y - fromPx.y) * t;
-      drawChainWithPixelTail(gearsWithoutTail, { x: cx, y: cy }, gearsLeft, totalGears, level);
-      if (t < 1) {
-        requestAnimationFrame(frame);
-      } else {
-        gears = gearsWithoutTail;
-        animateSegment();
-      }
-    }
-    requestAnimationFrame(frame);
+  // Pixel coords and cumulative grid-cell distances along the waypoint path.
+  const wPx = waypoints.map(w => getCellPixel(w.x, w.y, level));
+  const cumDist = [0];
+  for (let i = 1; i < waypoints.length; i++) {
+    const d = Math.max(
+      Math.abs(waypoints[i].x - waypoints[i - 1].x),
+      Math.abs(waypoints[i].y - waypoints[i - 1].y),
+    ) || 1;
+    cumDist.push(cumDist[i - 1] + d);
   }
+  const totalDist    = cumDist[cumDist.length - 1];
+  const totalDurMs   = totalDist * MS_PER_CELL * getSpeedMultiplier();
+  const startTime    = performance.now();
 
-  animateSegment();
+  function frame(now) {
+    if (token !== _retractToken) { onDone(); return; }
+    const progress = Math.min((now - startTime) / totalDurMs, 1);
+    const d = progress * totalDist;
+
+    // Which segment is the tail currently in?
+    let seg = 0;
+    while (seg < cumDist.length - 2 && d >= cumDist[seg + 1]) seg++;
+    const segFrac = cumDist[seg + 1] > cumDist[seg]
+      ? (d - cumDist[seg]) / (cumDist[seg + 1] - cumDist[seg]) : 1;
+    const p1 = wPx[seg], p2 = wPx[seg + 1];
+    const tailPx = { x: p1.x + (p2.x - p1.x) * segFrac, y: p1.y + (p2.y - p1.y) * segFrac };
+
+    // Gears to render: exclude the gear currently being retracted (the tail's departure point)
+    // so the chain path doesn't fold back on itself. Once the tail fully reaches the next
+    // waypoint, that gear also gets excluded in the following segment.
+    const keepCount = fromGears.length - 1 - seg; // excludes the current tail gear
+    const gearsForRender = fromGears.slice(0, keepCount);
+    drawChainWithPixelTail(gearsForRender, tailPx, gearsLeft, totalGears, level);
+
+    if (progress < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      drawChain(fromGears.slice(0, targetLength), playerPos, gearsLeft, totalGears, level);
+      onDone();
+    }
+  }
+  requestAnimationFrame(frame);
 }
 
 function _scheduleDeadEndCheck() {
@@ -340,10 +350,17 @@ function _executeMove(dx, dy) {
       const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
       if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
       // No gear on the far side — check if the boat (start position) is there.
-      // Only valid if the player has no placed gears (came straight from the boat
-      // through this one-way without turning; turns would leave a gear on the far side).
+      // Valid only when the one-way sits on the straight chain segment from the boat
+      // to the first gear (or the player if no gears exist). This prevents false
+      // backtracks through unrelated one-ways the player never actually traversed.
       const s = state.level.start;
-      if (state.gears.length === 0 && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
+      const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
+      const onBoatSegment =
+        (s.x === firstPt.x && owx === s.x &&
+         Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
+        (s.y === firstPt.y && owy === s.y &&
+         Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
+      if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
     } else {
       state.pendingOnewayBreak = null;
     }
@@ -356,8 +373,47 @@ function _executeMove(dx, dy) {
 
   // Moving into the boat (above the grid) is a free move — no gear consumed.
   const isBoatEntry = target.y < 0;
+
+  // ── Straight-through cog pop ───────────────────────────────────────────────
+  // If the player is sitting on the last cog and moves in the same direction
+  // as the chain arrives at that cog (from the previous cog or the boat), the
+  // cog is a straight pass-through — not a bend. Remove it so the chain doesn't
+  // acquire a phantom kink regardless of how the player arrived at this cell.
+  let isStraightThrough = false;
+  if (!isBoatEntry && state.gears.length > 0) {
+    const last = state.gears[state.gears.length - 1];
+    if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
+      const prev = state.gears.length > 1
+        ? state.gears[state.gears.length - 2]
+        : state.level.start;
+      const arrDx = Math.sign(last.x - prev.x);
+      const arrDy = Math.sign(last.y - prev.y);
+      if (dx === arrDx && dy === arrDy) {
+        isStraightThrough = true;
+        state.gears.pop();
+        state.gearsLeft++;
+        drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      }
+    }
+  }
+
   // A cog is placed only when the player changes direction (bend or reversal).
-  const isBend = state.prevDir !== null && (dx !== state.prevDir.dx || dy !== state.prevDir.dy);
+  // A straight-through pop already handled the departure, so no bend here.
+  const isBendRaw = !isStraightThrough && state.prevDir !== null &&
+    (dx !== state.prevDir.dx || dy !== state.prevDir.dy);
+
+  // If the player reverses directly toward the last cog, treat it as a retraction
+  // rather than a new branch — no departure cog, so sticky stops along the return
+  // path don't accumulate phantom cogs.
+  let isRetractingTowardLastCog = false;
+  if (isBendRaw && !isBoatEntry && state.gears.length > 0) {
+    const last = state.gears[state.gears.length - 1];
+    const toLastDx = Math.sign(last.x - state.playerPos.x);
+    const toLastDy = Math.sign(last.y - state.playerPos.y);
+    isRetractingTowardLastCog = (dx === toLastDx && dy === toLastDy);
+  }
+
+  const isBend = isBendRaw && !isRetractingTowardLastCog;
 
   // ── Gear check ────────────────────────────────────────────────────────────
   // Determine if landing on an already-visited cog (revisit = chain shortens,
@@ -377,9 +433,13 @@ function _executeMove(dx, dy) {
   playSlide();
   // When moving into the cog immediately behind the latest one, shorten the
   // chain state before the animation so the retraction is visible during movement.
-  const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === state.gears.length - 2)
+  // If isBend is also true (direction reversal), a departure gear will be pushed
+  // just below — account for it in the effective count so isOneBack fires correctly.
+  const pendingBendGear = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
+  const effectiveGearCount = state.gears.length + (pendingBendGear ? 1 : 0);
+  const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === effectiveGearCount - 2)
                  || (isBoatEntry && state.gears.length === 1);
-  if (isOneBack) {
+  if (isOneBack && !pendingBendGear) {
     drawChain(
       state.gears.slice(0, revisitIdx + 1),
       state.playerPos, state.gearsLeft + 1, state.totalGears, state.level,
@@ -394,7 +454,13 @@ function _executeMove(dx, dy) {
       // Commit: push to state.gears and consume budget.
       state.gears.push({ x: departurePos.x, y: departurePos.y });
       state.gearsLeft--;
-      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      if (isOneBack) {
+        // Bend + immediate revisit: show the shortened chain so retraction is
+        // visible during movement rather than snapping after landing.
+        drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
+      } else {
+        drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      }
     } else {
       // Visual-only: boat entry resets the chain after landing, so don't commit.
       drawChain([...state.gears, { x: departurePos.x, y: departurePos.y }], state.playerPos, state.gearsLeft, state.totalGears, state.level);
