@@ -645,16 +645,22 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const parentOf      = new Map();
   const bestKeyForPos = new Map();
 
-  const startKey = stateKey(start, 4, 0);
+  const startKey = stateKey(start, 3, 0);
   parentOf.set(startKey, { fromKey: null, landing: start });
 
-  landingVisited.set(stateKey(start, 4, 0), 0);
+  landingVisited.set(stateKey(start, 3, 0), 0);
   depths.set(posKey(start), 0);
-  const bfsQueue = [{ pos: start, depth: 0, worldState: 0, di: 4 }];
-  let bfsHead = 0;
+  // 0-1 BFS: bfsCurr holds nodes at the current bend-depth, bfsNext at current+1.
+  // 0-cost (same direction) → push to bfsCurr; 1-cost (bend) → push to bfsNext.
+  let bfsCurr = [{ pos: start, depth: 0, worldState: 0, di: 3 }];
+  let bfsNext = [];
+  let currHead = 0;
 
-  while (bfsHead < bfsQueue.length) {
-    const { pos, depth, worldState, di } = bfsQueue[bfsHead++];
+  while (currHead < bfsCurr.length || bfsNext.length > 0) {
+    if (currHead >= bfsCurr.length) {
+      bfsCurr = bfsNext; bfsNext = []; currHead = 0;
+    }
+    const { pos, depth, worldState, di } = bfsCurr[currHead++];
 
     if ((landingVisited.get(stateKey(pos, di, worldState)) ?? depth) < depth) continue;
 
@@ -663,9 +669,11 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
 
-      const nd = depth + 1;
+      // A cog is placed only when the player changes direction (bend/reversal).
+      const isBendMove = i !== di;
+      const nd = depth + (isBendMove ? 1 : 0);
 
-      // Set depth for every cell reached on this slide (same nd — one slide action).
+      // Set depth for every cell reached on this slide.
       for (const p of path) {
         const k = posKey(p);
         if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
@@ -680,7 +688,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing });
           const pf = posKey(landing);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
-          bfsQueue.push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
+          (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
         }
       }
 
@@ -695,21 +703,21 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from });
           const pf = posKey(from);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
-          bfsQueue.push({ pos: from, depth: nd, worldState: newWorldState, di: i });
+          (isBendMove ? bfsNext : bfsCurr).push({ pos: from, depth: nd, worldState: newWorldState, di: i });
         }
 
         // "Free-backtrack" variant: the player can break the crumble and immediately
-        // return to pos for 0 net gears — the crumble-stop gear at `from` is reclaimed
+        // return to pos for 0 net cogs — the crumble-stop at `from` is reclaimed
         // on the return slide.  Models the sequence: pos → from (crumble breaks) →
         // pos (reclaim `from`) → anywhere through the now-broken crumble.
-        // Enqueue pos with the crumble broken at the same gear-depth as pos itself.
+        // Enqueue pos with the crumble broken at the same bend-depth as pos itself.
         const freeKey = stateKey(pos, 4, newWorldState);
         if ((landingVisited.get(freeKey) ?? Infinity) > depth) {
           landingVisited.set(freeKey, depth);
           parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: pos });
           const pk = posKey(pos);
           if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
-          bfsQueue.push({ pos: pos, depth: depth, worldState: newWorldState, di: 4 });
+          bfsCurr.push({ pos: pos, depth: depth, worldState: newWorldState, di: 4 }); // 0 extra cost
         }
       }
     }

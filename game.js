@@ -30,9 +30,10 @@ const state = {
   nextId:               2,      // id for the next generated level
   nextSeed:             300,    // seed for level 2 (level 1 uses 0–299 as a safe margin)
   // Gear chain system (replaces movesLeft).
-  gears:                [],     // [{x,y}] ordered waypoint positions visited so far
+  gears:                [],     // [{x,y}] cog positions (bends/reversals only)
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
+  prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
   worldState:           0,
   toggleMap:            null,
@@ -84,8 +85,9 @@ function loadLevel(level) {
   state.worldState  = 0;
   state.toggleMap   = buildToggleMap(level.cells);
   state.pendingOnewayBreak = null;
+  state.prevDir     = null;
 
-  // Gear budget: exactly the minimum solution depth.
+  // Gear budget: exactly the minimum solution depth (bend count) from the BFS.
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
@@ -285,6 +287,10 @@ function _executeBacktrack(gearIdx) {
 
       if (waypointIdx === waypoints.length - 1) {
         state.isMoving = false;
+        // Reset prevDir when backtracking to the boat so the next move doesn't
+        // falsely register as a bend (which would consume a gear and place a cog
+        // at the boat anchor position).
+        if (gearIdx < 0) state.prevDir = null;
         drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
         setChainSpinning(false);
         _scheduleDeadEndCheck();
@@ -334,8 +340,10 @@ function _executeMove(dx, dy) {
       const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
       if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
       // No gear on the far side — check if the boat (start position) is there.
+      // Only valid if the player has no placed gears (came straight from the boat
+      // through this one-way without turning; turns would leave a gear on the far side).
       const s = state.level.start;
-      if ((s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
+      if (state.gears.length === 0 && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
     } else {
       state.pendingOnewayBreak = null;
     }
@@ -348,12 +356,19 @@ function _executeMove(dx, dy) {
 
   // Moving into the boat (above the grid) is a free move — no gear consumed.
   const isBoatEntry = target.y < 0;
+  // A cog is placed only when the player changes direction (bend or reversal).
+  const isBend = state.prevDir !== null && (dx !== state.prevDir.dx || dy !== state.prevDir.dy);
 
   // ── Gear check ────────────────────────────────────────────────────────────
-  // Determine if landing on an already-visited waypoint (revisit = chain shortens,
-  // no new gear consumed) or on a fresh cell (requires a free gear).
+  // Determine if landing on an already-visited cog (revisit = chain shortens,
+  // no new gear consumed) or on a bend that needs a free gear.
   const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  const willUseGear = !isBoatEntry && revisitIdx < 0;
+  // The cog for a bend is placed at the DEPARTURE cell (the turning corner), not the landing.
+  // If the player is already sitting on the last cog (e.g. after a revisit), don't duplicate it.
+  const isAtLastCog = state.gears.length > 0 &&
+    state.gears[state.gears.length - 1].x === state.playerPos.x &&
+    state.gears[state.gears.length - 1].y === state.playerPos.y;
+  const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog;
   if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return; }  // no gears left
   // With 0 gears, only the immediately previous cog can be revisited (not older ones).
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return; }
@@ -371,7 +386,20 @@ function _executeMove(dx, dy) {
     );
   }
 
-  setChainSpinning(true, willUseGear ? 1 : -1);
+  setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
+  const departurePos = { x: state.playerPos.x, y: state.playerPos.y };
+  // Show the departure cog BEFORE animating so the chain renders correctly during the slide.
+  if (isBend && !isAtLastCog) {
+    if (!isBoatEntry) {
+      // Commit: push to state.gears and consume budget.
+      state.gears.push({ x: departurePos.x, y: departurePos.y });
+      state.gearsLeft--;
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    } else {
+      // Visual-only: boat entry resets the chain after landing, so don't commit.
+      drawChain([...state.gears, { x: departurePos.x, y: departurePos.y }], state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    }
+  }
   const moveToken = _moveToken;
   animatePlayer(state.playerPos, target, state.level, () => {
     if (moveToken !== _moveToken) return;
@@ -383,19 +411,18 @@ function _executeMove(dx, dy) {
     const gearsBeforeUpdate = state.gears.slice();
     if (!isBoatEntry) {
       if (revisitIdx >= 0) {
-        // Revisited a past waypoint — shorten chain back to it, reclaim gears.
+        // Revisited a past cog — shorten chain back to it, reclaim gears.
         const freed = state.gears.length - revisitIdx - 1;
         state.gears = state.gears.slice(0, revisitIdx + 1);
         state.gearsLeft += freed;
-      } else {
-        state.gears.push({ x: target.x, y: target.y });
-        state.gearsLeft--;
       }
+      // New bend gear was already pushed before animation; straight-through has no cog.
     } else {
       // Returned to the boat — retract the full chain, reclaim all gears.
       state.gearsLeft += state.gears.length;
       state.gears = [];
     }
+    state.prevDir = isBoatEntry ? null : { dx, dy };
 
     // Animate retraction for multi-back revisit or boat entry (when chain is non-empty).
     const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length

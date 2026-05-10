@@ -425,6 +425,15 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
     const center = rawPoints[i];
     const ld     = localDirs[i];
 
+    // Straight-through: same direction (cross≈0, dot>0) — no cog, no arc wrap.
+    // Just pass through the center so the chain runs straight.
+    const cross_io = d_in.x * d_out.y - d_in.y * d_out.x;
+    const dot_io   = d_in.x * d_out.x + d_in.y * d_out.y;
+    if (Math.abs(cross_io) < 0.01 && dot_io > 0) {
+      out.push({ x: center.x, y: center.y });
+      continue;
+    }
+
     // The gear nearest the player (index 1 in reversed path) lerps its tangent
     // offset from 0 (centered) to full R based on gearLerpT.
     // gearLerpT=0: chain connects to center (stationary); gearLerpT=1: full offset.
@@ -573,8 +582,11 @@ function _redrawChain(px, py) {
     const ddx_out = rawPoints[i + 1].x - rawPoints[i].x;
     const ddy_out = rawPoints[i + 1].y - rawPoints[i].y;
     const cross   = ddx_in * ddy_out - ddy_in * ddx_out;
+    const dot_io  = ddx_in * ddx_out + ddy_in * ddy_out;
     const localDir  = cross !== 0 ? Math.sign(cross) : prevLocalDir;
     prevLocalDir    = localDir;
+    // Skip cog for straight-through positions (same direction, no bend or reversal).
+    if (Math.abs(cross) < 0.01 && dot_io > 0) continue;
     const spinAngle = _spinProgress * localDir;
     const gGroup = document.createElementNS(NS, 'g');
     gGroup.setAttribute('class', 'gear-group');
