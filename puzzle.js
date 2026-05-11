@@ -153,6 +153,38 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
   return false;
 }
 
+// Returns true if the player can reach ANY of the given target positions.
+// Used for dead-end detection when uncollected keys exist: not a dead end if
+// either the goal or any key is still reachable.
+export function canReachAnyOf(level, pos, targets, worldState, toggleMap) {
+  if (!targets || targets.length === 0) return true;
+  const { width, height } = level;
+  const flatTargets = new Set(targets.map(t => t.y * width + t.x));
+  const DIRS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  const stateKey = (x, y, ws) => ws * width * (height + 1) + (y + 1) * width + x;
+  const visited = new Set([stateKey(pos.x, pos.y, worldState)]);
+  const queue = [{ x: pos.x, y: pos.y, ws: worldState }];
+  let head = 0;
+
+  while (head < queue.length) {
+    const { x, y, ws } = queue[head++];
+    if (flatTargets.has(y * width + x)) return true;
+
+    for (const { dx, dy } of DIRS) {
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true);
+      let nws = ws;
+      if (r.crumble      ?.toggleIdx !== undefined) nws |= (1 << r.crumble.toggleIdx);
+      if (r.keyCollected ?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
+      const k = stateKey(r.x, r.y, nws);
+      if (!visited.has(k)) {
+        visited.add(k);
+        queue.push({ x: r.x, y: r.y, ws: nws });
+      }
+    }
+  }
+  return false;
+}
+
 export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;

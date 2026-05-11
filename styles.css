@@ -149,6 +149,24 @@ body.debug .cell-dir[data-dir="down"]  { bottom: 1px; left: 50%; transform: tran
 body.debug .cell-dir[data-dir="left"]  { left: 1px;   top: 50%;  transform: translateY(-50%); }
 body.debug .cell-dir[data-dir="right"] { right: 1px;  top: 50%;  transform: translateY(-50%); }
 
+#cog-debug {
+  position: fixed;
+  top: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: #aaa;
+  background: rgba(0,0,0,0.55);
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  z-index: 150;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#cog-debug[data-overrun="1"] { color: #f4a; }
+#cog-debug[hidden] { display: none; }
+
 #debug-btns {
   position: fixed;
   bottom: 0.5rem;

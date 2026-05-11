@@ -1,7 +1,7 @@
 import { makeRng } from './random.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7 };
 
 const DIRS = [
   { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
@@ -11,7 +11,7 @@ const DIRS = [
 ];
 
 // Probability weights for choosing a cell type when carving into UNTOUCHED — used as defaults
-const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.00 };
+const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, key: 0.05, empty: 1.00 };
 
 // Maps a ONEWAY direction index (matching DIRS .idx) → the CellType value used in the output level
 // Order: LEFT(0)→3, UP(1)→5, RIGHT(2)→4, DOWN(3)→6
@@ -48,6 +48,10 @@ export const DIFFICULTY_WEIGHTS = {
  */
 export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, _steps = null } = {}) {
   const rng = makeRng(seed);
+  // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
+  // strip it if present when disabled — so pickType() and useKeyDoor always agree.
+  if (useKeyDoor && !('key' in weights)) weights = { ...weights, key: 0.05 };
+  else if (!useKeyDoor && 'key' in weights) { weights = { ...weights }; delete weights.key; }
   const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
 
   // Padded grid dimensions (1-cell BLOCK border on all sides)
@@ -104,6 +108,27 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       branchPosSet.add(key);
       branchQueue.push({ x, y });
     }
+  }
+
+  // Tracks key→door linkages placed during carving, used to build doorRequirements after output conversion.
+  const keyDoorPairs = [];
+
+  // Find a random BLOCK cell adjacent to at least one EMPTY cell — candidate for conversion to DOOR.
+  function findDoorCandidate(excludeI) {
+    const candidates = [];
+    for (let py = startY + 1; py < ph - 1; py++) {
+      for (let px = 1; px < pw - 1; px++) {
+        const ci = idx(px, py);
+        if (ci === excludeI || cells[ci] !== G.BLOCK) continue;
+        for (const dir of DIRS) {
+          if (cells[idx(px + dir.dx, py + dir.dy)] === G.EMPTY) {
+            candidates.push({ px, py, ci });
+            break;
+          }
+        }
+      }
+    }
+    return candidates.length ? candidates[Math.floor(rng() * candidates.length)] : null;
   }
 
   // For exporting/snapshotting visitedDirs in the Set<string> format expected
@@ -169,6 +194,29 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
       enqueue(x, y);
       branchQueue.push({ x, y, resumeDir: dirIdx });
+    } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
+      const door = findDoorCandidate(ni);
+      if (door) {
+        cells[ni] = G.KEY;
+        cells[door.ci] = G.DOOR;
+        keyDoorPairs.push({ keyI: ni, doorI: door.ci });
+        rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
+        enqueue(nx, ny);
+        // Post-key parallel universe: door is now open — same mechanism as crumble resumeDir.
+        // For each EMPTY neighbor of the door, push a branch that re-carves toward the door
+        // so the carver can slide through it (door is passable in carve(), like crumble).
+        for (const d of DIRS) {
+          const ex = door.px + d.dx, ey = door.py + d.dy;
+          if (cells[idx(ex, ey)] === G.EMPTY) {
+            const reverseDirIdx = DIRS.find(r => r.dx === -d.dx && r.dy === -d.dy).idx;
+            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx });
+          }
+        }
+      } else {
+        cells[ni] = G.EMPTY;
+        rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
+        carve(dirIdx, nx, ny);
+      }
     } else {
       cells[ni] = G.STICKY;
       rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
@@ -218,6 +266,15 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         }
         break;
       }
+      case G.KEY:
+        rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
+        enqueue(nx, ny);
+        break;
+      case G.DOOR:
+        // Door is open in this parallel universe (key was collected) — treat as passable, same as crumble.
+        rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        break;
     }
   }
 
@@ -230,7 +287,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   while (branchQueue.length > 0) {
     const { x, y, resumeDir } = branchQueue.shift();
     if (resumeDir !== undefined) {
-      // Post-crumble parallel universe: un-mark the direction so carve can slide through.
+      // Parallel universe branch (crumble broken / key collected → door open):
+      // un-mark the direction so carve can slide through the now-passable cell.
       const ci = idx(x, y);
       visitedDirs.set(ci, (visitedDirs.get(ci) ?? 0) & ~(1 << resumeDir));
       carve(resumeDir, x, y);
@@ -256,6 +314,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           break;
         }
         case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
+        case G.KEY:     out = 8; break;   // CellType.KEY
+        case G.DOOR:    out = 9; break;   // CellType.DOOR
         case G.BLOCK:   out = 1; break;   // CellType.WALL
         default:        out = 0; break;   // CellType.EMPTY  (UNTOUCHED — never carved)
       }
@@ -274,24 +334,42 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   const start = { x: startX - 1, y: -1 };
 
-  // Run _findGoal once without any key-door constraints so _tryPlaceKeyDoor knows
-  // which cell to gate.  If key-door placement either fails or is disabled, reuse
-  // this result directly — calling _findGoal a second time with an empty
-  // doorRequirements map would produce identical output.  Only when a door is
-  // actually placed do we need a second pass to recompute difficulty with the
-  // DOOR_LOCKED cost applied.
-  let doorRequirements = new Map();
-  let firstPass = null;
-  if (useKeyDoor) {
-    firstPass = _findGoal(outCells, width, height, start, new Map(), carvedMask);
-    const kdResult = _tryPlaceKeyDoor(outCells, width, height, start, firstPass.goal, rng);
-    if (kdResult) doorRequirements = kdResult.doorRequirements;
+  // Build doorRequirements from key-door pairs placed during carving.
+  // Toggle indices must match what _findGoal's toggleMap assigns: sequential over
+  // all CRUMBLE(7) and KEY(8) cells in flat scan order.
+  const toggleMapForDoors = new Map();
+  let tIdx = 0;
+  for (let i = 0; i < outCells.length; i++) {
+    if (outCells[i] === 7 || outCells[i] === 8) toggleMapForDoors.set(i, tIdx++);
+  }
+  const doorRequirements = new Map();
+  for (const { keyI, doorI } of keyDoorPairs) {
+    const kx = (keyI % pw) - 1, ky = Math.floor(keyI / pw) - 1;
+    const dx = (doorI % pw) - 1, dy = Math.floor(doorI / pw) - 1;
+    if (kx >= 0 && kx < width && ky >= 0 && ky < height && dx >= 0 && dx < width && dy >= 0 && dy < height) {
+      const ti = toggleMapForDoors.get(ky * width + kx);
+      if (ti !== undefined) doorRequirements.set(dy * width + dx, ti);
+    }
   }
 
-  const { goal, depths, difficulties } = doorRequirements.size > 0 || firstPass === null
-    ? _findGoal(outCells, width, height, start, doorRequirements, carvedMask)
-    : firstPass;
+  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
+
+  // Compute per-key cog depths and the effective gear budget.
+  // The door may not gate the goal, so a key might sit deeper than the direct
+  // path to the goal.  The player must have enough gears to reach every key,
+  // otherwise a level with a key they can never collect produces a dead-end.
+  const goalDepth = depths[goal.y * width + goal.x];
+  const keyDepths = [];
+  for (let i = 0; i < outCells.length; i++) {
+    if (outCells[i] === 8) {
+      keyDepths.push({ x: i % width, y: Math.floor(i / width), depth: depths[i] });
+    }
+  }
+  const effectiveCogs = keyDepths.reduce(
+    (max, k) => Math.max(max, k.depth >= 0 ? k.depth : 0),
+    goalDepth >= 0 ? goalDepth : 0
+  );
 
   // Translate visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
@@ -302,7 +380,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, doorRequirements, seed, visitedDirs: visitedDirsOut };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, doorRequirements, seed, visitedDirs: visitedDirsOut };
 }
 
 /**
@@ -464,102 +542,6 @@ function _onewayAllows(cellType, dx, dy) {
   }
 }
 
-// ── Key-door placement helpers ────────────────────────────────────────────────
-
-/**
- * BFS over player landing positions.
- * Returns a Set<flatIdx> of every cell the player can stop at from startPos,
- * given the current cells, toggleMap, worldState, and doorRequirements.
- * Crumbles are treated as solid (worldState=0 means nothing broken yet).
- */
-function _computeLandings(cells, width, height, startPos, toggleMap, worldState, doorRequirements) {
-  const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
-  const visited = new Set();
-  const startFlat = startPos.y * width + startPos.x;
-  visited.add(startFlat);
-  const queue = [startPos];
-  let head = 0;
-
-  while (head < queue.length) {
-    const pos = queue[head++];
-    for (const { dx, dy } of DIRS4) {
-      const { path } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
-      if (path.length > 0) {
-        const landing = path[path.length - 1];
-        const lk = landing.y * width + landing.x;
-        if (!visited.has(lk)) {
-          visited.add(lk);
-          queue.push(landing);
-        }
-      }
-    }
-  }
-  return visited;
-}
-
-/**
- * Attempt to place a key-door pair in outCells such that the goal is gated
- * behind the door.  Mutates cells in place on success.
- *
- * Returns { doorRequirements: Map<flatIdx, toggleIdx> } on success, or null
- * if no valid placement could be found.
- */
-function _tryPlaceKeyDoor(cells, width, height, startPos, goalPos, rng) {
-  const goalFlat  = goalPos.y  * width + goalPos.x;
-  const startFlat = startPos.y * width + startPos.x;
-
-  // Use an empty toggleMap so crumbles are treated as walls (solid, worldState=0).
-  const emptyToggleMap = new Map();
-
-  // Baseline: cells reachable from start with no door
-  const allReachable = _computeLandings(cells, width, height, startPos, emptyToggleMap, 0, null);
-  if (!allReachable.has(goalFlat)) return null;
-
-  // Try each reachable empty cell as a candidate door position.
-  // A valid door gates the goal (goal unreachable across the door) while
-  // still leaving at least one free cell for the key.
-  const candidates = [];
-  for (const flat of allReachable) {
-    if (flat === startFlat || flat === goalFlat) continue;
-    if (cells[flat] !== 0) continue; // only empty cells become doors
-
-    cells[flat] = 1; // temporarily wall-off
-    const withDoor = _computeLandings(cells, width, height, startPos, emptyToggleMap, 0, null);
-    cells[flat] = 0; // restore
-
-    if (!withDoor.has(goalFlat) && withDoor.size >= 2) {
-      candidates.push({ flat, freeReachable: withDoor });
-    }
-  }
-
-  if (candidates.length === 0) return null;
-
-  // Pick a random valid door position
-  const chosen  = candidates[Math.floor(rng() * candidates.length)];
-  const doorFlat = chosen.flat;
-
-  // Pick a key position from the free side (reachable without door, not start or door)
-  const freeForKey = Array.from(chosen.freeReachable).filter(
-    f => f !== startFlat && f !== doorFlat && cells[f] === 0
-  );
-  if (freeForKey.length === 0) return null;
-
-  const keyFlat = freeForKey[Math.floor(rng() * freeForKey.length)];
-
-  // Place KEY(8) and DOOR(9) in cells
-  cells[keyFlat]  = 8;
-  cells[doorFlat] = 9;
-
-  // Determine the key's toggle index: count of CRUMBLE+KEY cells before keyFlat
-  // in flat scan order — this matches what buildToggleMap() will produce.
-  let keyToggleIdx = 0;
-  for (let i = 0; i < keyFlat; i++) {
-    if (cells[i] === 7 || cells[i] === 8) keyToggleIdx++;
-  }
-
-  return { doorRequirements: new Map([[doorFlat, keyToggleIdx]]) };
-}
-
 // ── Per-step analysis for debug visualiser ────────────────────────────────────
 
 /**
@@ -590,6 +572,8 @@ export function computeStepAnalysis(step, width, height, start) {
           break;
         }
         case 5: out = 7; break; // G.CRUMBLE → CellType.CRUMBLE
+        case 6: out = 8; break; // G.KEY     → CellType.KEY
+        case 7: out = 9; break; // G.DOOR    → CellType.DOOR
         case 3: out = 1; break; // G.BLOCK   → CellType.WALL
         default: out = 1; break; // G.UNTOUCHED → treat as WALL (not yet carved)
       }
@@ -650,6 +634,31 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   let bfsNext = [];
   let currHead = 0;
 
+  // Walk the parentOf chain from fromStateKey upward, adding a free-backtrack
+  // node at every ancestor with newWorldState at the ancestor's original depth.
+  // This models the player collecting a toggle (key/crumble) and retracting their
+  // entire departure-cog chain back to any prior waypoint for 0 net gears.
+  function _propagateFreeBacktrack(fromStateKey, newWorldState) {
+    let curKey = fromStateKey;
+    while (curKey !== null && curKey !== undefined) {
+      const entry = parentOf.get(curKey);
+      if (!entry) break;
+      const ancPos   = entry.landing;
+      const ancDi    = ((curKey % 5) + 5) % 5;
+      const ancDepth = landingVisited.get(curKey);
+      if (ancDepth === undefined) break;
+      const freeKey = stateKey(ancPos, ancDi, newWorldState);
+      if ((landingVisited.get(freeKey) ?? Infinity) > ancDepth) {
+        landingVisited.set(freeKey, ancDepth);
+        parentOf.set(freeKey, { fromKey: curKey, landing: ancPos });
+        const pk = posKey(ancPos);
+        if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
+        bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi });
+      }
+      curKey = entry.fromKey;
+    }
+  }
+
   while (currHead < bfsCurr.length || bfsNext.length > 0) {
     if (currHead >= bfsCurr.length) {
       bfsCurr = bfsNext; bfsNext = []; currHead = 0;
@@ -707,19 +716,17 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           (isBendMove ? bfsNext : bfsCurr).push({ pos: from, depth: nd, worldState: newWorldState, di: i });
         }
 
-        // "Free-backtrack" variant: the player can break the crumble and immediately
-        // return to pos for 0 net cogs — the crumble-stop at `from` is reclaimed
-        // on the return slide.  Models the sequence: pos → from (crumble breaks) →
-        // pos (reclaim `from`) → anywhere through the now-broken crumble.
-        // Enqueue pos with the crumble broken at the same bend-depth as pos itself.
-        const freeKey = stateKey(pos, 4, newWorldState);
-        if ((landingVisited.get(freeKey) ?? Infinity) > depth) {
-          landingVisited.set(freeKey, depth);
-          parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: pos });
-          const pk = posKey(pos);
-          if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
-          bfsCurr.push({ pos: pos, depth: depth, worldState: newWorldState, di: 4 }); // 0 extra cost
-        }
+        // "Free-backtrack" variant: the player can break the crumble and retract
+        // their entire departure-cog chain back to any prior waypoint for 0 net
+        // gears.  Propagate the new worldState to pos AND all its ancestors.
+        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState);
+      }
+
+      // "Free-backtrack via key": collect the key and retract the entire
+      // departure-cog chain back to any prior waypoint for 0 net gears.
+      if (keyPos && keyPos.toggleIdx !== undefined) {
+        const newWorldState = worldState | (1 << keyPos.toggleIdx);
+        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState);
       }
 
       // "Free-backtrack via one-way" variant: the player slid in the reversal direction,

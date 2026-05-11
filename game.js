@@ -1,4 +1,4 @@
-import { slidePlayer, buildToggleMap, canReachGoal } from './puzzle.js';
+import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType } from './puzzle.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
@@ -87,16 +87,31 @@ function loadLevel(level) {
   state.pendingOnewayBreak = null;
   state.prevDir     = null;
 
-  // Gear budget: exactly the minimum solution depth (bend count) from the BFS.
+  // Gear budget: max of goal depth and any key depths so the player always has
+  // enough gears to collect every key in the level before reaching the goal.
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
-  const budget = goalDepth > 0 ? goalDepth : 1;
+  const budget = (level.effectiveCogs ?? goalDepth) > 0 ? (level.effectiveCogs ?? goalDepth) : 1;
   state.gears      = [];
   state.gearsLeft  = budget;
   state.totalGears = budget;
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
+
+  // Debug: show cog budget breakdown when a key requires more gears than the direct goal path.
+  const cogDebugEl = document.getElementById('cog-debug');
+  if (cogDebugEl) {
+    if (level.keyDepths && level.keyDepths.length > 0) {
+      const hasOverrun = level.keyDepths.some(k => k.depth > goalDepth);
+      const keyParts   = level.keyDepths.map(k => `K(${k.x},${k.y})=${k.depth >= 0 ? k.depth : '?'}`).join(' ');
+      cogDebugEl.textContent = `goal=${goalDepth} ${keyParts} → budget=${budget}${hasOverrun ? '  ⚠ key>goal' : ''}`;
+      cogDebugEl.dataset.overrun = hasOverrun ? '1' : '';
+      cogDebugEl.hidden = false;
+    } else {
+      cogDebugEl.hidden = true;
+    }
+  }
   winBanner.hidden     = true;
   deadEndBanner.hidden = true;
   clearTimeout(_deadEndTimer);
@@ -212,7 +227,31 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
 function _scheduleDeadEndCheck() {
   // Skip the check if the player is in the boat (y < 0) — always reachable from there.
   if (state.playerPos.y < 0) return;
-  if (!canReachGoal(state.level, state.playerPos, state.worldState, state.toggleMap)) {
+
+  // Find uncollected key positions still present in the level.
+  const { cells, width, goal } = state.level;
+  const uncollectedKeys = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] === CellType.KEY) {
+      const tIdx = state.toggleMap?.get(i);
+      if (tIdx === undefined || (state.worldState & (1 << tIdx)) === 0) {
+        uncollectedKeys.push({ x: i % width, y: Math.floor(i / width) });
+      }
+    }
+  }
+
+  // Check reachability from the current player position AND every cog already
+  // placed on the chain — the player can backtrack to any of them for free.
+  const startPositions = [state.playerPos, ...state.gears];
+  const targets = uncollectedKeys.length > 0
+    ? [goal, ...uncollectedKeys].filter(Boolean)
+    : [goal].filter(Boolean);
+
+  const stuck = !startPositions.some(p =>
+    canReachAnyOf(state.level, p, targets, state.worldState, state.toggleMap)
+  );
+
+  if (stuck) {
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
         deadEndBanner.hidden = false;
