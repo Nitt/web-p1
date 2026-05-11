@@ -355,6 +355,17 @@ function _executeBacktrack(gearIdx) {
         // falsely register as a bend (which would consume a gear and place a cog
         // at the boat anchor position).
         if (gearIdx < 0) state.prevDir = null;
+        // Pending-cog pop: the player just landed on the last gear — it hasn't
+        // committed to a new bend yet, so release it (mirrors _onPlayerLanded).
+        if (gearIdx >= 0 && state.gears.length > 0) {
+          const last = state.gears[state.gears.length - 1];
+          if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
+            const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+            state.gears.pop();
+            state.gearsLeft++;
+            state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
+          }
+        }
         drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
         setChainSpinning(false);
         _scheduleDeadEndCheck();
