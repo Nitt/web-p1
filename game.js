@@ -1,4 +1,4 @@
-import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType } from './puzzle.js';
+import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
@@ -279,11 +279,21 @@ function _scheduleDeadEndCheck() {
  * so backtracking always lands on an existing chain position rather than sliding past.
  */
 function _findOnewayEntryGear(owx, owy, dx, dy) {
-  for (let i = state.gears.length - 1; i >= 0; i--) {
-    const g = state.gears[i];
-    if ((g.x - owx) * dx + (g.y - owy) * dy > 0) return i;
+  // Walk chain segments; find the first one that passes through (owx,owy)
+  // in the oneway's allowed direction (-dx,-dy). Returns the gear index of
+  // the waypoint on the far side (-1 = start), or null if chain never crossed.
+  const chain = [state.level.start, ...state.gears, state.playerPos];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const a = chain[i], b = chain[i + 1];
+    const segDx = Math.sign(b.x - a.x);
+    const segDy = Math.sign(b.y - a.y);
+    if (segDx !== -dx || segDy !== -dy) continue;
+    const onSeg = segDy === 0
+      ? (owy === a.y && Math.min(a.x, b.x) < owx && owx < Math.max(a.x, b.x))
+      : (owx === a.x && Math.min(a.y, b.y) < owy && owy < Math.max(a.y, b.y));
+    if (onSeg) return i - 1; // i=0 → -1 means backtrack to start
   }
-  return -1;
+  return null;
 }
 
 /**
@@ -380,16 +390,10 @@ function _tryOnewayBacktrack(target, dx, dy, didMove) {
   if (!target.blockedByOneway || didMove) return false;
   const { x: owx, y: owy } = target.blockedByOneway;
   state.pendingOnewayBreak = null;
+  // Only backtrack when pressing directly against the oneway's allowed direction.
+  if (!onewayAllows(state.level.cells[owy * state.level.width + owx], -dx, -dy)) return false;
   const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
-  if (entryIdx >= 0) { _executeBacktrack(entryIdx); return true; }
-  const s      = state.level.start;
-  const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
-  const onBoatSegment =
-    (s.x === firstPt.x && owx === s.x &&
-     Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
-    (s.y === firstPt.y && owy === s.y &&
-     Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
-  if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return true; }
+  if (entryIdx !== null) { _executeBacktrack(entryIdx); return true; }
   return false;
 }
 

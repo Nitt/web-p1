@@ -813,57 +813,12 @@ function _updateBoatAndWaterline(level) {
 
 function _drawBoat() {
   if (!boatEl) return;
-  const NS = 'http://www.w3.org/2000/svg';
-  boatEl.innerHTML = '';
-
-  // Hull body
-  const hull = document.createElementNS(NS, 'path');
-  hull.setAttribute('d', 'M 12 34 Q 50 52 88 34 L 82 44 Q 50 60 18 44 Z');
-  hull.setAttribute('fill', '#5a3a1a');
-  hull.setAttribute('stroke', '#3a2010');
-  hull.setAttribute('stroke-width', '1');
-  hull.setAttribute('stroke-linejoin', 'round');
-  boatEl.appendChild(hull);
-
-  // Hull deck
-  const deck = document.createElementNS(NS, 'path');
-  deck.setAttribute('d', 'M 12 34 Q 50 22 88 34');
-  deck.setAttribute('fill', '#8a5a2a');
-  deck.setAttribute('stroke', '#5a3a1a');
-  deck.setAttribute('stroke-width', '1.5');
-  boatEl.appendChild(deck);
-
-  // Cabin
-  const cabin = document.createElementNS(NS, 'rect');
-  cabin.setAttribute('x', '36'); cabin.setAttribute('y', '15');
-  cabin.setAttribute('width', '28'); cabin.setAttribute('height', '18');
-  cabin.setAttribute('rx', '3'); cabin.setAttribute('ry', '3');
-  cabin.setAttribute('fill', '#c8a060');
-  cabin.setAttribute('stroke', '#8a6030'); cabin.setAttribute('stroke-width', '1');
-  boatEl.appendChild(cabin);
-
-  // Window
-  const win = document.createElementNS(NS, 'rect');
-  win.setAttribute('x', '43'); win.setAttribute('y', '18');
-  win.setAttribute('width', '8'); win.setAttribute('height', '7');
-  win.setAttribute('rx', '2');
-  win.setAttribute('fill', '#a8d8f0');
-  win.setAttribute('stroke', '#7a96b0'); win.setAttribute('stroke-width', '0.8');
-  boatEl.appendChild(win);
-
-  // Mast
-  const mast = document.createElementNS(NS, 'line');
-  mast.setAttribute('x1', '50'); mast.setAttribute('y1', '15');
-  mast.setAttribute('x2', '50'); mast.setAttribute('y2', '2');
-  mast.setAttribute('stroke', '#5a3a1a'); mast.setAttribute('stroke-width', '1.5');
-  boatEl.appendChild(mast);
-
-  // Flag
-  const flag = document.createElementNS(NS, 'path');
-  flag.setAttribute('d', 'M 50 2 L 61 6 L 50 10 Z');
-  flag.setAttribute('fill', '#e04020');
-  flag.setAttribute('stroke', '#a02800'); flag.setAttribute('stroke-width', '0.5');
-  boatEl.appendChild(flag);
+  fetch('./assets/boat.svg')
+    .then(r => r.text())
+    .then(svg => {
+      const inner = svg.replace(/<svg[^>]*>/, '').replace(/<\/svg>/, '');
+      boatEl.innerHTML = inner;
+    });
 }
 
 function _drawWaterline(W, wlH, totalH) {

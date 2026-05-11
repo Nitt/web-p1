@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60">
+  <!-- Hull body -->
+  <path d="M 12 34 Q 50 52 88 34 L 82 44 Q 50 60 18 44 Z" fill="#5a3a1a" stroke="#3a2010" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Hull deck -->
+  <path d="M 12 34 Q 50 22 88 34" fill="#8a5a2a" stroke="#5a3a1a" stroke-width="1.5"/>
+  <!-- Cabin -->
+  <rect x="36" y="15" width="28" height="18" rx="3" ry="3" fill="#c8a060" stroke="#8a6030" stroke-width="1"/>
+  <!-- Window -->
+  <rect x="43" y="18" width="8" height="7" rx="2" fill="#a8d8f0" stroke="#7a96b0" stroke-width="0.8"/>
+  <!-- Mast -->
+  <line x1="50" y1="15" x2="50" y2="2" stroke="#5a3a1a" stroke-width="1.5"/>
+  <!-- Flag -->
+  <path d="M 50 2 L 61 6 L 50 10 Z" fill="#e04020" stroke="#a02800" stroke-width="0.5"/>
+</svg>
