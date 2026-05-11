@@ -135,75 +135,69 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, bits]) => [k, dirBitsToSet(bits)])), pw, ph, fromX, fromY, toX, toY, label });
   }
 
-  // Carving — slide physics respected: recursion continues same-direction slides
-  // through empty/oneway cells (one slide = one logical step).  The only place
-  // we enqueue instead of recurse is the post-crumble universe continuation,
-  // because that is a genuinely new branch that belongs in the next BFS wave.
+  // True when at least two cells beyond (nx, ny) in dir are reachable — required
+  // before placing a one-way so the player slides far enough past it to learn its effect.
+  function hasOnewayRoom(nx, ny, dir) {
+    const nnx = nx + dir.dx, nny = ny + dir.dy;
+    const nnnx = nnx + dir.dx, nnny = nny + dir.dy;
+    const ok = v => v === G.UNTOUCHED || v === G.EMPTY;
+    return ok(cells[idx(nnx, nny)]) && ok(cells[idx(nnnx, nnny)]);
+  }
+
+  function carveUntouched(dirIdx, x, y, nx, ny, ni, dir) {
+    const type = pickType();
+    if (type === 'empty') {
+      cells[ni] = G.EMPTY;
+      rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
+      carve(dirIdx, nx, ny);
+    } else if (type === 'oneway') {
+      if (hasOnewayRoom(nx, ny, dir)) {
+        cells[idx(nx + dir.dx, ny + dir.dy)] = G.EMPTY;
+        cells[ni] = G.ONEWAY;
+        onewayDir.set(ni, dirIdx);
+      } else {
+        cells[ni] = G.EMPTY;
+      }
+      rec(x, y, nx, ny, `oneway-${dir.key} (${nx-1},${ny-1})`);
+      carve(dirIdx, nx, ny);
+    } else if (type === 'block') {
+      cells[ni] = G.BLOCK;
+      rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
+      enqueue(x, y);
+    } else if (type === 'crumble') {
+      cells[ni] = G.CRUMBLE;
+      rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
+      enqueue(x, y);
+      branchQueue.push({ x, y, resumeDir: dirIdx });
+    } else {
+      cells[ni] = G.STICKY;
+      rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
+      enqueue(nx, ny);
+    }
+  }
+
+  // Carving — slide physics respected: same-direction recursion continues through
+  // empty/oneway cells (one slide = one logical step).
   function carve(dirIdx, x, y) {
     const i = idx(x, y);
     if (hasVisited(i, dirIdx)) return;
     markVisited(i, dirIdx);
 
-    const dir = DIRS[dirIdx];
-    const nx = x + dir.dx;
-    const ny = y + dir.dy;
-    const ni = idx(nx, ny);
+    const dir  = DIRS[dirIdx];
+    const nx   = x + dir.dx;
+    const ny   = y + dir.dy;
+    const ni   = idx(nx, ny);
     const cell = cells[ni];
 
     switch (cell) {
-      case G.UNTOUCHED: {
-        const type = pickType();
-        if (type === 'empty') {
-          cells[ni] = G.EMPTY;
-          rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny);          // same slide, continue in same direction
-        } else if (type === 'oneway') {
-          // Only place a one-way if at least two cells beyond it are reachable.
-          // This guarantees the player slides far enough past the one-way that they
-          // can turn around and collide with it from the wrong side, making its
-          // behaviour learnable rather than skippable on first encounter.
-          const nnx = nx + dir.dx;
-          const nny = ny + dir.dy;
-          const nni = idx(nnx, nny);
-          const nnnx = nnx + dir.dx;
-          const nnny = nny + dir.dy;
-          const nnni = idx(nnnx, nnny);
-          const beyondOk = (v) => v === G.UNTOUCHED || v === G.EMPTY;
-          if (beyondOk(cells[nni]) && beyondOk(cells[nnni])) {
-            cells[nni] = G.EMPTY;
-            cells[ni]  = G.ONEWAY;
-            onewayDir.set(ni, dirIdx);
-          } else {
-            cells[ni] = G.EMPTY;
-          }
-          rec(x, y, nx, ny, `oneway-${dir.key} (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny);          // same slide, continue through oneway
-        } else if (type === 'block') {
-          cells[ni] = G.BLOCK;
-          rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
-          enqueue(x, y);
-        } else if (type === 'crumble') {
-          cells[ni] = G.CRUMBLE;
-          rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
-          enqueue(x, y);                  // stop before crumble — explore other dirs from here
-          // Post-crumble parallel universe: from the same pre-crumble cell, the crumble
-          // is gone so the slide continues through it.  Re-queue (x,y) with a resumeDir
-          // so the continuation fires in BFS order from the actual landing position.
-          branchQueue.push({ x, y, resumeDir: dirIdx });
-        } else { // sticky
-          cells[ni] = G.STICKY;
-          rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
-          enqueue(nx, ny);
-        }
-        break;
-      }
+      case G.UNTOUCHED: carveUntouched(dirIdx, x, y, nx, ny, ni, dir); break;
       case G.EMPTY:
         rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);  // continue slide if direction is new
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         break;
       case G.CRUMBLE:
         rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);  // parallel universe: crumble is gone, slide through
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         break;
       case G.BLOCK:
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
@@ -217,10 +211,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         const allowedDir = onewayDir.get(ni);
         if (allowedDir === dirIdx) {
           rec(x, y, nx, ny, `slide-oneway-allowed (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny);  // correct direction — slide through
+          carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
-          enqueue(x, y);          // wrong direction — blocked before it
+          enqueue(x, y);
         }
         break;
       }
@@ -236,12 +230,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   while (branchQueue.length > 0) {
     const { x, y, resumeDir } = branchQueue.shift();
     if (resumeDir !== undefined) {
-      // Post-crumble parallel universe: un-mark dirIdx so carve can slide through the crumble.
+      // Post-crumble parallel universe: un-mark the direction so carve can slide through.
       const ci = idx(x, y);
       visitedDirs.set(ci, (visitedDirs.get(ci) ?? 0) & ~(1 << resumeDir));
       carve(resumeDir, x, y);
     } else {
-      if (_steps) _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, bits]) => [k, dirBitsToSet(bits)])), pw, ph, fromX: x, fromY: y, toX: -1, toY: -1, label: `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining` });
+      rec(x, y, -1, -1, `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining`);
       for (let i = 0; i < DIRS.length; i++) carve(i, x, y);
     }
   }

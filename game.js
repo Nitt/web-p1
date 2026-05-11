@@ -337,68 +337,34 @@ function _flushQueuedMove() {
   }
 }
 
-function _executeMove(dx, dy) {
-  _retractToken++; // cancel any in-progress retraction animation
-  // Cancel any pending dead-end popup when a new move starts.
-  clearTimeout(_deadEndTimer);
-  _deadEndTimer = null;
-  deadEndBanner.hidden = true;
-  const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
-  const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
-  const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
-  const hasCrumble = target.crumble !== null;
-
-  // ── One-way backtrack ──────────────────────────────────────────────────────
-  // Retract only when the player is already adjacent to the oneway (didMove=false):
-  // the first press slides toward it and stops before it (normal block);
-  // the second press from that adjacent cell triggers the retraction.
-  // When the player slid this press (didMove=true) they just stopped — no retraction yet.
-  if (target.blockedByOneway && !didMove) {
-    const { x: owx, y: owy } = target.blockedByOneway;
-    state.pendingOnewayBreak = null;
-    const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
-    if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
-    // No gear on the far side — check if the boat (start position) is there.
-    // Valid only when the one-way sits on the straight chain segment from the boat
-    // to the first gear (or the player if no gears exist). This prevents false
-    // backtracks through unrelated one-ways the player never actually traversed.
-    const s = state.level.start;
-    const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
-    const onBoatSegment =
-      (s.x === firstPt.x && owx === s.x &&
-       Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
-      (s.y === firstPt.y && owy === s.y &&
-       Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
-    if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
-  }
-
-  if (!didMove && !hasCrumble) {
-    state.pendingOnewayBreak = null;
-    // No movement occurred — reschedule the dead-end check in case the timer was cleared above.
-    playBlocked();
-    _scheduleDeadEndCheck();
-    return;
-  }
+function _tryOnewayBacktrack(target, dx, dy, didMove) {
+  if (!target.blockedByOneway || didMove) return false;
+  const { x: owx, y: owy } = target.blockedByOneway;
   state.pendingOnewayBreak = null;
+  const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
+  if (entryIdx >= 0) { _executeBacktrack(entryIdx); return true; }
+  const s      = state.level.start;
+  const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
+  const onBoatSegment =
+    (s.x === firstPt.x && owx === s.x &&
+     Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
+    (s.y === firstPt.y && owy === s.y &&
+     Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
+  if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return true; }
+  return false;
+}
 
-  // Moving into the boat (above the grid) is a free move — no gear consumed.
+// Computes all pre-animation gear context and applies the straight-through pop.
+// Returns null if the move is blocked by an empty gear budget.
+function _buildDepartureCtx(target, dx, dy) {
   const isBoatEntry = target.y < 0;
 
-  // ── Straight-through cog pop ───────────────────────────────────────────────
-  // If the player is sitting on the last cog and moves in the same direction
-  // as the chain arrives at that cog (from the previous cog or the boat), the
-  // cog is a straight pass-through — not a bend. Remove it so the chain doesn't
-  // acquire a phantom kink regardless of how the player arrived at this cell.
   let isStraightThrough = false;
   if (!isBoatEntry && state.gears.length > 0) {
     const last = state.gears[state.gears.length - 1];
     if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-      const prev = state.gears.length > 1
-        ? state.gears[state.gears.length - 2]
-        : state.level.start;
-      const arrDx = Math.sign(last.x - prev.x);
-      const arrDy = Math.sign(last.y - prev.y);
-      if (dx === arrDx && dy === arrDy) {
+      const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+      if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
         isStraightThrough = true;
         state.gears.pop();
         state.gearsLeft++;
@@ -407,199 +373,198 @@ function _executeMove(dx, dy) {
     }
   }
 
-  // A cog is placed only when the player changes direction (bend or reversal).
-  // A straight-through pop already handled the departure, so no bend here.
   const isBendRaw = !isStraightThrough && state.prevDir !== null &&
     (dx !== state.prevDir.dx || dy !== state.prevDir.dy);
 
-  // If the player reverses directly toward the last cog (or the boat when no cogs
-  // exist yet), treat it as a retraction rather than a new branch — no departure
-  // cog, so sticky stops along the return path don't accumulate phantom cogs.
   let isRetractingTowardLastCog = false;
   if (isBendRaw && !isBoatEntry) {
-    const anchor = state.gears.length > 0
-      ? state.gears[state.gears.length - 1]
-      : state.level.start;
-    const toAnchorDx = Math.sign(anchor.x - state.playerPos.x);
-    const toAnchorDy = Math.sign(anchor.y - state.playerPos.y);
-    isRetractingTowardLastCog = (dx === toAnchorDx && dy === toAnchorDy);
+    const anchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+    isRetractingTowardLastCog =
+      dx === Math.sign(anchor.x - state.playerPos.x) &&
+      dy === Math.sign(anchor.y - state.playerPos.y);
   }
 
   const isBend = isBendRaw && !isRetractingTowardLastCog;
 
-  // ── Gear check ────────────────────────────────────────────────────────────
-  // Determine if landing on an already-visited cog (revisit = chain shortens,
-  // no new gear consumed) or on a bend that needs a free gear.
   const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  // The cog for a bend is placed at the DEPARTURE cell (the turning corner), not the landing.
-  // If the player is already sitting on the last cog (e.g. after a revisit), don't duplicate it.
   const isAtLastCog = state.gears.length > 0 &&
     state.gears[state.gears.length - 1].x === state.playerPos.x &&
     state.gears[state.gears.length - 1].y === state.playerPos.y;
   const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog;
-  if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return; }  // no gears left
-  // With 0 gears, only the immediately previous cog can be revisited (not older ones).
-  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return; }
 
-  state.isMoving = true;
-  playSlide();
-  // When moving into the cog immediately behind the latest one, shorten the
-  // chain state before the animation so the retraction is visible during movement.
-  // If isBend is also true (direction reversal), a departure gear will be pushed
-  // just below — account for it in the effective count so isOneBack fires correctly.
-  const pendingBendGear = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
+  if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return null; }
+  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return null; }
+
+  const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
   const effectiveGearCount = state.gears.length + (pendingBendGear ? 1 : 0);
   const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === effectiveGearCount - 2)
                  || (isBoatEntry && state.gears.length === 1);
+
+  return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
+           revisitIdx, isAtLastCog, isOneBack, pendingBendGear };
+}
+
+// Draws the pre-animation chain state and pushes the departure cog if turning.
+function _applyPreAnimationChain(ctx) {
+  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear } = ctx;
   if (isOneBack && !pendingBendGear) {
-    drawChain(
-      state.gears.slice(0, revisitIdx + 1),
-      state.playerPos, state.gearsLeft + 1, state.totalGears, state.level,
-    );
+    drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
+  }
+  setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
+  if (isBend && !isAtLastCog && !isBoatEntry) {
+    state.gears.push({ x: state.playerPos.x, y: state.playerPos.y });
+    state.gearsLeft--;
+    if (isOneBack) {
+      drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
+    } else {
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    }
+  }
+}
+
+function _applyCollectibles(target) {
+  if (target.crumble !== null) {
+    const { x: cx, y: cy, toggleIdx } = target.crumble;
+    if (toggleIdx !== undefined) state.worldState |= (1 << toggleIdx);
+    removeCrumble(cx, cy, state.level);
+    playCrumble();
+  }
+  if (target.keyCollected) {
+    const { x: kx, y: ky, toggleIdx } = target.keyCollected;
+    if (toggleIdx !== undefined) {
+      state.worldState |= (1 << toggleIdx);
+      if (state.level.doorRequirements) {
+        for (const [flatIdx, reqToggle] of state.level.doorRequirements) {
+          if (reqToggle === toggleIdx) {
+            openDoor(flatIdx % state.level.width, Math.floor(flatIdx / state.level.width), state.level);
+            playDoorOpen();
+          }
+        }
+      }
+    }
+    removeKey(kx, ky, state.level);
+    playKeyCollect();
+  }
+}
+
+function _handleWin() {
+  state.won = true;
+  playWin();
+  state.queuedMove = null;
+  setChainSpinning(false);
+  winBanner.hidden = false;
+  function _advance() {
+    winBanner.hidden = true;
+    winBanner.removeEventListener('pointerdown', _advance);
+    document.removeEventListener('keyup', _advance);
+    _nextLevel();
+  }
+  winBanner.addEventListener('pointerdown', _advance, { once: true });
+  document.addEventListener('keyup', _advance, { once: true });
+}
+
+function _onPlayerLanded(target, dx, dy, ctx) {
+  const { isBoatEntry, isRetractingTowardLastCog, revisitIdx, isOneBack } = ctx;
+
+  const gearsBeforeUpdate = state.gears.slice();
+  let freedOnRevisit = -1;
+
+  if (!isBoatEntry) {
+    if (revisitIdx >= 0) {
+      freedOnRevisit   = state.gears.length - revisitIdx - 1;
+      state.gears      = state.gears.slice(0, revisitIdx + 1);
+      state.gearsLeft += freedOnRevisit;
+    }
+  } else {
+    state.gearsLeft += state.gears.length;
+    state.gears = [];
   }
 
-  setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
-  const departurePos = { x: state.playerPos.x, y: state.playerPos.y };
-  // Show the departure cog BEFORE animating so the chain renders correctly during the slide.
-  if (isBend && !isAtLastCog && !isBoatEntry) {
-      // Commit: push to state.gears and consume budget.
-      state.gears.push({ x: departurePos.x, y: departurePos.y });
-      state.gearsLeft--;
-      if (isOneBack) {
-        // Bend + immediate revisit: show the shortened chain so retraction is
-        // visible during movement rather than snapping after landing.
-        drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
-      } else {
-        drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-      }
+  state.prevDir = isBoatEntry ? null : { dx, dy };
+
+  if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0) {
+    const anchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+    state.prevDir = {
+      dx: Math.sign(state.playerPos.x - anchor.x),
+      dy: Math.sign(state.playerPos.y - anchor.y),
+    };
   }
+
+  // Compute before pending-cog pop so the pop doesn't trigger a spurious retraction.
+  const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
+                           && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
+
+  // Pending-cog pop: if the player landed exactly on the last cog with nothing freed
+  // behind it, the cog hasn't committed to a bend yet — release it back to the budget.
+  if (!isBoatEntry && state.gears.length > 0 && freedOnRevisit === 0) {
+    const last = state.gears[state.gears.length - 1];
+    if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
+      const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+      state.gears.pop();
+      state.gearsLeft++;
+      state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
+    }
+  }
+
+  if (needsRetractAnim) {
+    state.isMoving = true;
+    _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+      state.isMoving = false;
+      setChainSpinning(false);
+      _scheduleDeadEndCheck();
+      _flushQueuedMove();
+    });
+  }
+
+  _applyCollectibles(target);
+
+  if (target.x === state.level.goal.x && target.y === state.level.goal.y) {
+    _handleWin();
+    return;
+  }
+
+  if (!needsRetractAnim) {
+    setChainSpinning(false);
+    drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+    _scheduleDeadEndCheck();
+    _flushQueuedMove();
+  }
+}
+
+function _executeMove(dx, dy) {
+  _retractToken++;
+  clearTimeout(_deadEndTimer);
+  _deadEndTimer = null;
+  deadEndBanner.hidden = true;
+
+  const gearSet    = new Set(state.gears.map(g => g.y * state.level.width + g.x));
+  const target     = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
+  const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
+  const hasCrumble = target.crumble !== null;
+
+  if (_tryOnewayBacktrack(target, dx, dy, didMove)) return;
+
+  if (!didMove && !hasCrumble) {
+    state.pendingOnewayBreak = null;
+    playBlocked();
+    _scheduleDeadEndCheck();
+    return;
+  }
+  state.pendingOnewayBreak = null;
+
+  const ctx = _buildDepartureCtx(target, dx, dy);
+  if (ctx === null) return;
+
+  state.isMoving = true;
+  playSlide();
+  _applyPreAnimationChain(ctx);
+
   const moveToken = _moveToken;
   animatePlayer(state.playerPos, target, state.level, () => {
     if (moveToken !== _moveToken) return;
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
     playLand();
-
-    // ── Update gear chain ────────────────────────────────────────────────────
-    const gearsBeforeUpdate = state.gears.slice();
-    let _freedOnRevisit = -1; // -1 = no revisit
-    if (!isBoatEntry) {
-      if (revisitIdx >= 0) {
-        // Revisited a past cog — shorten chain back to it, reclaim gears.
-        _freedOnRevisit = state.gears.length - revisitIdx - 1;
-        state.gears = state.gears.slice(0, revisitIdx + 1);
-        state.gearsLeft += _freedOnRevisit;
-      }
-      // New bend gear was already pushed before animation; straight-through has no cog.
-    } else {
-      // Returned to the boat — retract the full chain, reclaim all gears.
-      state.gearsLeft += state.gears.length;
-      state.gears = [];
-    }
-    state.prevDir = isBoatEntry ? null : { dx, dy };
-
-    // When retracting toward the last cog (or the boat) but stopping mid-segment
-    // (e.g. on a sticky), reset prevDir to the forward direction of that chain
-    // segment so continuing forward from here doesn't falsely register as a bend.
-    if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0) {
-      const anchor = state.gears.length > 0
-        ? state.gears[state.gears.length - 1]
-        : state.level.start;
-      state.prevDir = {
-        dx: Math.sign(state.playerPos.x - anchor.x),
-        dy: Math.sign(state.playerPos.y - anchor.y),
-      };
-    }
-
-    // Compute before the pending-cog pop so the pop doesn't trigger a spurious retraction.
-    const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
-                             && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
-
-    // ── Pending-cog pop ───────────────────────────────────────────────────────
-    // The last cog in the chain is always "under" the player — it hasn't committed
-    // to a turn until the player actually leaves in a new direction. Whenever the
-    // player lands directly on the last cog (and nothing was freed behind it),
-    // release it back to the budget so the counter reflects turns remaining.
-    // Gate on freed === 0 to avoid popping genuine bend cogs during multi-step revisits.
-    if (!isBoatEntry && state.gears.length > 0 && _freedOnRevisit === 0) {
-      const last = state.gears[state.gears.length - 1];
-      if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-        // Compute arrival direction at this cog before popping, so prevDir is
-        // correct for the next move (chain came from boat/prev-cog direction, not retraction direction).
-        const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
-        state.gears.pop();
-        state.gearsLeft++;
-        state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
-      }
-    }
-    if (needsRetractAnim) {
-      state.isMoving = true; // keep blocked during retraction
-      _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
-        state.isMoving = false;
-        setChainSpinning(false);
-        _scheduleDeadEndCheck();
-        _flushQueuedMove();
-      });
-    } else {
-      // drawChain is called below, after setChainSpinning(false), so centerLastGear is correct.
-    }
-
-    // Activate the crumble toggle: set its bit in worldState and update the DOM.
-    if (hasCrumble) {
-      const { x: cx, y: cy, toggleIdx } = target.crumble;
-      if (toggleIdx !== undefined) {
-        state.worldState |= (1 << toggleIdx);
-      }
-      removeCrumble(cx, cy, state.level);
-      playCrumble();
-    }
-
-    // Key collected: activate its toggle, animate removal, and open paired doors.
-    if (target.keyCollected) {
-      const { x: kx, y: ky, toggleIdx } = target.keyCollected;
-      if (toggleIdx !== undefined) {
-        state.worldState |= (1 << toggleIdx);
-        if (state.level.doorRequirements) {
-          for (const [flatIdx, reqToggle] of state.level.doorRequirements) {
-            if (reqToggle === toggleIdx) {
-              openDoor(flatIdx % state.level.width, Math.floor(flatIdx / state.level.width), state.level);
-              playDoorOpen();
-            }
-          }
-        }
-      }
-      removeKey(kx, ky, state.level);
-      playKeyCollect();
-    }
-
-    if (
-      target.x === state.level.goal.x &&
-      target.y === state.level.goal.y
-    ) {
-      state.won = true;
-      playWin();
-      state.queuedMove = null;
-      setChainSpinning(false);
-      winBanner.hidden = false;
-
-      function _advance() {
-        winBanner.hidden = true;
-        winBanner.removeEventListener('pointerdown', _advance);
-        document.removeEventListener('keyup', _advance);
-        _nextLevel();
-      }
-      winBanner.addEventListener('pointerdown', _advance, { once: true });
-      document.addEventListener('keyup', _advance, { once: true });
-      return;
-    }
-
-    // Flush queued move if it arrived within the time window.
-    // (needsRetractAnim defers this until after the retraction animation.)
-    if (!needsRetractAnim) {
-      setChainSpinning(false);
-      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-      _scheduleDeadEndCheck();
-      _flushQueuedMove();
-    }
+    _onPlayerLanded(target, dx, dy, ctx);
   });
 }
