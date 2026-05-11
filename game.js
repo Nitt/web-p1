@@ -548,9 +548,13 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
                            && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
 
-  // Pending-cog pop: if the player landed exactly on the last cog with nothing freed
-  // behind it, the cog hasn't committed to a bend yet — release it back to the budget.
-  if (!isBoatEntry && state.gears.length > 0 && freedOnRevisit === 0) {
+  // Capture retract target before pop — animation must end at the player's cell,
+  // not one step past it (which would happen if the pop reduces the length first).
+  const retractTarget = state.gears.length;
+
+  // Pending-cog pop: if the player is on the last cog it hasn't committed to a new
+  // bend yet — release it back to the budget regardless of how we got here.
+  if (!isBoatEntry && state.gears.length > 0) {
     const last = state.gears[state.gears.length - 1];
     if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
       const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
@@ -562,9 +566,10 @@ function _onPlayerLanded(target, dx, dy, ctx) {
 
   if (needsRetractAnim) {
     state.isMoving = true;
-    _animateChainRetract(gearsBeforeUpdate, state.gears.length, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+    _animateChainRetract(gearsBeforeUpdate, retractTarget, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
       state.isMoving = false;
       setChainSpinning(false);
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       _scheduleDeadEndCheck();
       _flushQueuedMove();
     });
