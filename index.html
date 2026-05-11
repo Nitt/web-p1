@@ -13,10 +13,9 @@
   <section id="puzzle-view" class="view active">
 
     <header class="puzzle-header">
-      <button class="btn-ghost" id="back-btn" aria-label="Back to level select">← Back</button>
-      <h1 id="level-label">Level 1</h1>
+<h1 id="level-label">Level 1</h1>
       <div class="header-actions">
-        <button class="btn-ghost" id="skip-btn" aria-label="Skip level">Skip</button>
+        <button class="btn-ghost" id="skip-btn" aria-label="Skip level" hidden>Skip</button>
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
       </div>
     </header>
@@ -50,7 +49,7 @@
     <span class="win-hint">Tap anywhere to restart</span>
   </div>
 
-  <div id="debug-btns">
+  <div id="debug-btns" hidden>
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
@@ -89,6 +88,13 @@
     <input type="range" id="gen-debug-slider" min="0" max="0" value="0">
     <div id="gen-debug-counter">— / —</div>
   </div>
+
+  <script>
+    if (new URLSearchParams(location.search).has('debug')) {
+      document.getElementById('debug-btns').hidden = false;
+      document.getElementById('skip-btn').hidden   = false;
+    }
+  </script>
 
   <script type="module">
     import { init, skipLevel } from './game.js';

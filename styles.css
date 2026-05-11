@@ -42,6 +42,8 @@ html, body {
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .puzzle-header h1 {
