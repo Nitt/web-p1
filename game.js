@@ -347,28 +347,33 @@ function _executeMove(dx, dy) {
   const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
+
+  // ── One-way backtrack ──────────────────────────────────────────────────────
+  // Retract only when the player is already adjacent to the oneway (didMove=false):
+  // the first press slides toward it and stops before it (normal block);
+  // the second press from that adjacent cell triggers the retraction.
+  // When the player slid this press (didMove=true) they just stopped — no retraction yet.
+  if (target.blockedByOneway && !didMove) {
+    const { x: owx, y: owy } = target.blockedByOneway;
+    state.pendingOnewayBreak = null;
+    const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
+    if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
+    // No gear on the far side — check if the boat (start position) is there.
+    // Valid only when the one-way sits on the straight chain segment from the boat
+    // to the first gear (or the player if no gears exist). This prevents false
+    // backtracks through unrelated one-ways the player never actually traversed.
+    const s = state.level.start;
+    const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
+    const onBoatSegment =
+      (s.x === firstPt.x && owx === s.x &&
+       Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
+      (s.y === firstPt.y && owy === s.y &&
+       Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
+    if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
+  }
+
   if (!didMove && !hasCrumble) {
-    if (target.blockedByOneway) {
-      const { x: owx, y: owy } = target.blockedByOneway;
-      // Single press: immediately backtrack to the last gear on the far side of the one-way.
-      state.pendingOnewayBreak = null;
-      const entryIdx = _findOnewayEntryGear(owx, owy, dx, dy);
-      if (entryIdx >= 0) { _executeBacktrack(entryIdx); return; }
-      // No gear on the far side — check if the boat (start position) is there.
-      // Valid only when the one-way sits on the straight chain segment from the boat
-      // to the first gear (or the player if no gears exist). This prevents false
-      // backtracks through unrelated one-ways the player never actually traversed.
-      const s = state.level.start;
-      const firstPt = state.gears.length > 0 ? state.gears[0] : state.playerPos;
-      const onBoatSegment =
-        (s.x === firstPt.x && owx === s.x &&
-         Math.min(s.y, firstPt.y) <= owy && owy <= Math.max(s.y, firstPt.y)) ||
-        (s.y === firstPt.y && owy === s.y &&
-         Math.min(s.x, firstPt.x) <= owx && owx <= Math.max(s.x, firstPt.x));
-      if (onBoatSegment && (s.x - owx) * dx + (s.y - owy) * dy > 0) { _executeBacktrack(-1); return; }
-    } else {
-      state.pendingOnewayBreak = null;
-    }
+    state.pendingOnewayBreak = null;
     // No movement occurred — reschedule the dead-end check in case the timer was cleared above.
     playBlocked();
     _scheduleDeadEndCheck();
