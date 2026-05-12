@@ -646,7 +646,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       _scheduleDeadEndCheck();
       _flushQueuedMove();
-    });
+    }, null, state.playerPos, true);
   }
 
   _applyCollectibles(target);
