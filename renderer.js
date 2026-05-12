@@ -193,18 +193,13 @@ export function animatePlayer(from, to, level, onDone) {
   const token = ++_playerAnimToken;
   const duration = steps * speedMs();
   const startTime = performance.now();
-  // Snap visual position to the logical start cell before reading startPx.
-  // This eliminates any accumulated desync between playerPx and state.playerPos
-  // (e.g. caused by a previous no-op move or mid-animation resize), so the
-  // new animation always originates from exactly the right pixel.
-  // The Math.max(0,…) clamp on t means this snap never causes a backward jerk.
   _placeOverlay(playerEl, from.x, from.y, level);
   const startPx = { ...playerPx };
 
+  _tailGearSpins = false;
   function frame(now) {
-    if (token !== _playerAnimToken) return; // level changed — bail out
+    if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
     const t = Math.max(0, Math.min((now - startTime) / duration, 1));
-    // End position is recalculated every frame so mid-animation resizes stay correct.
     const endPx = _cellPixel(to.x, to.y, level);
     const cx = startPx.x + (endPx.x - startPx.x) * t;
     const cy = startPx.y + (endPx.y - startPx.y) * t;
@@ -213,6 +208,7 @@ export function animatePlayer(from, to, level, onDone) {
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
+      _tailGearSpins = true;
       onDone();
     }
   }

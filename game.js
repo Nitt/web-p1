@@ -165,14 +165,15 @@ function handleMove(dx, dy) {
   _executeMove(dx, dy);
 }
 
+const MOVE_MS_PER_CELL        = 80; // normal player movement speed
+const FAST_RETRACT_MS_PER_CELL = 50; // retraction speed when player is standing still
+
 // Animate chain retraction after a multi-back revisit.
 // The tail smoothly rewinds along each path segment back to targetLength.
 // Each segment's duration is proportional to its grid distance (same speed as forward moves).
 let _retractToken = 0;
 let _moveToken    = 0;
-function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null, suppressTailSpin = false) {
-  // Retract at the same speed as forward movement — proportional to grid distance.
-  const MS_PER_CELL = 80;
+function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null, suppressTailSpin = false, msPerCell = MOVE_MS_PER_CELL) {
   const token = ++_retractToken;
 
   // Build ordered waypoints: tailStart → fromGears[last] → … → tailEnd.
@@ -192,7 +193,7 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
     cumDist.push(cumDist[i - 1] + d);
   }
   const totalDist    = cumDist[cumDist.length - 1];
-  const totalDurMs   = totalDist * MS_PER_CELL * getSpeedMultiplier();
+  const totalDurMs   = totalDist * msPerCell * getSpeedMultiplier();
   const startTime    = performance.now();
 
   if (suppressTailSpin) setTailGearSpinning(false);
@@ -338,10 +339,8 @@ function _executeTwoPhaseBacktrack(gearIdx) {
       if (moveToken !== _moveToken) return;
 
       // Phase 2: move player and chain together to the target gear.
-      setTailGearSpinning(false);
       animatePlayer(playerStart, backtrackPos, state.level, () => {
-        if (moveToken !== _moveToken) { setTailGearSpinning(true); return; }
-        setTailGearSpinning(true);
+        if (moveToken !== _moveToken) return;
         state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
         state.isMoving  = false;
         if (gearIdx < 0) state.prevDir = null;
@@ -360,9 +359,10 @@ function _executeTwoPhaseBacktrack(gearIdx) {
         _flushQueuedMove();
       });
     },
-    playerStart, // tailEndOverride: stop retraction at the player's cell
-    playerStart, // tailStartOverride: begin retraction from the player's cell (actual tail)
-    true,        // suppressTailSpin: moving gear shouldn't rotate
+    playerStart,              // tailEndOverride: stop retraction at the player's cell
+    playerStart,              // tailStartOverride: begin retraction from the player's cell (actual tail)
+    true,                     // suppressTailSpin: moving gear shouldn't rotate
+    FAST_RETRACT_MS_PER_CELL, // player is waiting — retract faster than normal movement
   );
 }
 
@@ -646,7 +646,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       _scheduleDeadEndCheck();
       _flushQueuedMove();
-    }, null, state.playerPos, true);
+    }, null, state.playerPos, true, FAST_RETRACT_MS_PER_CELL);
   }
 
   _applyCollectibles(target);
