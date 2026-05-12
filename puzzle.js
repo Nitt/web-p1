@@ -77,40 +77,6 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
 }
 
 /**
- * Compute the cell the player slides to when moving in direction (dx, dy).
- * Pure function — no side effects.
- *
- * Cell behaviour:
- *   WALL        — stop before the cell
- *   CRUMBLE     — stop before the cell when solid; pass through when its toggle
- *                 is active in worldState (i.e. already broken)
- *   KEY         — move onto it and stop (collecting it) when its toggle is NOT
- *                 active; treat as empty (slide through) when already collected
- *   DOOR        — stop before it when its required toggle is NOT active (locked);
- *                 treat as empty when the required toggle IS active (open)
- *   ONEWAY_*    — stop before the cell if moving in the wrong direction
- *   STICKY      — move onto the cell, then stop
- *
- * @param {object} level      - { width, height, cells, goal?, doorRequirements? }
- * @param {{x,y}}  pos
- * @param {number} dx
- * @param {number} dy
- * @param {Map<number,number>} [toggleMap]  - from buildToggleMap(); null = no toggles
- * @param {number}             [worldState] - bitmask of active toggles (default 0)
- * @param {Set<number>}        [gearSet]    - flat indices of placed gear waypoints; player stops on them like sticky
- *
- * @returns {{
- *   x: number,
- *   y: number,
- *   crumble:      { x, y, toggleIdx } | null,
- *   keyCollected: { x, y, toggleIdx } | null,
- * }}
- *   crumble      — non-null when the slide stopped before a solid crumble.
- *   keyCollected — non-null when the player landed on an uncollected key.
- *   In both cases the caller computes the new worldState:
- *     newWS = worldState | (1 << toggleIdx)
- */
-/**
  * BFS reachability check: can the player reach the goal from (pos, worldState)?
  * Ignores gear budget — only tests topological reachability (walls, one-ways,
  * crumbles, keys, doors).  Used for dead-end detection after each move.
@@ -185,6 +151,40 @@ export function canReachAnyOf(level, pos, targets, worldState, toggleMap) {
   return false;
 }
 
+/**
+ * Compute the cell the player slides to when moving in direction (dx, dy).
+ * Pure function — no side effects.
+ *
+ * Cell behaviour:
+ *   WALL        — stop before the cell
+ *   CRUMBLE     — stop before the cell when solid; pass through when its toggle
+ *                 is active in worldState (i.e. already broken)
+ *   KEY         — move onto it and stop (collecting it) when its toggle is NOT
+ *                 active; treat as empty (slide through) when already collected
+ *   DOOR        — stop before it when its required toggle is NOT active (locked);
+ *                 treat as empty when the required toggle IS active (open)
+ *   ONEWAY_*    — stop before the cell if moving in the wrong direction
+ *   STICKY      — move onto the cell, then stop
+ *
+ * @param {object} level      - { width, height, cells, goal?, doorRequirements? }
+ * @param {{x,y}}  pos
+ * @param {number} dx
+ * @param {number} dy
+ * @param {Map<number,number>} [toggleMap]  - from buildToggleMap(); null = no toggles
+ * @param {number}             [worldState] - bitmask of active toggles (default 0)
+ * @param {Set<number>}        [gearSet]    - flat indices of placed gear waypoints; player stops on them like sticky
+ *
+ * @returns {{
+ *   x: number,
+ *   y: number,
+ *   crumble:      { x, y, toggleIdx } | null,
+ *   keyCollected: { x, y, toggleIdx } | null,
+ * }}
+ *   crumble      — non-null when the slide stopped before a solid crumble.
+ *   keyCollected — non-null when the player landed on an uncollected key.
+ *   In both cases the caller computes the new worldState:
+ *     newWS = worldState | (1 << toggleIdx)
+ */
 export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;

@@ -512,6 +512,25 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
   return out;
 }
 
+function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS) {
+  const gGroup = document.createElementNS(NS, 'g');
+  gGroup.setAttribute('class', 'gear-group');
+  gGroup.setAttribute('transform', `translate(${cx},${cy}) rotate(${spinAngle})`);
+  const g = document.createElementNS(NS, 'path');
+  g.setAttribute('d', _gearPath(0, 0, outerR, innerR, 8));
+  g.setAttribute('fill', 'rgb(50,70,110)');
+  g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
+  g.setAttribute('stroke-width', String(0.8 * scale));
+  gGroup.appendChild(g);
+  const hole = document.createElementNS(NS, 'circle');
+  hole.setAttribute('cx', '0');
+  hole.setAttribute('cy', '0');
+  hole.setAttribute('r', String(holeR));
+  hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
+  gGroup.appendChild(hole);
+  svgEl.appendChild(gGroup);
+}
+
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
   const { gears, gearsLeft, level } = _chainState;
@@ -587,49 +606,15 @@ function _redrawChain(px, py) {
     prevLocalDir    = localDir;
     // Skip cog for straight-through positions (same direction, no bend or reversal).
     if (Math.abs(cross) < 0.01 && dot_io > 0) continue;
-    const spinAngle = _spinProgress * localDir;
-    const gGroup = document.createElementNS(NS, 'g');
-    gGroup.setAttribute('class', 'gear-group');
-    gGroup.setAttribute('transform', `translate(${rawPoints[i].x},${rawPoints[i].y}) rotate(${spinAngle})`);
-
-    const g = document.createElementNS(NS, 'path');
-    g.setAttribute('d', _gearPath(0, 0, gearOuterR, gearInnerR, 8));
-    g.setAttribute('fill', 'rgb(50,70,110)');
-    g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
-    g.setAttribute('stroke-width', String(0.8 * scale));
-    gGroup.appendChild(g);
-
-    const hole = document.createElementNS(NS, 'circle');
-    hole.setAttribute('cx', '0');
-    hole.setAttribute('cy', '0');
-    hole.setAttribute('r', String(gearHoleR));
-    hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
-    gGroup.appendChild(hole);
-
-    chainSvgEl.appendChild(gGroup);
+    _appendGear(chainSvgEl, rawPoints[i].x, rawPoints[i].y,
+                gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS);
   }
 
   // Gear at the player position — spins the same as the last placed gear.
   if (rawPoints.length >= 2) {
-    const px = rawPoints[rawPoints.length - 1].x;
-    const py = rawPoints[rawPoints.length - 1].y;
-    const spinAngle = _spinProgress * prevLocalDir;
-    const gGroup = document.createElementNS(NS, 'g');
-    gGroup.setAttribute('class', 'gear-group');
-    gGroup.setAttribute('transform', `translate(${px},${py}) rotate(${spinAngle})`);
-    const g = document.createElementNS(NS, 'path');
-    g.setAttribute('d', _gearPath(0, 0, gearOuterR, gearInnerR, 8));
-    g.setAttribute('fill', 'rgb(50,70,110)');
-    g.setAttribute('stroke', 'rgba(255,255,255,0.4)');
-    g.setAttribute('stroke-width', String(0.8 * scale));
-    gGroup.appendChild(g);
-    const hole = document.createElementNS(NS, 'circle');
-    hole.setAttribute('cx', '0');
-    hole.setAttribute('cy', '0');
-    hole.setAttribute('r', String(gearHoleR));
-    hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
-    gGroup.appendChild(hole);
-    chainSvgEl.appendChild(gGroup);
+    const lastPt = rawPoints[rawPoints.length - 1];
+    _appendGear(chainSvgEl, lastPt.x, lastPt.y,
+                gearOuterR, gearInnerR, gearHoleR, _spinProgress * prevLocalDir, scale, NS);
   }
 
   // Update the counter span inside the player div

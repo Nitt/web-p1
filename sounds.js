@@ -3,6 +3,7 @@
 // AudioContext is created on first use (satisfies browser autoplay policy).
 
 let _ctx = null;
+let _masterNode = null;
 
 function ctx() {
   if (!_ctx) _ctx = new AudioContext();
@@ -13,12 +14,12 @@ function now() { return ctx().currentTime; }
 
 // Master gain — keeps all sounds from clipping
 function master() {
-  if (!master._node) {
-    master._node = ctx().createGain();
-    master._node.gain.value = 0.55;
-    master._node.connect(ctx().destination);
+  if (!_masterNode) {
+    _masterNode = ctx().createGain();
+    _masterNode.gain.value = 0.55;
+    _masterNode.connect(ctx().destination);
   }
-  return master._node;
+  return _masterNode;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

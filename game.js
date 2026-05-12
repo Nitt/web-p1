@@ -254,16 +254,8 @@ function _scheduleDeadEndCheck() {
   if (stuck) {
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
-        deadEndBanner.hidden = false;
         playDeadEnd();
-        function _restart() {
-          deadEndBanner.hidden = true;
-          deadEndBanner.removeEventListener('pointerdown', _restart);
-          document.removeEventListener('keyup', _restart);
-          loadLevel(state.level);
-        }
-        deadEndBanner.addEventListener('pointerdown', _restart, { once: true });
-        document.addEventListener('keyup', _restart, { once: true });
+        _showBanner(deadEndBanner, () => loadLevel(state.level));
       }
     }, 1000);
   }
@@ -389,6 +381,18 @@ export function getCurrentLevel() {
   return state.level;
 }
 
+function _showBanner(bannerEl, onDismiss) {
+  bannerEl.hidden = false;
+  function dismiss() {
+    bannerEl.hidden = true;
+    bannerEl.removeEventListener('pointerdown', dismiss);
+    document.removeEventListener('keyup', dismiss);
+    onDismiss();
+  }
+  bannerEl.addEventListener('pointerdown', dismiss, { once: true });
+  document.addEventListener('keyup', dismiss, { once: true });
+}
+
 function _flushQueuedMove() {
   const q = state.queuedMove;
   state.queuedMove = null;
@@ -506,15 +510,7 @@ function _handleWin() {
   playWin();
   state.queuedMove = null;
   setChainSpinning(false);
-  winBanner.hidden = false;
-  function _advance() {
-    winBanner.hidden = true;
-    winBanner.removeEventListener('pointerdown', _advance);
-    document.removeEventListener('keyup', _advance);
-    _nextLevel();
-  }
-  winBanner.addEventListener('pointerdown', _advance, { once: true });
-  document.addEventListener('keyup', _advance, { once: true });
+  _showBanner(winBanner, _nextLevel);
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {

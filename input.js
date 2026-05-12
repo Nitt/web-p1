@@ -48,6 +48,14 @@ function _initKeyboard(onMove) {
   });
 }
 
+// ─── shared direction resolver ────────────────────────────────────────────────
+
+function _directionFromDelta(dx, dy) {
+  const adx = Math.abs(dx), ady = Math.abs(dy);
+  if (Math.max(adx, ady) < SWIPE_THRESHOLD) return null;
+  return adx >= ady ? { dx: dx > 0 ? 1 : -1, dy: 0 } : { dx: 0, dy: dy > 0 ? 1 : -1 };
+}
+
 // ─── touch swipe ─────────────────────────────────────────────────────────────
 
 function _initSwipe(el, onMove) {
@@ -62,17 +70,8 @@ function _initSwipe(el, onMove) {
 
   el.addEventListener('touchend', e => {
     const t = e.changedTouches[0];
-    const dx = t.clientX - startX;
-    const dy = t.clientY - startY;
-    const adx = Math.abs(dx);
-    const ady = Math.abs(dy);
-    const dist = Math.max(adx, ady);
-    if (dist < SWIPE_THRESHOLD) return;
-    if (adx >= ady) {
-      onMove(dx > 0 ? 1 : -1, 0);
-    } else {
-      onMove(0, dy > 0 ? 1 : -1);
-    }
+    const dir = _directionFromDelta(t.clientX - startX, t.clientY - startY);
+    if (dir) onMove(dir.dx, dir.dy);
   }, { passive: true });
 }
 
@@ -92,17 +91,8 @@ function _initMouseDrag(onMove) {
   document.addEventListener('mouseup', e => {
     if (!dragging) return;
     dragging = false;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    const adx = Math.abs(dx);
-    const ady = Math.abs(dy);
-    const dist = Math.max(adx, ady);
-    if (dist < SWIPE_THRESHOLD) return;
-    if (adx >= ady) {
-      onMove(dx > 0 ? 1 : -1, 0);
-    } else {
-      onMove(0, dy > 0 ? 1 : -1);
-    }
+    const dir = _directionFromDelta(e.clientX - startX, e.clientY - startY);
+    if (dir) onMove(dir.dx, dir.dy);
   });
 
   // Cancel drag if mouse leaves the window
