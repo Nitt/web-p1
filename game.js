@@ -170,13 +170,14 @@ function handleMove(dx, dy) {
 // Each segment's duration is proportional to its grid distance (same speed as forward moves).
 let _retractToken = 0;
 let _moveToken    = 0;
-function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null) {
+function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null) {
   // Retract at the same speed as forward movement — proportional to grid distance.
   const MS_PER_CELL = 80;
   const token = ++_retractToken;
 
-  // Build ordered waypoints: fromGears[last] → fromGears[last-1] → … → playerPos.
+  // Build ordered waypoints: tailStart → fromGears[last] → … → tailEnd.
   const waypoints = [];
+  if (tailStartOverride) waypoints.push(tailStartOverride);
   for (let i = fromGears.length - 1; i >= targetLength; i--) waypoints.push(fromGears[i]);
   waypoints.push(tailEndOverride ?? (targetLength > 0 ? fromGears[targetLength - 1] : playerPos));
 
@@ -210,7 +211,7 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
     // Gears to render: exclude the gear currently being retracted (the tail's departure point)
     // so the chain path doesn't fold back on itself. Once the tail fully reaches the next
     // waypoint, that gear also gets excluded in the following segment.
-    const keepCount = fromGears.length - 1 - seg; // excludes the current tail gear
+    const keepCount = fromGears.length - seg - (tailStartOverride ? 0 : 1); // excludes the current tail gear
     const gearsForRender = fromGears.slice(0, keepCount);
     drawChainWithPixelTail(gearsForRender, tailPx, gearsLeft, totalGears, level);
 
@@ -355,6 +356,7 @@ function _executeTwoPhaseBacktrack(gearIdx) {
       });
     },
     playerStart, // tailEndOverride: stop retraction at the player's cell
+    playerStart, // tailStartOverride: begin retraction from the player's cell (actual tail)
   );
 }
 
