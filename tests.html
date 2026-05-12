@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tests</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #111; color: #ccc; padding: 2rem; }
+    h1 { font-size: 1.1rem; color: #888; font-weight: normal; margin-bottom: 1.5rem; }
+    #summary {
+      font-size: 1.2rem; font-weight: bold; margin-bottom: 1.5rem;
+      padding: 0.6rem 1rem; border-radius: 4px; display: inline-block;
+    }
+    #summary.pass { background: #1a3d1a; color: #4c4; }
+    #summary.fail { background: #3d1a1a; color: #f55; }
+    #summary.running { background: #2a2a1a; color: #aa8; }
+    ul { list-style: none; }
+    .group {
+      margin: 1.4rem 0 0.4rem;
+      color: #666; font-size: 0.8rem;
+      letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .group:first-child { margin-top: 0; }
+    li.result { padding: 0.2rem 0; font-size: 0.9rem; }
+    li.result.pass { color: #4a4; }
+    li.result.fail { color: #f55; }
+    .msg { color: #f88; font-size: 0.8rem; margin-left: 1.6rem; }
+    .note { color: #555; font-size: 0.8rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>game tests — open via local server (ES modules require HTTP)</h1>
+  <div id="summary" class="running">Running…</div>
+  <ul id="results"></ul>
+  <p class="note">Covers: random.js · puzzle.js · generator.js</p>
+  <script type="module" src="tests.js"></script>
+</body>
+</html>
