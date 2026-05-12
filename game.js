@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -170,7 +170,7 @@ function handleMove(dx, dy) {
 // Each segment's duration is proportional to its grid distance (same speed as forward moves).
 let _retractToken = 0;
 let _moveToken    = 0;
-function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null) {
+function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null, suppressTailSpin = false) {
   // Retract at the same speed as forward movement — proportional to grid distance.
   const MS_PER_CELL = 80;
   const token = ++_retractToken;
@@ -195,8 +195,10 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
   const totalDurMs   = totalDist * MS_PER_CELL * getSpeedMultiplier();
   const startTime    = performance.now();
 
+  if (suppressTailSpin) setTailGearSpinning(false);
+
   function frame(now) {
-    if (token !== _retractToken) { onDone(); return; }
+    if (token !== _retractToken) { if (suppressTailSpin) setTailGearSpinning(true); onDone(); return; }
     const progress = Math.min((now - startTime) / totalDurMs, 1);
     const d = progress * totalDist;
 
@@ -218,6 +220,7 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
     if (progress < 1) {
       requestAnimationFrame(frame);
     } else {
+      if (suppressTailSpin) setTailGearSpinning(true);
       drawChain(fromGears.slice(0, targetLength), playerPos, gearsLeft, totalGears, level);
       onDone();
     }
@@ -335,8 +338,10 @@ function _executeTwoPhaseBacktrack(gearIdx) {
       if (moveToken !== _moveToken) return;
 
       // Phase 2: move player and chain together to the target gear.
+      setTailGearSpinning(false);
       animatePlayer(playerStart, backtrackPos, state.level, () => {
-        if (moveToken !== _moveToken) return;
+        if (moveToken !== _moveToken) { setTailGearSpinning(true); return; }
+        setTailGearSpinning(true);
         state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
         state.isMoving  = false;
         if (gearIdx < 0) state.prevDir = null;
@@ -357,6 +362,7 @@ function _executeTwoPhaseBacktrack(gearIdx) {
     },
     playerStart, // tailEndOverride: stop retraction at the player's cell
     playerStart, // tailStartOverride: begin retraction from the player's cell (actual tail)
+    true,        // suppressTailSpin: moving gear shouldn't rotate
   );
 }
 

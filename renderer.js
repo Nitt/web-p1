@@ -37,6 +37,7 @@ let playerPx = { x: 0, y: 0 };
 let _chainState = null;
 // Gear spin state — driven by JS so rotation is continuous despite per-frame DOM recreation.
 let _chainSpinning  = false;
+let _tailGearSpins  = true;
 let _playerAnimToken = 0;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
@@ -310,6 +311,8 @@ export function drawChainWithPixelTail(gears, tailPx, gearsLeft, totalGears, lev
 export function getCellPixel(x, y, level) {
   return _cellPixel(x, y, level);
 }
+
+export function setTailGearSpinning(spins) { _tailGearSpins = spins; }
 
 /** Start or stop gear spinning. direction: 1 = clockwise, -1 = counterclockwise. */
 export function setChainSpinning(spinning, direction = 1) {
@@ -610,11 +613,11 @@ function _redrawChain(px, py) {
                 gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS);
   }
 
-  // Gear at the player position — spins the same as the last placed gear.
+  // Gear at the player position — spins the same as the last placed gear (unless suppressed).
   if (rawPoints.length >= 2) {
     const lastPt = rawPoints[rawPoints.length - 1];
     _appendGear(chainSvgEl, lastPt.x, lastPt.y,
-                gearOuterR, gearInnerR, gearHoleR, _spinProgress * prevLocalDir, scale, NS);
+                gearOuterR, gearInnerR, gearHoleR, _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir, scale, NS);
   }
 
   // Update the counter span inside the player div
