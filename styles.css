@@ -52,6 +52,51 @@ html, body {
   letter-spacing: 0.04em;
 }
 
+/* ─── resource bar (gear hearts + chain length) ──────────────────────────── */
+
+.resource-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+  padding: 0 0.1rem;
+}
+
+.gear-hearts {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.gear-heart {
+  width: clamp(10px, 2.2vmin, 18px);
+  height: clamp(10px, 2.2vmin, 18px);
+  border-radius: 50%;
+  border: 1.5px solid var(--color-player);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.gear-heart.full  { background: var(--color-player); }
+.gear-heart.empty { background: transparent; }
+
+.chain-bar-track {
+  flex: 1;
+  height: clamp(6px, 1.4vmin, 10px);
+  background: rgba(0,0,0,0.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.chain-bar-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: hsl(210, 70%, 50%);
+  transition: width 0.12s ease-out, background 0.3s ease;
+}
+
 .btn-ghost {
   background: none;
   border: 1.5px solid var(--color-wall);

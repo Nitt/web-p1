@@ -29,6 +29,11 @@ let waterlineEl = null;
 let skyEl = null;
 let containerEl = null;
 let _currentLevel = null;
+let _gearHeartsEl = null;
+let _chainBarFillEl = null;
+let _chainLengthTotal = 0;
+
+export function setChainLengthTotal(total) { _chainLengthTotal = total; }
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
@@ -63,6 +68,8 @@ export function buildGrid(container, level) {
 
   containerEl = container;
   _currentLevel = level;
+  _gearHeartsEl   = document.getElementById('gear-hearts');
+  _chainBarFillEl = document.getElementById('chain-bar-fill');
 
   gridEl = document.createElement('div');
   gridEl.className = 'grid';
@@ -292,7 +299,7 @@ export function openDoor(x, y, level) {
 export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   if (!chainSvgEl || !gridEl) return;
   const pp = _cellPixel(playerPos.x, playerPos.y, level);
-  _chainState = { gears, gearsLeft, totalGears, level };
+  _chainState = { gears, playerPos, gearsLeft, totalGears, level };
   _redrawChain(pp.x, pp.y);
 }
 
@@ -532,7 +539,7 @@ function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS)
 
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
-  const { gears, gearsLeft, level } = _chainState;
+  const { gears, playerPos, gearsLeft, totalGears, level } = _chainState;
   chainSvgEl.innerHTML = '';
 
   const gridRect = gridEl.getBoundingClientRect();
@@ -618,6 +625,28 @@ function _redrawChain(px, py) {
 
   // Update the counter span inside the player div
   if (counterSpan) counterSpan.textContent = gearsLeft;
+
+  // Update gear hearts
+  if (_gearHeartsEl && totalGears > 0) {
+    _gearHeartsEl.innerHTML = '';
+    for (let i = 0; i < totalGears; i++) {
+      const h = document.createElement('div');
+      h.className = i < gearsLeft ? 'gear-heart full' : 'gear-heart empty';
+      _gearHeartsEl.appendChild(h);
+    }
+  }
+
+  // Update chain length bar
+  if (_chainBarFillEl && playerPos && _chainLengthTotal > 0) {
+    const chain = [level.start, ...gears, playerPos];
+    let used = 0;
+    for (let i = 1; i < chain.length; i++) {
+      used += Math.abs(chain[i].x - chain[i-1].x) + Math.abs(chain[i].y - chain[i-1].y);
+    }
+    const remaining = Math.max(0, 1 - used / _chainLengthTotal);
+    _chainBarFillEl.style.width = `${remaining * 100}%`;
+    _chainBarFillEl.style.background = `hsl(${Math.round(remaining * 200 + 10)}, 70%, 50%)`;
+  }
 }
 
 /**

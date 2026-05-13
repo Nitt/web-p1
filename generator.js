@@ -352,7 +352,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, depths, difficulties } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
+  const { goal, depths, difficulties, chainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   // Compute per-key cog depths and the effective gear budget.
@@ -371,6 +371,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     goalDepth >= 0 ? goalDepth : 0
   );
 
+  // Compute effective chain length budget: max of chain length to goal and to every key.
+  const goalChainLength = chainLengths[goal.y * width + goal.x];
+  const effectiveChainLength = keyDepths.reduce(
+    (max, k) => Math.max(max, chainLengths[k.y * width + k.x] >= 0 ? chainLengths[k.y * width + k.x] : 0),
+    goalChainLength >= 0 ? goalChainLength : 0
+  );
+
   // Translate visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
   for (const [pi, bits] of visitedDirs) {
@@ -380,7 +387,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, doorRequirements, seed, visitedDirs: visitedDirsOut };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, seed, visitedDirs: visitedDirsOut };
 }
 
 /**
@@ -830,11 +837,57 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     }
   }
 
+  // ── Pass 3: Dijkstra for minimum chain length to reach each cell ──────
+  // Cost per edge = path.length (cells traveled in this slide).
+  const clLenMap = new Map();
+  const clVisMap = new Map();
+  clLenMap.set(posKey(start), 0);
+  clVisMap.set(stateKey(start, 4, 0), 0);
+  const clHeap = [{ pos: start, cl: 0, worldState: 0, di: 4 }];
+  function clPush(e) {
+    clHeap.push(e); let i = clHeap.length - 1;
+    while (i > 0) { const p = (i-1)>>1; if (clHeap[p].cl <= clHeap[i].cl) break; [clHeap[p],clHeap[i]]=[clHeap[i],clHeap[p]]; i=p; }
+  }
+  function clPop() {
+    const top = clHeap[0], last = clHeap.pop();
+    if (clHeap.length > 0) {
+      clHeap[0] = last; let i = 0;
+      while (true) { let s=i; const l=2*i+1,r=2*i+2; if(l<clHeap.length&&clHeap[l].cl<clHeap[s].cl)s=l; if(r<clHeap.length&&clHeap[r].cl<clHeap[s].cl)s=r; if(s===i)break; [clHeap[i],clHeap[s]]=[clHeap[s],clHeap[i]]; i=s; }
+    }
+    return top;
+  }
+  while (clHeap.length > 0) {
+    const { pos, cl, worldState, di } = clPop();
+    if ((clVisMap.get(stateKey(pos, di, worldState)) ?? Infinity) < cl) continue;
+    for (let i = 0; i < DIRS4.length; i++) {
+      const { dx, dy } = DIRS4[i];
+      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      if (path.length === 0 && !crumblePos) continue;
+      const nCl = cl + path.length;
+      for (const p of path) { const k=posKey(p); if (!clLenMap.has(k)||clLenMap.get(k)>nCl) clLenMap.set(k,nCl); }
+      if (path.length > 0) {
+        const landing = path[path.length-1];
+        const ews = keyPos ? (worldState|(1<<keyPos.toggleIdx)) : worldState;
+        const lk = stateKey(landing, i, ews);
+        if ((clVisMap.get(lk)??Infinity) > nCl) { clVisMap.set(lk,nCl); clPush({pos:landing,cl:nCl,worldState:ews,di:i}); }
+      }
+      if (crumblePos && crumblePos.toggleIdx !== undefined) {
+        const nws = worldState|(1<<crumblePos.toggleIdx);
+        const from = path.length>0 ? path[path.length-1] : pos;
+        const fk = posKey(from); if (!clLenMap.has(fk)||clLenMap.get(fk)>nCl) clLenMap.set(fk,nCl);
+        const lk = stateKey(from, i, nws);
+        if ((clVisMap.get(lk)??Infinity) > nCl) { clVisMap.set(lk,nCl); clPush({pos:from,cl:nCl,worldState:nws,di:i}); }
+      }
+    }
+  }
+
   // ── Build flat arrays: -1 = unreachable ──────────────────────────────────
-  const depthArray      = new Int16Array(width * height).fill(-1);
-  const difficultyArray = new Float32Array(width * height).fill(-1);
-  for (const [k, d] of depths)       depthArray[k]      = d;
-  for (const [k, d] of difficulties) difficultyArray[k] = d;
+  const depthArray       = new Int16Array(width * height).fill(-1);
+  const difficultyArray  = new Float32Array(width * height).fill(-1);
+  const chainLengthArray = new Int16Array(width * height).fill(-1);
+  for (const [k, d] of depths)       depthArray[k]       = d;
+  for (const [k, d] of difficulties) difficultyArray[k]  = d;
+  for (const [k, v] of clLenMap)     chainLengthArray[k] = v;
 
   // ── Chain-crossing bonus ──────────────────────────────────────────────────
   // For every valid goal candidate, trace back its shortest path via parentOf.
@@ -886,6 +939,6 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     }
   }
 
-  return { goal: bestPos, depths: depthArray, difficulties: difficultyArray };
+  return { goal: bestPos, depths: depthArray, difficulties: difficultyArray, chainLengths: chainLengthArray };
 }
 

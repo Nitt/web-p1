@@ -185,13 +185,14 @@ export function canReachAnyOf(level, pos, targets, worldState, toggleMap) {
  *   In both cases the caller computes the new worldState:
  *     newWS = worldState | (1 << toggleIdx)
  */
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, maxSlideLength = Infinity) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
-  let crumble        = null;
-  let keyCollected   = null;
+  let crumble         = null;
+  let keyCollected    = null;
   let blockedByOneway = null;
+  let stepsTaken      = 0;
 
   while (true) {
     const nx = x + dx;
@@ -206,6 +207,9 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
       break;
     }
+
+    // Stop if chain length budget is exhausted.
+    if (stepsTaken >= maxSlideLength) break;
 
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
@@ -230,8 +234,8 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       const toggleIdx = toggleMap ? toggleMap.get(flatIdx) : undefined;
       const collected = toggleIdx !== undefined && (worldState & (1 << toggleIdx)) !== 0;
       if (!collected) {
-        // Land on the key, collect it, stop here
         x = nx; y = ny;
+        stepsTaken++;
         keyCollected = { x, y, toggleIdx };
         break;
       }
@@ -257,6 +261,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     // ── Move onto the cell ────────────────────────────────────────────────
     x = nx;
     y = ny;
+    stepsTaken++;
 
     if (level.goal && x === level.goal.x && y === level.goal.y) {
       break;

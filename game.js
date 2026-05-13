@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -29,10 +29,11 @@ const state = {
   queuedMove:           null,   // { dx, dy, queuedAt } — next move buffered during animation
   nextId:               2,      // id for the next generated level
   nextSeed:             300,    // seed for level 2 (level 1 uses 0–299 as a safe margin)
-  // Gear chain system (replaces movesLeft).
+  // Gear chain system.
   gears:                [],     // [{x,y}] cog positions (bends/reversals only)
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
+  chainLengthTotal:     0,      // total chain length allowed for this level
   prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
   worldState:           0,
@@ -93,9 +94,12 @@ function loadLevel(level) {
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
   const budget = (level.effectiveCogs ?? goalDepth) > 0 ? (level.effectiveCogs ?? goalDepth) : 1;
-  state.gears      = [];
-  state.gearsLeft  = budget;
-  state.totalGears = budget;
+  state.gears             = [];
+  state.gearsLeft         = budget;
+  state.totalGears        = budget;
+  const chainBudget       = (level.effectiveChainLength ?? 0) > 0 ? level.effectiveChainLength : (level.width + level.height);
+  state.chainLengthTotal  = chainBudget;
+  setChainLengthTotal(chainBudget);
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
 
@@ -664,13 +668,25 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   }
 }
 
+function _chainLengthUsed() {
+  const chain = [state.level.start, ...state.gears, state.playerPos];
+  let len = 0;
+  for (let i = 1; i < chain.length; i++) {
+    len += Math.abs(chain[i].x - chain[i-1].x) + Math.abs(chain[i].y - chain[i-1].y);
+  }
+  return len;
+}
+
 function _executeMove(dx, dy) {
   _retractToken++;
   clearTimeout(_deadEndTimer);
   _deadEndTimer = null;
   deadEndBanner.hidden = true;
 
-  const gearSet    = new Set(state.gears.map(g => g.y * state.level.width + g.x));
+  const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
+
+  // Call without chain limit so backtrack detection sees the natural landing position.
+  // Chain length is only enforced for forward moves (after all backtrack checks below).
   const target     = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
@@ -696,7 +712,21 @@ function _executeMove(dx, dy) {
     return;
   }
 
-  const ctx = _buildDepartureCtx(target, dx, dy);
+  // Landing on any existing gear is a backtrack — chain shortens, so no cap needed.
+  // Only cap forward moves (new territory, revisitIdx < 0).
+  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+  const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
+  const moveTarget = (revisitIdx < 0 && slideLen > chainAvail)
+    ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
+    : target;
+
+  if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
+    playBlocked();
+    _scheduleDeadEndCheck();
+    return;
+  }
+
+  const ctx = _buildDepartureCtx(moveTarget, dx, dy);
   if (ctx === null) return;
 
   state.isMoving = true;
@@ -704,11 +734,11 @@ function _executeMove(dx, dy) {
   _applyPreAnimationChain(ctx);
 
   const moveToken = _moveToken;
-  animatePlayer(state.playerPos, target, state.level, () => {
+  animatePlayer(state.playerPos, moveTarget, state.level, () => {
     if (moveToken !== _moveToken) return;
-    state.playerPos = { x: target.x, y: target.y };
+    state.playerPos = { x: moveTarget.x, y: moveTarget.y };
     state.isMoving  = false;
     playLand();
-    _onPlayerLanded(target, dx, dy, ctx);
+    _onPlayerLanded(moveTarget, dx, dy, ctx);
   });
 }
