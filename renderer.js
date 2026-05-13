@@ -56,6 +56,48 @@ const CHAIN_LINK_INNER_RY = 5.3;  // half short-axis — hole
 // Pitch = 1.4×outerRX → links overlap ~20% on each end
 const CHAIN_LINK_PITCH    = CHAIN_LINK_OUTER_RX * 1.4;
 
+// ── Chain color stops ─────────────────────────────────────────────────────────
+// upTo: cells remaining until the chain is fully extended (measured from the far end
+//       of the maximum chain length). upTo:3 means "the last 3 cells before full
+//       extension" — those links only become visible as the chain nears its limit.
+// color: a single '#rrggbb' / 'rgb(...)' / 'rgba(...)' — shading is derived automatically.
+//        Or [colorA, colorB] to smoothly gradient from colorA to colorB across this stop.
+// The last entry should use upTo: Infinity to cover the rest of the chain.
+const CHAIN_COLOR_STOPS = [
+  { upTo: 2,        color: '#c4a493' },
+  { upTo: 6,        color: '#baa73f' },
+  { upTo: 12,        color: '#547b40' },
+  { upTo: Infinity, color: '#415582' },
+];
+
+function _parseColor(c) {
+  if (typeof c !== 'string') return { r: 65, g: 85, b: 130 };
+  if (c.startsWith('#')) {
+    const hex = c.slice(1);
+    return { r: parseInt(hex.slice(0,2),16), g: parseInt(hex.slice(2,4),16), b: parseInt(hex.slice(4,6),16) };
+  }
+  const m = c.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  return m ? { r: +m[1], g: +m[2], b: +m[3] } : { r: 65, g: 85, b: 130 };
+}
+
+function _lerpRgb(a, b, t) {
+  return { r: Math.round(a.r+(b.r-a.r)*t), g: Math.round(a.g+(b.g-a.g)*t), b: Math.round(a.b+(b.b-a.b)*t) };
+}
+
+function _chainColors(rgb) {
+  const W   = { r:255, g:255, b:255 };
+  const drk = _lerpRgb(rgb, { r:0, g:0, b:0 }, 0.2);
+  const hi  = _lerpRgb(rgb, W, 0.55);
+  const mid = _lerpRgb(rgb, W, 0.40);
+  return {
+    faceOn:     `rgba(${rgb.r},${rgb.g},${rgb.b},0.95)`,
+    faceStroke: `rgba(${hi.r},${hi.g},${hi.b},0.85)`,
+    edgeOn:     `rgba(${drk.r},${drk.g},${drk.b},0.9)`,
+    edgeStroke: `rgba(${mid.r},${mid.g},${mid.b},0.7)`,
+  };
+}
+
+
 /**
  * Build (or rebuild) the grid DOM from a level.
  * @param {HTMLElement} container
@@ -583,7 +625,7 @@ function _redrawChain(px, py) {
   const NS = 'http://www.w3.org/2000/svg';
 
   // Linked chain along the offset path
-  _drawChainLinks(chainPoints, NS, scale);
+  _drawChainLinks(chainPoints, NS, scale, cellSize);
 
   // Gear shapes at each waypoint (skip start and player positions) — at raw cell centres
   const gearOuterR = 22.5 * scale;
@@ -637,15 +679,19 @@ function _redrawChain(px, py) {
   }
 
   // Update chain length bar
-  if (_chainBarFillEl && playerPos && _chainLengthTotal > 0) {
-    const chain = [level.start, ...gears, playerPos];
+  if (_chainBarFillEl && _chainLengthTotal > 0) {
+    // Compute cell-unit distance for all fixed segments (start → gears)
+    const cellChain = [level.start, ...gears];
     let used = 0;
-    for (let i = 1; i < chain.length; i++) {
-      used += Math.abs(chain[i].x - chain[i-1].x) + Math.abs(chain[i].y - chain[i-1].y);
+    for (let i = 1; i < cellChain.length; i++) {
+      used += Math.abs(cellChain[i].x - cellChain[i-1].x) + Math.abs(cellChain[i].y - cellChain[i-1].y);
     }
+    // Last segment uses actual pixel position so the bar updates mid-move
+    const prevPx = rawPoints[rawPoints.length - 2];
+    used += Math.hypot(px - prevPx.x, py - prevPx.y) / cellSize;
     const remaining = Math.max(0, 1 - used / _chainLengthTotal);
     _chainBarFillEl.style.width = `${remaining * 100}%`;
-    _chainBarFillEl.style.background = `hsl(${Math.round(remaining * 200 + 10)}, 70%, 50%)`;
+    //_chainBarFillEl.style.background = `hsl(${Math.round(remaining * 200 + 10)}, 70%, 50%)`;
   }
 }
 
@@ -655,7 +701,7 @@ function _redrawChain(px, py) {
  * the next perpendicular) to mimic the look of a real linked chain.
  * When _chainSpinning is true the links scroll at CHAIN_LINK_SPEED px/ms.
  */
-function _drawChainLinks(points, NS, scale = 1) {
+function _drawChainLinks(points, NS, scale = 1, cellSize = 1) {
   if (points.length < 2) return;
 
   const orx  = CHAIN_LINK_OUTER_RX * scale;
@@ -693,9 +739,33 @@ function _drawChainLinks(points, NS, scale = 1) {
     }
   }
 
+  function colorStopAt(d) {
+    //const cellDist = _chainLengthTotal - d / cellSize;
+    const cellDist = d / cellSize;
+    let prevUpTo = 0;
+    for (const stop of CHAIN_COLOR_STOPS) {
+      if (cellDist < stop.upTo) {
+        let rgb;
+        if (Array.isArray(stop.color)) {
+          const t = stop.upTo === Infinity ? 0
+            : Math.max(0, Math.min(1, (cellDist - prevUpTo) / (stop.upTo - prevUpTo)));
+          const c0 = _parseColor(stop.color[0]);
+          const c1 = stop.color[1] != null ? _parseColor(stop.color[1]) : c0;
+          rgb = _lerpRgb(c0, c1, t);
+        } else {
+          rgb = _parseColor(stop.color);
+        }
+        return _chainColors(rgb);
+      }
+      prevUpTo = stop.upTo;
+    }
+    const last = CHAIN_COLOR_STOPS[CHAIN_COLOR_STOPS.length - 1];
+    const c = Array.isArray(last.color) ? last.color[1] : last.color;
+    return _chainColors(_parseColor(c));
+  }
+
   // Anchor chain links to player (point 0). Path is player→boat so d=0 is always
   // the player center — no scroll offset needed.
-  const offset  = 0;
   const baseIdx = 0;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
@@ -705,24 +775,23 @@ function _drawChainLinks(points, NS, scale = 1) {
 
   const linkTransforms = [];
   let linkIdx = 0;
-  for (let d = offset; d <= totalLen; d += pitch) {
+  for (let d = 0; d <= totalLen; d += pitch) {
     const pt = sample(d);
     if (!pt) break;
-    // Both link types keep long axis along the chain — no extraAngle rotation
     const parity = ((baseIdx + linkIdx) % 2 + 2) % 2;
-    linkTransforms.push({ transform: `translate(${pt.x},${pt.y}) rotate(${pt.angleDeg})`, parity });
+    linkTransforms.push({ transform: `translate(${pt.x},${pt.y}) rotate(${pt.angleDeg})`, parity, d });
     linkIdx++;
   }
 
-  function makeLinkEl(transform, isFaceOn) {
+  function makeLinkEl(transform, isFaceOn, stop) {
     const g = document.createElementNS(NS, 'g');
     g.setAttribute('transform', transform);
     if (isFaceOn) {
       const path = document.createElementNS(NS, 'path');
       path.setAttribute('d', ringPath);
-      path.setAttribute('fill', 'rgba(65,85,130,0.95)');
+      path.setAttribute('fill', stop.faceOn);
       path.setAttribute('fill-rule', 'evenodd');
-      path.setAttribute('stroke', 'rgba(190,215,245,0.85)');
+      path.setAttribute('stroke', stop.faceStroke);
       path.setAttribute('stroke-width', String(0.6 * scale));
       g.appendChild(path);
     } else {
@@ -733,8 +802,8 @@ function _drawChainLinks(points, NS, scale = 1) {
       rect.setAttribute('height', thinRy * 2);
       rect.setAttribute('rx', thinRy);
       rect.setAttribute('ry', thinRy);
-      rect.setAttribute('fill', 'rgba(50,68,110,0.9)');
-      rect.setAttribute('stroke', 'rgba(150,185,230,0.7)');
+      rect.setAttribute('fill', stop.edgeOn);
+      rect.setAttribute('stroke', stop.edgeStroke);
       rect.setAttribute('stroke-width', String(0.5 * scale));
       g.appendChild(rect);
     }
@@ -742,11 +811,11 @@ function _drawChainLinks(points, NS, scale = 1) {
   }
 
   // Face-on (ring) links behind, edge-on (sliver) links in front
-  for (const { transform, parity } of linkTransforms) {
-    if (parity === 0) chainSvgEl.appendChild(makeLinkEl(transform, true));
+  for (const { transform, parity, d } of linkTransforms) {
+    if (parity === 0) chainSvgEl.appendChild(makeLinkEl(transform, true, colorStopAt(d)));
   }
-  for (const { transform, parity } of linkTransforms) {
-    if (parity === 1) chainSvgEl.appendChild(makeLinkEl(transform, false));
+  for (const { transform, parity, d } of linkTransforms) {
+    if (parity === 1) chainSvgEl.appendChild(makeLinkEl(transform, false, colorStopAt(d)));
   }
 }
 
