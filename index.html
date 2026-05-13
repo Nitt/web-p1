@@ -16,6 +16,7 @@
 <h1 id="level-label">Level 1</h1>
       <div class="header-actions">
         <button class="btn-ghost" id="skip-btn" aria-label="Skip level" hidden>Skip</button>
+        <button class="btn-ghost" id="autoplay-btn" aria-label="Auto-play solution">Auto-play</button>
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
       </div>
     </header>
@@ -104,7 +105,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel } from './game.js';
+    import { init, skipLevel, autoPlay } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -115,6 +116,9 @@
 
     document.getElementById('skip-btn')
       .addEventListener('click', () => skipLevel());
+
+    document.getElementById('autoplay-btn')
+      .addEventListener('click', () => autoPlay());
 
     document.getElementById('speed-slider').addEventListener('input', e => {
       const m = parseFloat(e.target.value);

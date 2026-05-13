@@ -1,4 +1,5 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
+import { solve } from './solver.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
@@ -15,6 +16,9 @@ let levelLabel       = null;
 
 // Timer that fires the dead-end popup 1 second after landing in a dead end.
 let _deadEndTimer = null;
+
+// Set to true while auto-play is running; cleared on cancel or level load.
+let _autoPlaying = false;
 
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
@@ -75,6 +79,7 @@ export function init() {
 
 // ─── level loading ────────────────────────────────────────────────────────────
 function loadLevel(level) {
+  _autoPlaying = false;
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
   _retractToken++;
@@ -392,6 +397,33 @@ export function skipLevel() {
 /** Return the level object currently being played. */
 export function getCurrentLevel() {
   return state.level;
+}
+
+/** Start auto-playing a solution to the current level. */
+export function autoPlay() {
+  if (_autoPlaying || state.won) return;
+  const moves = solve(state.level, state.playerPos, state.worldState, state.toggleMap);
+  if (!moves || moves.length === 0) return;
+  _autoPlaying = true;
+  _autoPlayNext(moves, 0);
+}
+
+/** Cancel an in-progress auto-play. */
+export function stopAutoPlay() {
+  _autoPlaying = false;
+}
+
+function _autoPlayNext(moves, idx) {
+  if (idx >= moves.length || state.won || !_autoPlaying) {
+    _autoPlaying = false;
+    return;
+  }
+  if (state.isMoving) {
+    setTimeout(() => _autoPlayNext(moves, idx), 50);
+    return;
+  }
+  handleMove(moves[idx].dx, moves[idx].dy);
+  setTimeout(() => _autoPlayNext(moves, idx + 1), 50);
 }
 
 function _showBanner(bannerEl, onDismiss) {
