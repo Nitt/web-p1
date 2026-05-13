@@ -274,23 +274,6 @@ function _scheduleDeadEndCheck() {
 
 // Returns true if the player is strictly between two consecutive chain points
 // that travel in direction (dx, dy) and whose forward endpoint is `target`.
-function _isOnSegmentTowardGear(target, dx, dy) {
-  const chain = [state.level.start, ...state.gears, state.playerPos];
-  for (let i = 0; i < chain.length - 1; i++) {
-    const a = chain[i], b = chain[i + 1];
-    // Chain segment was laid in the forward direction (-dx,-dy); player moves backward (dx,dy)
-    if (Math.sign(b.x - a.x) !== -dx || Math.sign(b.y - a.y) !== -dy) continue;
-    // Target must be the start-side (boat-side) endpoint of this segment
-    if (a.x !== target.x || a.y !== target.y) continue;
-    const px = state.playerPos.x, py = state.playerPos.y;
-    const onSeg = dy === 0
-      ? (py === a.y && Math.min(a.x, b.x) < px && px < Math.max(a.x, b.x))
-      : (px === a.x && Math.min(a.y, b.y) < py && py < Math.max(a.y, b.y));
-    if (onSeg) return true;
-  }
-  return false;
-}
-
 // ─── one-way backtrack helpers ────────────────────────────────────────────────
 
 /**
@@ -316,58 +299,6 @@ function _findOnewayEntryGear(owx, owy, dx, dy) {
     if (onSeg) return i - 1; // i=0 → -1 means backtrack to start
   }
   return null;
-}
-
-// Two-phase backtrack: chain retracts to the player first (player stands still),
-// then player and chain move together to the target gear.
-function _executeTwoPhaseBacktrack(gearIdx) {
-  const backtrackPos = gearIdx < 0 ? state.level.start : state.gears[gearIdx];
-
-  state.isMoving = true;
-  setChainSpinning(true, -1);
-
-  const freed         = state.gears.length - gearIdx - 1;
-  const gearsSnapshot = state.gears.slice();
-  const playerStart   = { ...state.playerPos };
-
-  state.gears     = state.gears.slice(0, gearIdx + 1);
-  state.gearsLeft += freed;
-
-  const moveToken = _moveToken;
-
-  // Phase 1: retract chain tail to the player's current cell (player stays still).
-  _animateChainRetract(
-    gearsSnapshot, gearIdx + 1, playerStart,
-    state.gearsLeft, state.totalGears, state.level,
-    () => {
-      if (moveToken !== _moveToken) return;
-
-      // Phase 2: move player and chain together to the target gear.
-      animatePlayer(playerStart, backtrackPos, state.level, () => {
-        if (moveToken !== _moveToken) return;
-        state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
-        state.isMoving  = false;
-        if (gearIdx < 0) state.prevDir = null;
-        if (gearIdx >= 0 && state.gears.length > 0) {
-          const last = state.gears[state.gears.length - 1];
-          if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-            const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
-            state.gears.pop();
-            state.gearsLeft++;
-            state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
-          }
-        }
-        drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-        setChainSpinning(false);
-        _scheduleDeadEndCheck();
-        _flushQueuedMove();
-      });
-    },
-    playerStart,              // tailEndOverride: stop retraction at the player's cell
-    playerStart,              // tailStartOverride: begin retraction from the player's cell (actual tail)
-    true,                     // suppressTailSpin: moving gear shouldn't rotate
-    FAST_RETRACT_MS_PER_CELL, // player is waiting — retract faster than normal movement
-  );
 }
 
 /**
@@ -532,7 +463,13 @@ function _buildDepartureCtx(target, dx, dy) {
     state.gears[state.gears.length - 1].y === state.playerPos.y;
   const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog;
 
+  // 0 gears → simple V, skip placement.
+  // 1 gear  → pop it and retract cleanly instead of creating a V.
+  // 2+ gears → real loop; place the gear normally.
+  const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && state.gears.length === 1;
+
   if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return null; }
+  if (isBoatEntry && isBend && !isAtLastCog && state.gears.length >= 2 && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return null; }
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return null; }
 
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
@@ -541,17 +478,21 @@ function _buildDepartureCtx(target, dx, dy) {
                  || (isBoatEntry && state.gears.length === 1);
 
   return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
-           revisitIdx, isAtLastCog, isOneBack, pendingBendGear };
+           revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract };
 }
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
 function _applyPreAnimationChain(ctx) {
-  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear } = ctx;
+  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract } = ctx;
   if (isOneBack && !pendingBendGear) {
     drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
   }
   setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
-  if (isBend && !isAtLastCog && !isBoatEntry) {
+  if (isBoatVShapeRetract) {
+    state.gears.pop();
+    state.gearsLeft++;
+    drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+  } else if (isBend && !isAtLastCog && (!isBoatEntry || state.gears.length >= 2)) {
     state.gears.push({ x: state.playerPos.x, y: state.playerPos.y });
     state.gearsLeft--;
     if (isOneBack) {
@@ -701,22 +642,14 @@ function _executeMove(dx, dy) {
   }
   state.pendingOnewayBreak = null;
 
-  if (target.y < 0) {
-    _executeTwoPhaseBacktrack(-1);
-    return;
-  }
-
   const revisitIdx = state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  if (revisitIdx >= 0 && _isOnSegmentTowardGear(target, dx, dy)) {
-    _executeTwoPhaseBacktrack(revisitIdx);
-    return;
-  }
+  const isBoatEntry = target.y < 0;
 
-  // Landing on any existing gear is a backtrack — chain shortens, so no cap needed.
-  // Only cap forward moves (new territory, revisitIdx < 0).
+  // Landing on an existing gear or the boat is a backtrack — chain shortens, so no cap.
+  // Only cap forward moves (new territory, not a revisit, not returning to boat).
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
   const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
-  const moveTarget = (revisitIdx < 0 && slideLen > chainAvail)
+  const moveTarget = (revisitIdx < 0 && !isBoatEntry && slideLen > chainAvail)
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
