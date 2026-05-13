@@ -994,7 +994,15 @@ function _placeOverlay(el, x, y, level) {
   _setOverlayPixel(el, px.x, px.y);
 }
 
+let _goalFollowsPlayer = false;
+export function setGoalFollowsPlayer(v) { _goalFollowsPlayer = v; }
+
 function _setOverlayPixel(el, cx, cy) {
-  if (el === playerEl) playerPx = { x: cx, y: cy };
+  if (el === playerEl) {
+    playerPx = { x: cx, y: cy };
+    if (_goalFollowsPlayer && goalEl) {
+      goalEl.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
+    }
+  }
   el.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
 }

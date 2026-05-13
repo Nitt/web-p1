@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -528,12 +528,42 @@ function _applyCollectibles(target) {
   }
 }
 
+function _animateWinRetract(onDone) {
+  const gearsSnapshot = state.gears.slice();
+  // Walk back: goal → each gear in reverse → start (boat entry)
+  const waypoints = [...gearsSnapshot.slice().reverse(), state.level.start];
+  let displayGears = gearsSnapshot.slice();
+
+  setChainSpinning(true, -1);
+  setGoalFollowsPlayer(true);
+
+  function step(waypointIdx, fromPos) {
+    // Drop the gear the player just left (skip on the first step — fromPos is the goal, not a gear)
+    if (waypointIdx > 0 && displayGears.length > 0) {
+      displayGears = displayGears.slice(0, displayGears.length - 1);
+    }
+    drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
+
+    const toPos = waypoints[waypointIdx];
+    animatePlayer(fromPos, toPos, state.level, () => {
+      if (waypointIdx === waypoints.length - 1) {
+        setChainSpinning(false);
+        setGoalFollowsPlayer(false);
+        onDone();
+      } else {
+        step(waypointIdx + 1, toPos);
+      }
+    });
+  }
+
+  step(0, state.playerPos);
+}
+
 function _handleWin() {
   state.won = true;
   playWin();
   state.queuedMove = null;
-  setChainSpinning(false);
-  _showBanner(winBanner, _nextLevel);
+  _animateWinRetract(() => _showBanner(winBanner, _nextLevel));
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {
