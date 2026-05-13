@@ -675,11 +675,19 @@ function _executeMove(dx, dy) {
   const revisitIdx = state.gears.findIndex(g => g.x === target.x && g.y === target.y);
   const isBoatEntry = target.y < 0;
 
-  // Landing on an existing gear or the boat is a backtrack — chain shortens, so no cap.
-  // Only cap forward moves (new territory, not a revisit, not returning to boat).
+  // Detect moves that retrace the last chain segment back toward the previous anchor
+  // (last gear or start).  These always shorten the chain so the cap must never block
+  // them — doing so causes a softlock when chain is full and a one-way is in the way.
+  const chainAnchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+  const isBackwardAlongChain =
+    (chainAnchor.x === state.playerPos.x && dx === 0 && dy === Math.sign(chainAnchor.y - state.playerPos.y)) ||
+    (chainAnchor.y === state.playerPos.y && dy === 0 && dx === Math.sign(chainAnchor.x - state.playerPos.x));
+
+  // Landing on an existing gear, the boat, or retracing the last segment is a backtrack —
+  // chain shortens, so no cap.  Only cap genuine forward moves into new territory.
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
   const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
-  const moveTarget = (revisitIdx < 0 && !isBoatEntry && slideLen > chainAvail)
+  const moveTarget = (revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail)
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
