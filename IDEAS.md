@@ -18,11 +18,19 @@ Guidelines for working through this list:
 
 ## Gameplay
 
-- some kind of meta gameplay.., I'm thinking inspired by dragon sweeper or minesweeper but somehow fitting for our game. Seeing the world from above the water.., maybe top-down perspective and either moving a boat around or clicking on cells to explore. Maybe it's clear from here how long chain is required.., probably indicated by some kind of "depth" value (as in "depth"/deep into the water). This idea needs some further refinement.., Don't add gameplay yet but make a separate docuement only for this idea so we can brainstorm and figure it out.
+- Some kind of meta gameplay inspired by Dragon Sweeper / Minesweeper. Seeing the world from above the water — top-down view, maybe moving a boat or clicking cells to explore. The two player resources (gear count and chain length, see Level Generation) would be visible here and map naturally to the "depth" concept. Needs further refinement. **Do not add gameplay yet — create a separate brainstorm document for this idea first.**
 
 ## Level Generation
 
-- we should add a depth value to a level.., so instead of gear amount maybe we should make the chain have a certain length? yeah that's good that would simplify gameplay as well. Not sure how to indicate this to the player though.., since gear amount or move count is more easy to grasp as a player.., but maybe that's ok? Instead we just show them how much is left of the chain (can start by having a number up at the boat that gradually decreases.., also visually we could represent it in the links of the chain somehow.., making the last part have different colors or such)
+- **Add chain length as a second player resource alongside gear count.** Both are constraints the player must stay within to reach the goal.
+  - **Gear count** (existing): max number of bends/direction changes. Runs out → can't turn.
+  - **Chain length** (new): max total cells the chain spans from start to player position. Runs out → player stops at that cell, even if nothing else blocked them. Measured in whole cells along the path (not visual/bezier length). Backtracks reduce the used length, since the chain literally retracts.
+  - During level generation, compute a "chain length to reach" value for each cell (analogous to how gear `depths` are computed today). The level's required chain length is the maximum of those values along the solution path.
+  - Both gear count and chain length become **upgradeable player resources** for the meta-game: the boat starts with limited gear count and chain length, and the player unlocks higher values over time, gating access to more complex levels.
+
+- **UI for the two resources** (see Visuals & Polish):
+  - Gear count: hearts-style icons in a top bar (player can intuit "I have 3 gears left").
+  - Chain length: a Zelda-style potion/meter bar in the top bar — no number shown, just a visual fill level. Players can't calculate total distance in their head, so a bar is more honest than a number.
 
 ## Visuals & Polish
 
@@ -40,4 +48,4 @@ Guidelines for working through this list:
 
 ## Bugs / Edge Cases
 
-- 
+- when gears show 0 we shouldn't be able to move into a gear we previously placed unless it's the one we came from
