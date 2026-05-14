@@ -661,9 +661,15 @@ export function computeStepAnalysis(step, width, height, start) {
 }
 
 // ── Simulation-based metric computation ──────────────────────────────────────
-// Run the solver from the landed position (matching how game.js calls it) and
-// replay its moves to measure true chain-length used and gears consumed.
-// Returns null if the solver finds no path.
+// Replay the solver's path with full game gear mechanics to get accurate
+// effectiveChainLength (peak physical chain: boat→gears→player) and
+// effectiveCogs (net gears consumed).  Three bugs in the old version:
+//   1. slidePlayer was called with null gearSet — player slid through gears
+//      instead of stopping, making the replayed path diverge from game play.
+//   2. effectiveChainLength was total cells traveled, not peak physical chain
+//      length (they diverge when revisits shorten the chain mid-path).
+//   3. Gear counting ignored isRetractingTowardLastCog (free) and the
+//      straight-through-pop and pending-cog-pop refunds.
 function _simulatePath(cells, width, height, start, goal, doorRequirements) {
   const level = { cells, width, height, goal, doorRequirements, start };
   const GENEROUS = (width + height) * 4;
@@ -672,35 +678,117 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
   // Initial auto-slide: always DOWN from the boat (y=-1).
   const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS);
   const landPos    = { x: initResult.x, y: initResult.y };
-  const initLen    = landPos.y - start.y; // start.y = -1, so this = landPos.y + 1
 
   const moves = solve(level, landPos, 0, toggleMap, GENEROUS);
   if (!moves) return null;
 
-  let pos = { ...landPos };
-  let ws  = 0;
-  // prevDir after the initial DOWN slide.
-  let prevDx = 0, prevDy = 1;
-  let totalCells = initLen;
-  let gearCount  = 0;
+  // Physical chain length: Manhattan distance along boat → gears → player.
+  let pos   = { ...landPos };
+  let gears = [];   // [{x,y}] gear waypoints (bends), chronological
+  const chainLen = () => {
+    const pts = [start, ...gears, pos];
+    let len = 0;
+    for (let i = 1; i < pts.length; i++)
+      len += Math.abs(pts[i].x - pts[i-1].x) + Math.abs(pts[i].y - pts[i-1].y);
+    return len;
+  };
+
+  let ws           = 0;
+  let prevDx       = 0, prevDy = 1; // set by the initial DOWN slide
+  let prevDirNull  = false;          // mirrors state.prevDir === null (after boat entry)
+  let gearsUsed    = 0;              // net gears consumed (budget - remaining)
+  let maxChainLen  = chainLen();     // peak physical chain during execution
 
   for (const { dx, dy } of moves) {
-    const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, null, GENEROUS);
+    // gearSet must be built before modifying gears (matches _executeMove order).
+    const gearSet = new Set(gears.map(g => g.y * width + g.x));
+    const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, gearSet, GENEROUS);
+
     if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
     if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
 
-    const slideLen = Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
-    if (slideLen > 0) {
-      // A direction change on a move that actually slides the player costs one gear.
-      if (dx !== prevDx || dy !== prevDy) gearCount++;
-      totalCells += slideLen;
-      pos = { x: r.x, y: r.y };
+    const slideLen   = Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
+    const didMove    = slideLen > 0;
+    const hasCrumble = r.crumble !== null;
+
+    if (!didMove && !hasCrumble) { prevDx = dx; prevDy = dy; continue; }
+
+    const isBoatEntry = r.y < 0;
+    const revisitIdx  = didMove ? gears.findIndex(g => g.x === r.x && g.y === r.y) : -1;
+
+    // ── Replicate _buildDepartureCtx ─────────────────────────────────────────
+
+    // Straight-through pop: player is sitting on the last gear and moving in
+    // that segment's direction — the gear is refunded (no new waypoint needed).
+    if (!isBoatEntry && gears.length > 0) {
+      const last = gears[gears.length - 1];
+      if (last.x === pos.x && last.y === pos.y) {
+        const prev = gears.length > 1 ? gears[gears.length - 2] : start;
+        if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
+          gears.pop(); gearsUsed--;
+        }
+      }
     }
-    // prevDir updates even on zero-move crumble bounces (mirrors game.js behaviour).
-    prevDx = dx; prevDy = dy;
+
+    // isBendRaw: direction changed and prevDir is set (not null after boat entry).
+    const isBendRaw = !prevDirNull && (dx !== prevDx || dy !== prevDy);
+
+    // Moving directly toward the last gear anchor is a free retraction, not a bend.
+    let isRetractingTowardLastCog = false;
+    if (isBendRaw && !isBoatEntry && didMove) {
+      const anchor = gears.length > 0 ? gears[gears.length - 1] : start;
+      isRetractingTowardLastCog =
+        dx === Math.sign(anchor.x - pos.x) && dy === Math.sign(anchor.y - pos.y);
+    }
+
+    const isBend      = isBendRaw && !isRetractingTowardLastCog;
+    const isAtLastCog = gears.length > 0 &&
+      gears[gears.length - 1].x === pos.x && gears[gears.length - 1].y === pos.y;
+    const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog && didMove;
+
+    if (willUseGear) { gears.push({ x: pos.x, y: pos.y }); gearsUsed++; }
+
+    // ── Replicate _onPlayerLanded ─────────────────────────────────────────────
+
+    if (didMove) pos = { x: r.x, y: r.y };
+
+    if (isBoatEntry) {
+      gearsUsed -= gears.length; gears = [];
+      prevDirNull = true;
+    } else if (revisitIdx >= 0) {
+      const freed = gears.length - revisitIdx - 1;
+      gearsUsed -= freed;
+      gears = gears.slice(0, revisitIdx + 1);
+    }
+
+    // Default prevDir, then override for retraction.
+    let npx = dx, npy = dy;
+    if (isBoatEntry) { npx = 0; npy = 0; }
+    else if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0 && didMove) {
+      const anchor = gears.length > 0 ? gears[gears.length - 1] : start;
+      npx = Math.sign(pos.x - anchor.x);
+      npy = Math.sign(pos.y - anchor.y);
+    }
+
+    // Pending-cog pop: player landed on the last gear — refund it and override prevDir.
+    if (!isBoatEntry && gears.length > 0) {
+      const last = gears[gears.length - 1];
+      if (last.x === pos.x && last.y === pos.y) {
+        const prev = gears.length > 1 ? gears[gears.length - 2] : start;
+        gears.pop(); gearsUsed--;
+        npx = Math.sign(last.x - prev.x);
+        npy = Math.sign(last.y - prev.y);
+      }
+    }
+
+    if (!isBoatEntry) prevDirNull = false;
+    prevDx = npx; prevDy = npy;
+
+    const cl = chainLen();
+    if (cl > maxChainLen) maxChainLen = cl;
   }
 
-  return { effectiveChainLength: totalCells, effectiveCogs: gearCount };
+  return { effectiveChainLength: maxChainLen, effectiveCogs: gearsUsed };
 }
 
 function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
