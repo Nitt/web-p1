@@ -417,8 +417,18 @@ export function getCurrentLevel() {
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
   const moves = solve(state.level, state.playerPos, state.worldState, state.toggleMap, state.chainLengthTotal);
-  if (!moves || moves.length === 0) return;
+  if (!moves) {
+    _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', []);
+    return;
+  }
   _autoPlaying = true;
+  _batchHook = {
+    onWin:   ()  => _showBanner(winBanner, _nextLevel),
+    onStuck: r   => {
+      _logPlaythroughFailure(state.level, state.levelIndex, r, moves);
+      if (r === 'dead-end') _showBanner(deadEndBanner, () => loadLevel(state.level));
+    },
+  };
   _autoPlayNext(moves, 0);
 }
 
