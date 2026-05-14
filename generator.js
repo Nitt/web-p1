@@ -243,19 +243,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         // Queue the key cell in the key-activated universe with a fresh VD.
         // The player lands on the key and immediately collects it, so exploration
         // starts clean — no inherited visited-dirs from before the key was collected.
+        // The carver will reach the door naturally from the key side and slide through
+        // (door is open), so no extra far-side seeding is needed.
         { const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
           const kuk = ka.join(',');
           const bpk = `${kuk}|${nx},${ny}`;
           if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); } }
-        // Seed the key universe from EMPTY cells directly beyond the door
-        // (natural entry point from the far side), also with a fresh VD.
-        for (const d of DIRS) {
-          const ex = door.px + d.dx, ey = door.py + d.dy;
-          if (cells[idx(ex, ey)] === G.EMPTY) {
-            const reverseDirIdx = DIRS.find(r => r.dx === -d.dx && r.dy === -d.dy).idx;
-            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: [...currentBranchActivated, ni].sort((a, b) => a - b) });
-          }
-        }
       } else {
         cells[ni] = G.EMPTY;
         rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
