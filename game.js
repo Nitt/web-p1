@@ -1,5 +1,6 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
 import { solve } from './solver.js';
+import { makeRng } from './random.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
@@ -408,6 +409,52 @@ export function skipLevel() {
   _nextLevel();
 }
 
+/**
+ * Deterministically compute the seed and levelsSinceKeyDoor at level n by
+ * simulating the full progression from level 2, using the level seed itself
+ * as the RNG source for key/door decisions so the result is always the same.
+ */
+function _computeProgressionForLevel(n) {
+  let seed         = 300;
+  let sinceKeyDoor = 0;
+  for (let i = 2; i < n; i++) {
+    const recipe  = getRecipe(i, sinceKeyDoor, makeRng(seed));
+    sinceKeyDoor  = recipe.useKeyDoor ? 0 : sinceKeyDoor + 1;
+    seed         += recipe.candidates;
+  }
+  return { seed, sinceKeyDoor };
+}
+
+/**
+ * Jump directly to any level number.  Always produces the same level for a
+ * given n: seed and key/door decisions are computed deterministically from
+ * the level index, and generateFallback provides a fixed candidate count.
+ */
+export function jumpToLevel(n) {
+  n = Math.max(1, Math.floor(n));
+
+  if (n === 1) {
+    state.levelIndex         = 1;
+    state.nextId             = 2;
+    state.nextSeed           = 300;
+    state.levelsSinceKeyDoor = 0;
+    loadLevel(SAMPLE_LEVELS[0]);
+    return;
+  }
+
+  const { seed, sinceKeyDoor } = _computeProgressionForLevel(n);
+  const recipe = getRecipe(n, sinceKeyDoor, makeRng(seed));
+  const level  = generateFallback(seed, n, recipe);
+
+  // Set progression state before loadLevel so it pregens the right next level.
+  state.levelIndex         = n;
+  state.nextId             = n + 1;
+  state.nextSeed           = seed + recipe.candidates;
+  state.levelsSinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+
+  loadLevel(level);
+}
+
 /** Return the level object currently being played. */
 export function getCurrentLevel() {
   return state.level;
@@ -422,11 +469,12 @@ export function autoPlay() {
     _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', [], solverStart);
     return;
   }
+  const initialWorldState = state.worldState;
   _autoPlaying = true;
   _batchHook = {
     onWin:   ()  => _showBanner(winBanner, _nextLevel),
     onStuck: r   => {
-      _logPlaythroughFailure(state.level, state.levelIndex, r, moves, solverStart);
+      _logPlaythroughFailure(state.level, state.levelIndex, r, moves, solverStart, initialWorldState);
       if (r === 'dead-end') _showBanner(deadEndBanner, () => loadLevel(state.level));
     },
   };
@@ -486,7 +534,7 @@ export async function runBatchPlaythrough(count = 50) {
       console.log(`Level ${displayNum}: ✓`);
     } else {
       failures++;
-      _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart);
+      _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart, 0);
     }
   }
 
@@ -509,7 +557,7 @@ function _waitForNewLevel(prevCount) {
   });
 }
 
-function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverStart) {
+function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverStart, initialWorldState = 0) {
   const goalDepth  = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x] : 0;
   const gearBudget = (level.effectiveCogs ?? goalDepth) > 0
@@ -517,6 +565,7 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
   const ARROW = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
 
   console.group(`%cLevel ${displayNum} — ${reason}`, 'color:#e05; font-weight:bold');
+  console.log(`%cFailure reason: ${reason}`, 'color:#e05; font-weight:bold');
   console.log(
     '%c[AI] Paste this entire console group into Claude and ask it to read CLAUDE.md first.\n' +
     'Quick field guide:\n' +
@@ -536,9 +585,63 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
   console.log('Chain length (actual, boat→waypoints→player):', _chainLengthUsed(), '/', state.chainLengthTotal,
               '  Gears left:', state.gearsLeft, '/', state.totalGears);
   console.log('Gear waypoints at failure:', state.gears.length ? JSON.stringify(state.gears) : '(none)');
+
+  // Toggle map — list every toggle-bearing cell so Claude doesn't have to scan the cells array.
+  // Format: "toggle N: TYPE at (x,y) [ACTIVE]"
+  const TNAME = { [CellType.CRUMBLE]: 'CRUMBLE', [CellType.KEY]: 'KEY' };
+  const tmLines = [];
+  if (state.toggleMap?.size) {
+    for (const [fi, ti] of [...state.toggleMap.entries()].sort((a, b) => a[1] - b[1])) {
+      const tx = fi % level.width, ty = Math.floor(fi / level.width);
+      const active = (state.worldState & (1 << ti)) !== 0;
+      tmLines.push(`  toggle ${ti}: ${TNAME[level.cells[fi]] ?? 'UNKNOWN'} at (${tx},${ty})${active ? ' [ACTIVE]' : ''}`);
+    }
+  }
+  if (level.doorRequirements?.size) {
+    for (const [dfi, req] of level.doorRequirements.entries()) {
+      const dx2 = dfi % level.width, dy2 = Math.floor(dfi / level.width);
+      const open = (state.worldState & (1 << req)) !== 0;
+      tmLines.push(`  door at (${dx2},${dy2}) requires toggle ${req}${open ? ' [OPEN]' : ' [LOCKED]'}`);
+    }
+  }
+  if (tmLines.length) console.log('Toggle map + doors:\n' + tmLines.join('\n'));
+
   if (plannedMoves?.length) {
     console.log('Planned moves (' + plannedMoves.length + '):',
       plannedMoves.map(m => ARROW[`${m.dx},${m.dy}`] ?? `(${m.dx},${m.dy})`).join(' '));
+  }
+
+  // Re-simulate the solver's planned path from scratch to show expected vs actual.
+  // chainAvail uses solver's formula (limit − total cells traveled), NOT _chainLengthUsed().
+  if (plannedMoves?.length && solverStart) {
+    const chainLimit = state.chainLengthTotal > 0 ? state.chainLengthTotal : (level.width + level.height);
+    let tx = solverStart.x, ty = solverStart.y;
+    let tws = initialWorldState;
+    let traveled = 0;
+    const freshTmap = buildToggleMap(level.cells);
+    const traceLines = [`  (solver starts at (${tx},${ty}) worldState:${tws.toString(2).padStart(8,'0')} chainLimit:${chainLimit})`];
+    for (let i = 0; i < plannedMoves.length; i++) {
+      const { dx, dy } = plannedMoves[i];
+      const avail = Math.max(0, chainLimit - traveled);
+      const r = slidePlayer(level, { x: tx, y: ty }, dx, dy, freshTmap, tws, null, avail);
+      let nws = tws;
+      if (r.crumble?.toggleIdx      !== undefined) nws |= (1 << r.crumble.toggleIdx);
+      if (r.keyCollected?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
+      const cells = Math.abs(r.x - tx) + Math.abs(r.y - ty);
+      traveled += cells;
+      const arrow = ARROW[`${dx},${dy}`] ?? `(${dx},${dy})`;
+      const notes = [];
+      if (r.crumble)      notes.push(`crumble@(${r.crumble.x},${r.crumble.y}) breaks`);
+      if (r.keyCollected) notes.push(`key collected@(${r.keyCollected.x},${r.keyCollected.y})`);
+      if (cells === 0)    notes.push('zero-move');
+      traceLines.push(
+        `  ${i+1}. ${arrow}: (${tx},${ty})→(${r.x},${r.y})  cells:${cells}  traveled:${traveled}/${chainLimit}  avail_was:${avail}  ws:${nws.toString(2).padStart(8,'0')}` +
+        (notes.length ? `  [${notes.join(', ')}]` : '')
+      );
+      tx = r.x; ty = r.y; tws = nws;
+    }
+    traceLines.push(`  (solver expected goal at (${level.goal.x},${level.goal.y}))`);
+    console.log('Solver path re-simulation (chainAvail = limit − total traveled, NOT actual chain length):\n' + traceLines.join('\n'));
   }
   console.log('Grid:\n' + _renderGrid(level));
   console.log('Level JSON:\n' + JSON.stringify({
@@ -550,18 +653,25 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
     goalDifficulty:       level.goalDifficulty,
     cells:                Array.from(level.cells),
     doorRequirements:     level.doorRequirements
-      ? Array.from(level.doorRequirements.entries()) : [],
+      ? Array.from(level.doorRequirements.entries()).map(([fi, req]) => {
+          const x = fi % level.width, y = Math.floor(fi / level.width);
+          return { door: { x, y, flatIdx: fi }, requiresToggle: req };
+        }) : [],
   }, null, 2));
   console.groupEnd();
 }
 
-/** Render a level's grid as a readable ASCII string. */
+/** Render a level's grid as a readable ASCII string with x/y coordinate labels. */
 function _renderGrid(level) {
   const SYM  = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D'];
   const { width, height, cells, start, goal } = level;
   const lines = [];
+  // Column header: x=0,1,2,...
+  const colHeader = '     ' + Array.from({ length: width }, (_, x) => String(x).padStart(2)).join('');
+  lines.push(colHeader);
+  lines.push('     ' + '--'.repeat(width));
   for (let y = 0; y < height; y++) {
-    let row = '';
+    let row = `y=${String(y).padEnd(2)} `;
     for (let x = 0; x < width; x++) {
       if (x === goal.x  && y === goal.y)                 { row += 'G '; continue; }
       if (x === start.x && y === 0 && start.y < 0)       { row += '^ '; continue; }

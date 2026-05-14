@@ -90,7 +90,14 @@ export const PROGRESSION = [
  *                                     (0 = the immediately previous level had one)
  * @returns {{ weights, useKeyDoor: boolean, difficultyTarget: number|null, candidates }}
  */
-export function getRecipe(levelIndex, levelsSinceKeyDoor) {
+/**
+ * @param {number} levelIndex
+ * @param {number} levelsSinceKeyDoor
+ * @param {(() => number)|null} rng  optional seeded RNG; pass makeRng(seed) for
+ *                                   deterministic key/door placement.  Defaults
+ *                                   to Math.random when null.
+ */
+export function getRecipe(levelIndex, levelsSinceKeyDoor, rng = null) {
   // Walk stages to find which one `levelIndex` falls in, and where within it.
   let stageStart = 1;  // first level of the current stage (1-indexed)
   let stage = PROGRESSION[PROGRESSION.length - 1];
@@ -125,7 +132,7 @@ export function getRecipe(levelIndex, levelsSinceKeyDoor) {
       useKeyDoor = true;
     } else if (levelsSinceKeyDoor >= minInterval) {
       const t = (levelsSinceKeyDoor - minInterval) / (maxInterval - minInterval);
-      useKeyDoor = Math.random() < t;
+      useKeyDoor = (rng ?? Math.random)() < t;
     }
   }
 

@@ -18,6 +18,8 @@
         <button class="btn-ghost" id="skip-btn" aria-label="Skip level" hidden>Skip</button>
         <button class="btn-ghost" id="autoplay-btn" aria-label="Auto-play solution">Auto-play</button>
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
+        <input id="level-jump-input" type="number" min="1" step="1" placeholder="#">
+        <button class="btn-ghost" id="level-jump-btn" aria-label="Jump to level">Go</button>
       </div>
     </header>
     <div id="cog-debug" hidden></div>
@@ -106,7 +108,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, autoPlay, runBatchPlaythrough } from './game.js';
+    import { init, skipLevel, autoPlay, runBatchPlaythrough, jumpToLevel } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -123,6 +125,18 @@
 
     document.getElementById('batch-test-btn')
       .addEventListener('click', () => runBatchPlaythrough(50));
+
+    const levelJumpInput = document.getElementById('level-jump-input');
+    document.getElementById('level-jump-btn').addEventListener('click', () => {
+      const n = parseInt(levelJumpInput.value);
+      if (n >= 1) jumpToLevel(n);
+    });
+    levelJumpInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const n = parseInt(levelJumpInput.value);
+        if (n >= 1) jumpToLevel(n);
+      }
+    });
 
     document.getElementById('speed-slider').addEventListener('input', e => {
       const m = parseFloat(e.target.value);
