@@ -419,7 +419,6 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   const label = difficultyTarget !== null
     ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
     : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
-  console.log(`[hardest] seed=${bestSeed}  ${label}  (${candidates} candidates)`);
   best.weights = weights;
   return best;
 }

@@ -505,6 +505,7 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves) {
   const ARROW = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
 
   console.group(`%cLevel ${displayNum} — ${reason}`, 'color:#e05; font-weight:bold');
+  console.log('%c[AI] Paste this entire console group into Claude. Before answering, read CLAUDE.md at the project root — it explains the chain/gear system, solver limitations, and how to interpret each field below.', 'color:#888;font-style:italic');
   console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
   console.log('Start:', level.start, '  Goal:', level.goal);
   console.log('Chain limit:', state.chainLengthTotal, '  Gear budget:', gearBudget);
