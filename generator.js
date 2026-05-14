@@ -171,7 +171,14 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     for (const [k, vd] of universeVDs) {
       allUniverseVDs.set(k, new Map([...vd].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
     }
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
+    // Snapshot the frontier: queued positions grouped by universe key.
+    const frontier = new Map();
+    for (const item of branchQueue) {
+      const uKey = (item.activated ?? []).join(',');
+      if (!frontier.has(uKey)) frontier.set(uKey, new Set());
+      frontier.get(uKey).add(item.y * pw + item.x);
+    }
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
   }
 
   // True when at least two cells beyond (nx, ny) in dir are reachable — required

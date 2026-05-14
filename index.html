@@ -454,7 +454,22 @@
           }
         }
 
-        // Per-universe depth (blue) and chain length (teal) overlays
+        // Frontier dots: red circle on each queued position for this universe.
+        const frontierSet = step.frontier?.get(key);
+        if (frontierSet?.size) {
+          const r = Math.max(1.5, uW * 0.18);
+          ctx.fillStyle = 'rgba(220, 40, 40, 0.9)';
+          for (const pi of frontierSet) {
+            const fcx = pi % pw, fcy = Math.floor(pi / pw);
+            ctx.beginPath();
+            ctx.arc(ox + fcx * uW + uW / 2, oy + fcy * uW + uW / 2, r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Per-universe depth (blue) and chain length (teal) overlays.
+        // Only shown once the carver has explored OUTWARD from a cell in this
+        // universe — i.e., the cell has VD entries — matching how arrows work.
         if (uW >= 12 && _universeDepths) {
           const uDep = _universeDepths[u];
           const uCL  = _universeChainLengths?.[u];
@@ -464,6 +479,7 @@
             for (let cx = 1; cx < pw - 1; cx++) {
               const cell = grid[cy * pw + cx];
               if (cell === 0 || cell === 3) continue;
+              if (!vd?.get(cy * pw + cx)?.size) continue; // not yet explored from here
               const fi = (cy - 1) * w + (cx - 1);
               const d  = uDep?.[fi];
               const cl = uCL?.[fi];
@@ -488,16 +504,18 @@
           ctx.strokeRect(ox - 1, oy - 1, gridPixW + 1, gridPixH + 1);
         }
 
-        // from / to cell highlights
-        if (fromX >= 0 && fromY >= 0) {
-          ctx.strokeStyle = '#3a6fd8';
-          ctx.lineWidth   = Math.max(1, uW * 0.18);
-          ctx.strokeRect(ox + fromX * uW + 0.5, oy + fromY * uW + 0.5, uW - 2, uW - 2);
-        }
-        if (toX >= 0 && toY >= 0) {
-          ctx.strokeStyle = '#e8a020';
-          ctx.lineWidth   = Math.max(1, uW * 0.18);
-          ctx.strokeRect(ox + toX * uW + 0.5, oy + toY * uW + 0.5, uW - 2, uW - 2);
+        // from / to cell highlights — only in the universe currently being explored
+        if (isActive) {
+          if (fromX >= 0 && fromY >= 0) {
+            ctx.strokeStyle = '#3a6fd8';
+            ctx.lineWidth   = Math.max(1, uW * 0.18);
+            ctx.strokeRect(ox + fromX * uW + 0.5, oy + fromY * uW + 0.5, uW - 2, uW - 2);
+          }
+          if (toX >= 0 && toY >= 0) {
+            ctx.strokeStyle = '#e8a020';
+            ctx.lineWidth   = Math.max(1, uW * 0.18);
+            ctx.strokeRect(ox + toX * uW + 0.5, oy + toY * uW + 0.5, uW - 2, uW - 2);
+          }
         }
 
         // Direction arrows for this universe's VD
