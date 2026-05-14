@@ -225,9 +225,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     } else if (type === 'crumble') {
       cells[ni] = G.CRUMBLE;
       rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
-      enqueue(x, y);
-      const crumbleAct = [...currentBranchActivated, ni].sort((a, b) => a - b);
-      branchQueue.push({ x, y, resumeDir: dirIdx, activated: crumbleAct, initialVD: new Map(currentVD) });
+      // Queue (x,y) only in the crumble-activated universe with a fresh VD.
+      // Bumping a crumble immediately activates it, so there is no game state
+      // where the player is at (x,y) with the crumble still intact.
+      { const ca = [...currentBranchActivated, ni].sort((a, b) => a - b);
+        const cuk = ca.join(',');
+        const bpk = `${cuk}|${x},${y}`;
+        if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x, y, activated: ca }); } }
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door) {
@@ -289,7 +293,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          enqueue(x, y);
+          const ca = [...currentBranchActivated, ni].sort((a, b) => a - b);
+          const cuk = ca.join(',');
+          const bpk = `${cuk}|${x},${y}`;
+          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x, y, activated: ca }); }
         }
         break;
       case G.BLOCK:
