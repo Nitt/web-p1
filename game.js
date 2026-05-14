@@ -416,16 +416,17 @@ export function getCurrentLevel() {
 /** Start auto-playing a solution to the current level. */
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
-  const moves = solve(state.level, state.playerPos, state.worldState, state.toggleMap, state.chainLengthTotal);
+  const solverStart = { ...state.playerPos };
+  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
   if (!moves) {
-    _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', []);
+    _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', [], solverStart);
     return;
   }
   _autoPlaying = true;
   _batchHook = {
     onWin:   ()  => _showBanner(winBanner, _nextLevel),
     onStuck: r   => {
-      _logPlaythroughFailure(state.level, state.levelIndex, r, moves);
+      _logPlaythroughFailure(state.level, state.levelIndex, r, moves, solverStart);
       if (r === 'dead-end') _showBanner(deadEndBanner, () => loadLevel(state.level));
     },
   };
@@ -466,8 +467,9 @@ export async function runBatchPlaythrough(count = 50) {
     loadLevel(levelSeq[i]);
     await _waitForNewLevel(prevCount);
 
-    const level = state.level;
-    const moves = solve(level, state.playerPos, state.worldState, state.toggleMap, state.chainLengthTotal);
+    const level       = state.level;
+    const solverStart = { ...state.playerPos };
+    const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
 
     let outcome;
     if (!moves) {
@@ -484,7 +486,7 @@ export async function runBatchPlaythrough(count = 50) {
       console.log(`Level ${displayNum}: ✓`);
     } else {
       failures++;
-      _logPlaythroughFailure(level, displayNum, outcome, moves);
+      _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart);
     }
   }
 
@@ -507,7 +509,7 @@ function _waitForNewLevel(prevCount) {
   });
 }
 
-function _logPlaythroughFailure(level, displayNum, reason, plannedMoves) {
+function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverStart) {
   const goalDepth  = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x] : 0;
   const gearBudget = (level.effectiveCogs ?? goalDepth) > 0
@@ -515,16 +517,27 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves) {
   const ARROW = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
 
   console.group(`%cLevel ${displayNum} — ${reason}`, 'color:#e05; font-weight:bold');
-  console.log('%c[AI] Paste this entire console group into Claude. Before answering, read CLAUDE.md at the project root — it explains the chain/gear system, solver limitations, and how to interpret each field below.', 'color:#888;font-style:italic');
+  console.log(
+    '%c[AI] Paste this entire console group into Claude and ask it to read CLAUDE.md first.\n' +
+    'Quick field guide:\n' +
+    '  • "Boat entry" = level.start (y=-1), always above the grid — NOT where planned moves begin.\n' +
+    '  • "Solver started at" = where the player landed after the automatic slide-in from the boat. ALL planned moves begin here.\n' +
+    '  • "Player stopped at" = where the player is when this failure was detected (after all planned moves executed, or when dead-end fired).\n' +
+    '  • "Chain length (actual)" = Manhattan distance of the live chain: boat → each gear waypoint → player. NOT total cells traveled.\n' +
+    '  • "Gear waypoints" = the bend positions in the chain at failure time, in order from boat to player.',
+    'color:#888;font-style:italic'
+  );
   console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
-  console.log('Start:', level.start, '  Goal:', level.goal);
+  console.log('Boat entry (y=-1):', level.start, '  Goal:', level.goal);
+  if (solverStart) console.log('Solver started at:', solverStart, ' ← planned moves begin here');
   console.log('Chain limit:', state.chainLengthTotal, '  Gear budget:', gearBudget);
   console.log('Player stopped at:', { ...state.playerPos },
               '  World state:', state.worldState.toString(2).padStart(8, '0'));
-  console.log('Chain used:', _chainLengthUsed(), '/', state.chainLengthTotal,
+  console.log('Chain length (actual, boat→waypoints→player):', _chainLengthUsed(), '/', state.chainLengthTotal,
               '  Gears left:', state.gearsLeft, '/', state.totalGears);
+  console.log('Gear waypoints at failure:', state.gears.length ? JSON.stringify(state.gears) : '(none)');
   if (plannedMoves?.length) {
-    console.log('Planned moves:',
+    console.log('Planned moves (' + plannedMoves.length + '):',
       plannedMoves.map(m => ARROW[`${m.dx},${m.dy}`] ?? `(${m.dx},${m.dy})`).join(' '));
   }
   console.log('Grid:\n' + _renderGrid(level));

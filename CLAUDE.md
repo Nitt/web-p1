@@ -108,29 +108,62 @@ When a level fails the console logs:
 
 ```
 Level N — <reason>
-  Seed / Size / Start / Goal
+  [AI] field guide ...               ← read this inline first
+
+  Seed / Size
+  Boat entry (y=-1)                  ← level.start, ABOVE the grid — NOT where moves begin
+  Solver started at: {x, y}         ← where the player landed after auto-slide from boat
+                                        ALL planned moves start from here
   Chain limit / Gear budget
-  Player stopped at: {x, y}         ← where the player is when failure detected
+  Player stopped at: {x, y}         ← position when failure was detected
+                                        for "path exhausted": after ALL planned moves ran
+                                        for "dead-end": when the game's BFS declared stuck
   World state: 00000101              ← bitmask; bit N set = toggle N is active
-  Chain used / Chain limit           ← how much chain was consumed
+                                        (crumbles broken + keys collected, assigned in
+                                         flat scan order by buildToggleMap in puzzle.js)
+  Chain length (actual): N / limit   ← Manhattan distance of live chain:
+                                        boat → gear[0] → gear[1] → … → player
+                                        NOT total cells traveled — can be LESS than
+                                        traveled if the player backtracked through gears
   Gears left / total
-  Planned moves: → ↓ ← ↑ ...        ← the full solver solution
+  Gear waypoints at failure          ← the bend positions in the chain, boat→player order
+                                        use these + player pos to reconstruct chain shape
+  Planned moves (N): → ↓ ← ↑ …      ← full solver sequence starting from "Solver started at"
   Grid: (ASCII)
-  Level JSON: {...}                  ← paste this to reproduce the exact level
+  Level JSON: {...}                  ← complete level data for exact reproduction
 ```
 
-**To reproduce a specific level in the browser** — paste into the DevTools console:
+### Critical distinctions
 
-```js
-import('./game.js').then(g => {
-  import('./generator.js').then(({ generateLevel }) => {
-    // or build the level object directly from the JSON in the failure log
-  });
-});
-```
+**"Boat entry" vs "Solver started at"**: The boat (`level.start`, y = -1) is
+always above the grid. When a level loads the player auto-slides down and lands
+somewhere in the grid. The solver runs *from that landed position*. "Planned
+moves" begin at "Solver started at", not at the boat.
 
-Easier: open `index.html?debug`, click through to the failing level number, then
-use the **Auto-play** button to watch the solver's attempt live.
+**"Chain length (actual)" vs cells traveled**: The solver tracks *total cells
+traveled* as its chain cost. The game tracks `_chainLengthUsed()` = the
+Manhattan distance of the current chain path through gear waypoints. These
+diverge whenever the player has bent the chain — a chain routed through two
+gears can be longer than a straight-line path covering the same cells.
+
+**Zero-movement slides (crumble bounce)**: When the player slides into an
+intact CRUMBLE, `slidePlayer` returns the *same position* but sets `crumble` in
+the result. The game activates the toggle (worldState changes) but the player
+doesn't move and chain length doesn't change. In the *next* move the crumble is
+broken and passable. The solver models this correctly — a no-move state with
+changed worldState is a valid BFS/Dijkstra node. Whether it places a gear
+depends on whether `prevDir` changes, which the solver does *not* track.
+
+**Gear waypoints**: Each direction-change (bend) places a gear at the player's
+current position and costs 1 from `gearsLeft`. The chain is physically routed
+through these waypoints. The "Gear waypoints at failure" list shows exactly
+where the bends are, which is crucial for computing `_chainLengthUsed()` manually.
+
+**To reproduce a specific level in the browser**: open `index.html?debug`, use
+the Skip button to reach the failing level number, then press **Auto-play** to
+watch the solver's attempt live. Or paste the Level JSON into the DevTools
+console and call `loadLevel` directly (it's not exported, so easiest to use the
+batch test with a count matching that level number).
 
 ---
 
