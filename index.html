@@ -428,12 +428,19 @@
         const ox  = GAP + col * (gridPixW + GAP);
         const oy  = GAP + row * (gridPixH + LABEL_H + GAP) + LABEL_H;
 
-        // Label: bitmask string; gold + bold when this is the current universe
+        // Label: bitmask string + "active" tag when this is the current universe
         const isActive = u === activeWS;
         const lbl = toggleCount > 0 ? u.toString(2).padStart(toggleCount, '0') : '∅';
+        const fontSize = Math.max(8, Math.min(11, LABEL_H - 3));
+        ctx.font = `${isActive ? '900' : '400'} ${fontSize}px monospace`;
         ctx.fillStyle = isActive ? '#f0c040' : (u === 0 ? '#e4e0da' : '#aaa');
-        ctx.font = `${isActive ? '900' : '400'} ${Math.max(8, Math.min(11, LABEL_H - 3))}px monospace`;
         ctx.fillText(lbl, ox, oy - 3);
+        if (isActive) {
+          const lblW = ctx.measureText(lbl).width;
+          ctx.font = `900 ${fontSize}px monospace`;
+          ctx.fillStyle = '#f0c040';
+          ctx.fillText(' active', ox + lblW, oy - 3);
+        }
 
         // Draw cells — apply this universe's state (crumbles/keys passable if activated)
         for (let cy = 0; cy < ph; cy++) {
@@ -455,15 +462,16 @@
         }
 
         // Frontier dots: red = normal queue entry, blue = door-requeue entry.
-        const r = Math.max(1.5, uW * 0.18);
+        const r = Math.max(2, uW * 0.28);
         const frontierSet = step.frontier?.get(key);
         if (frontierSet?.size) {
-          ctx.fillStyle = 'rgba(220, 40, 40, 0.9)';
           for (const pi of frontierSet) {
             const fcx = pi % pw, fcy = Math.floor(pi / pw);
-            ctx.beginPath();
-            ctx.arc(ox + fcx * uW + uW / 2, oy + fcy * uW + uW / 2, r, 0, Math.PI * 2);
-            ctx.fill();
+            const cx2 = ox + fcx * uW + uW / 2, cy2 = oy + fcy * uW + uW / 2;
+            ctx.beginPath(); ctx.arc(cx2, cy2, r + 1.5, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fill();
+            ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff3030'; ctx.fill();
           }
         }
         const doorFrontierSet = step.doorFrontier?.get(key);
@@ -507,9 +515,14 @@
           }
         }
 
-        // Gold border on active universe
-        if (isActive) {
-          ctx.strokeStyle = '#f0c040';
+        // Per-universe colour identity — dark tinted overlay + border.
+        // Base universe (u=0) is neutral; each non-zero bitmask gets a stable hue
+        // derived via golden-angle spacing so adjacent bitmasks look distinct.
+        if (u !== 0) {
+          const hue = (u * 137) % 360;
+          ctx.fillStyle = `hsla(${hue}, 55%, 30%, 0.18)`;
+          ctx.fillRect(ox, oy, gridPixW, gridPixH);
+          ctx.strokeStyle = `hsl(${hue}, 70%, 55%)`;
           ctx.lineWidth   = 2;
           ctx.strokeRect(ox - 1, oy - 1, gridPixW + 1, gridPixH + 1);
         }
@@ -531,9 +544,8 @@
         // Direction arrows for this universe's VD
         if (uW >= 8 && vd) {
           const half   = (uW - 1) / 2;
-          const aw     = Math.max(1, uW * 0.18);
+          const aw     = Math.max(0.5, uW * 0.09);
           const margin = Math.max(1, uW * 0.08);
-          ctx.fillStyle = 'rgba(255, 230, 0, 0.85)';
           for (let cy = 0; cy < ph; cy++) {
             for (let cx = 0; cx < pw; cx++) {
               if (grid[cy * pw + cx] === 0) continue;
@@ -560,6 +572,10 @@
                   ctx.lineTo(px + uW - 1 - margin,            py + half);
                 }
                 ctx.closePath();
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+                ctx.lineWidth   = Math.max(1, aw * 0.8);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 230, 0, 0.95)';
                 ctx.fill();
               }
             }
