@@ -176,8 +176,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     // until the branch is actually processed.
     for (const item of branchQueue) {
       const uKey = (item.activated ?? []).join(',');
-      if (!allUniverseVDs.has(uKey) && item.initialVD) {
-        allUniverseVDs.set(uKey, new Map([...item.initialVD].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
+      if (!allUniverseVDs.has(uKey)) {
+        allUniverseVDs.set(uKey, item.initialVD ? new Map([...item.initialVD].map(([ci, bits]) => [ci, dirBitsToSet(bits)])) : new Map());
       }
     }
     // Snapshot the frontier grouped by universe key.
