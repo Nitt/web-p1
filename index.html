@@ -155,6 +155,8 @@
   <script type="module">
     import { generateLevel, computeStepAnalysis } from './generator.js';
     import { getCurrentLevel } from './game.js';
+    import { solve } from './solver.js';
+    import { buildToggleMap, slidePlayer } from './puzzle.js';
 
     const panel   = document.getElementById('gen-debug-panel');
     const canvas  = document.getElementById('gen-debug-canvas');
@@ -192,6 +194,8 @@
     let _finalCells            = null;   // Uint8Array output cells (CellType values)
     let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
     let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
+    let _pathCellOrder  = null;   // [{px,py}] padded-grid cells in path order
+    let _pathCellReveal = null;   // Map<"px,py" → stepIndex> when each cell first appears
 
     function runGenerate(weights) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
@@ -208,6 +212,79 @@
       _finalCells           = result.cells;
       _universeDepths       = result.universeDepths;
       _universeChainLengths = result.universeChainLengths;
+
+      // Compute optimal path, then map each path cell to the step that first carves it
+      _pathCellOrder = null;
+      _pathCellReveal = null;
+      if (result.start && result.goal && _steps.length > 0) {
+        const toggleMap  = buildToggleMap(result.cells);
+        const chainLimit = result.effectiveChainLength > 0 ? result.effectiveChainLength : (w + h);
+        const moves      = solve(result, result.start, 0, toggleMap, chainLimit);
+        if (moves) {
+          // Build waypoints: boat (y=-1) → landing → each slide endpoint
+          const waypoints = [{ x: result.start.x, y: -1 }, { ...result.start }];
+          let pos = { ...result.start }, ws = 0, totalCells = 0;
+          for (const { dx, dy } of moves) {
+            const chainAvail = Math.max(0, chainLimit - totalCells);
+            const r = slidePlayer(result, pos, dx, dy, toggleMap, ws, null, chainAvail);
+            if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
+            if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
+            totalCells += Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
+            pos = { x: r.x, y: r.y };
+            waypoints.push({ ...pos });
+          }
+
+          // Expand waypoints into individual cells (padded coords) + travel direction
+          const seen = new Set(), order = [];
+          for (let wi = 0; wi < waypoints.length - 1; wi++) {
+            const a = waypoints[wi], b = waypoints[wi + 1];
+            const sdx = Math.sign(b.x - a.x), sdy = Math.sign(b.y - a.y);
+            if (sdx === 0 && sdy === 0) continue;
+            let cx = a.x, cy = a.y;
+            while (true) {
+              const px = cx + 1, py = cy + 1; // inner → padded (y=-1 → py=0 = boat row)
+              const key = `${px},${py}`;
+              if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx, sdy }); }
+              if (cx === b.x && cy === b.y) break;
+              cx += sdx; cy += sdy;
+            }
+          }
+
+          // For each path cell find the first step that carves it in the path direction:
+          // step.toX/toY = the cell being carved, step.fromX/fromY = the carving source.
+          // Direction match: (toX-fromX, toY-fromY) === (sdx, sdy).
+          // Border/boat cells (py===0) are always carved from the start; reveal at 0.
+          const pw = _steps[0].pw, ph = _steps[0].ph;
+          const reveal = new Map();
+          for (const { px, py, sdx, sdy } of order) {
+            const key = `${px},${py}`;
+            if (px === 0 || py === 0 || px === pw - 1 || py === ph - 1) {
+              reveal.set(key, 0); // border/boat cells visible immediately
+              continue;
+            }
+            let found = -1;
+            for (let si = 0; si < _steps.length; si++) {
+              const { toX, toY, fromX, fromY } = _steps[si];
+              if (toX === px && toY === py && fromX >= 0 && fromY >= 0 &&
+                  toX - fromX === sdx && toY - fromY === sdy) {
+                found = si; break;
+              }
+            }
+            // Fallback: first time cell is non-UNTOUCHED (no direction match found)
+            if (found < 0) {
+              found = _steps.length - 1;
+              for (let si = 0; si < _steps.length; si++) {
+                if (_steps[si].grid[py * pw + px] !== 0) { found = si; break; }
+              }
+            }
+            reveal.set(key, found);
+          }
+
+          _pathCellOrder  = order;
+          _pathCellReveal = reveal;
+        }
+      }
+
       slider.max   = Math.max(0, _steps.length - 1);
       slider.value = _steps.length - 1;
       renderStep(_steps.length - 1);
@@ -350,6 +427,58 @@
         ctx.strokeStyle = '#e8a020';
         ctx.lineWidth   = Math.max(2, size * 0.15);
         ctx.strokeRect(toX * size + 1, toY * size + 1, size - 3, size - 3);
+      }
+
+      // Optimal path overlay — bright pink line, revealed cell-by-cell as the generator carves them
+      if (_pathCellOrder && _pathCellReveal && _pathCellOrder.length >= 1) {
+        const currentStep = parseInt(slider.value);
+        const half = (size - 1) / 2;
+        const toCx = (px) => px * size + half;
+        const toCy = (py) => py * size + half;
+
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.lineCap  = 'round';
+
+        // Glow + line: walk path in order, moveTo on first revealed cell of each run,
+        // lineTo for consecutive revealed cells, break on any unrevealed gap
+        const drawLine = (lw, alpha, blur) => {
+          ctx.lineWidth   = lw;
+          ctx.globalAlpha = alpha;
+          ctx.shadowBlur  = blur;
+          ctx.beginPath();
+          let inLine = false;
+          for (const { px, py } of _pathCellOrder) {
+            if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) <= currentStep) {
+              const cx = toCx(px), cy = toCy(py);
+              if (!inLine) { ctx.moveTo(cx, cy); inLine = true; }
+              else          { ctx.lineTo(cx, cy); }
+            } else {
+              inLine = false;
+            }
+          }
+          ctx.stroke();
+        };
+
+        ctx.strokeStyle = '#ff2d9b';
+        ctx.shadowColor = '#ff2d9b';
+        drawLine(Math.max(3, size * 0.3), 0.55, Math.max(6, size * 0.55)); // glow
+        drawLine(Math.max(2, size * 0.18), 1,    0);                        // solid
+
+        // Dots at each revealed path cell
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 1;
+        for (const { px, py } of _pathCellOrder) {
+          if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) > currentStep) continue;
+          const cx = toCx(px), cy = toCy(py);
+          const r = Math.max(2, size * 0.16);
+          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fillStyle = '#ff2d9b'; ctx.fill();
+          ctx.beginPath(); ctx.arc(cx, cy, Math.max(0.8, r * 0.4), 0, Math.PI * 2);
+          ctx.fillStyle = 'white'; ctx.fill();
+        }
+
+        ctx.restore();
       }
     }
     // ── Universe matrix view ──────────────────────────────────────────────────
