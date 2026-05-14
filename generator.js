@@ -236,38 +236,20 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         keyDoorPairs.push({ keyI: ni, doorI: door.ci });
         doorToKeyPaddedMap.set(door.ci, ni);
         rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
-        // Queue the key cell in the key-activated universe: the player lands on
-        // the key and immediately collects it, so exploration from this position
-        // must see the door as open.
+        // Queue the key cell in the key-activated universe with a fresh VD.
+        // The player lands on the key and immediately collects it, so exploration
+        // starts clean — no inherited visited-dirs from before the key was collected.
         { const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
           const kuk = ka.join(',');
           const bpk = `${kuk}|${nx},${ny}`;
-          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka, initialVD: new Map(currentVD) }); } }
+          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); } }
         // Seed the key universe from EMPTY cells directly beyond the door
-        // (natural entry point from the far side).
+        // (natural entry point from the far side), also with a fresh VD.
         for (const d of DIRS) {
           const ex = door.px + d.dx, ey = door.py + d.dy;
           if (cells[idx(ex, ey)] === G.EMPTY) {
             const reverseDirIdx = DIRS.find(r => r.dx === -d.dx && r.dy === -d.dy).idx;
-            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: [...currentBranchActivated, ni].sort((a, b) => a - b), initialVD: new Map(currentVD) });
-          }
-        }
-        // For EVERY existing universe: if a cell in that universe already explored
-        // toward the door (when it was a BLOCK), create a new universe =
-        // source-universe + key and re-queue that cell with resumeDir so it can
-        // now slide through the open door.  The new universe inherits the SOURCE
-        // universe's VD (not currentVD) so exploration stays coherent.
-        for (const [srcKey, srcVD] of universeVDs) {
-          const srcActivated = srcKey ? srcKey.split(',').map(Number) : [];
-          const newActivated = [...srcActivated, ni].sort((a, b) => a - b);
-          for (let di = 0; di < DIRS.length; di++) {
-            const adjX = door.px - DIRS[di].dx;
-            const adjY = door.py - DIRS[di].dy;
-            if (adjX < 1 || adjY < 1 || adjX >= pw - 1 || adjY >= ph - 1) continue;
-            const adjI = idx(adjX, adjY);
-            if ((srcVD.get(adjI) ?? 0) & (1 << di)) {
-              branchQueue.push({ x: adjX, y: adjY, resumeDir: di, activated: newActivated, initialVD: new Map(srcVD), isDoorRequeue: true });
-            }
+            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: [...currentBranchActivated, ni].sort((a, b) => a - b) });
           }
         }
       } else {
@@ -338,7 +320,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
           const kuk = ka.join(',');
           const bpk = `${kuk}|${nx},${ny}`;
-          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka, initialVD: new Map(currentVD) }); }
+          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); }
         }
         break;
       case G.DOOR: {
