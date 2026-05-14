@@ -1,4 +1,6 @@
 import { makeRng } from './random.js';
+import { slidePlayer, buildToggleMap } from './puzzle.js';
+import { solve } from './solver.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
 const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7 };
@@ -421,10 +423,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
-  // Compute per-key cog depths and the effective gear budget.
-  // The door may not gate the goal, so a key might sit deeper than the direct
-  // path to the goal.  The player must have enough gears to reach every key,
-  // otherwise a level with a key they can never collect produces a dead-end.
   const goalDepth = depths[goal.y * width + goal.x];
   const keyDepths = [];
   for (let i = 0; i < outCells.length; i++) {
@@ -432,16 +430,22 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       keyDepths.push({ x: i % width, y: Math.floor(i / width), depth: depths[i] });
     }
   }
-  const effectiveCogs = keyDepths.reduce(
-    (max, k) => Math.max(max, k.depth >= 0 ? k.depth : 0),
-    goalDepth >= 0 ? goalDepth : 0
-  );
 
-  // Compute effective chain length budget: max of chain length to goal and to every key.
+  // Simulate the solver's actual path to get accurate chain and gear metrics.
+  // The BFS-based estimates diverge from the game because the game's solver starts
+  // from the landed position (after the initial auto-slide) with a fresh cost counter,
+  // so it doesn't account for chain already consumed by the initial slide.
+  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements);
+
+  // Fall back to BFS estimates only if the solver found no path (shouldn't happen).
   const goalChainLength = chainLengths[goal.y * width + goal.x];
-  const effectiveChainLength = keyDepths.reduce(
+  const effectiveChainLength = simMetrics?.effectiveChainLength ?? keyDepths.reduce(
     (max, k) => Math.max(max, chainLengths[k.y * width + k.x] >= 0 ? chainLengths[k.y * width + k.x] : 0),
     goalChainLength >= 0 ? goalChainLength : 0
+  );
+  const effectiveCogs = simMetrics?.effectiveCogs ?? keyDepths.reduce(
+    (max, k) => Math.max(max, k.depth >= 0 ? k.depth : 0),
+    goalDepth >= 0 ? goalDepth : 0
   );
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
@@ -654,6 +658,49 @@ export function computeStepAnalysis(step, width, height, start) {
   }
   const { depths, difficulties } = _findGoal(outCells, width, height, start, null, null);
   return { depths, difficulties };
+}
+
+// ── Simulation-based metric computation ──────────────────────────────────────
+// Run the solver from the landed position (matching how game.js calls it) and
+// replay its moves to measure true chain-length used and gears consumed.
+// Returns null if the solver finds no path.
+function _simulatePath(cells, width, height, start, goal, doorRequirements) {
+  const level = { cells, width, height, goal, doorRequirements, start };
+  const GENEROUS = (width + height) * 4;
+  const toggleMap = buildToggleMap(cells);
+
+  // Initial auto-slide: always DOWN from the boat (y=-1).
+  const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS);
+  const landPos    = { x: initResult.x, y: initResult.y };
+  const initLen    = landPos.y - start.y; // start.y = -1, so this = landPos.y + 1
+
+  const moves = solve(level, landPos, 0, toggleMap, GENEROUS);
+  if (!moves) return null;
+
+  let pos = { ...landPos };
+  let ws  = 0;
+  // prevDir after the initial DOWN slide.
+  let prevDx = 0, prevDy = 1;
+  let totalCells = initLen;
+  let gearCount  = 0;
+
+  for (const { dx, dy } of moves) {
+    const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, null, GENEROUS);
+    if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
+    if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
+
+    const slideLen = Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
+    if (slideLen > 0) {
+      // A direction change on a move that actually slides the player costs one gear.
+      if (dx !== prevDx || dy !== prevDy) gearCount++;
+      totalCells += slideLen;
+      pos = { x: r.x, y: r.y };
+    }
+    // prevDir updates even on zero-move crumble bounces (mirrors game.js behaviour).
+    prevDx = dx; prevDy = dy;
+  }
+
+  return { effectiveChainLength: totalCells, effectiveCogs: gearCount };
 }
 
 function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
