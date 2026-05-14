@@ -32,7 +32,8 @@ let _batchHook = null;
 // can finish levels that the generator under-budgeted.  Violations are recorded
 // in _batchViolations and reported as failures even if the level completes.
 let _batchBypassConstraints = false;
-let _batchViolations = null; // { chainExceeded: bool, gearsExhausted: bool }
+// { chainExceeded, gearsExhausted, chainWasDepleted } — set during play, read at win
+let _batchViolations = null;
 
 // Actual step-by-step execution log collected during auto-play.
 // Each entry: { idx, move, fromPos, toPos, chainBefore, chainAfter, gearsBefore, gearsAfter, wsAfter }
@@ -524,7 +525,7 @@ export async function runBatchPlaythrough(count = 50) {
       const displayNum = i + 1;
 
       // Reset violation tracker for this level.
-      _batchViolations = { chainExceeded: false, gearsExhausted: false };
+      _batchViolations = { chainExceeded: false, gearsExhausted: false, chainWasDepleted: false };
 
       // Load the level and wait for the initial auto-slide to finish.
       const prevCount = _levelLoadCount;
@@ -547,17 +548,32 @@ export async function runBatchPlaythrough(count = 50) {
       }
 
       if (outcome === 'won') {
-        const { chainExceeded, gearsExhausted } = _batchViolations;
-        if (chainExceeded || gearsExhausted) {
-          // Completed only because constraints were bypassed — generator miscalculated.
+        const { chainExceeded, gearsExhausted, chainWasDepleted } = _batchViolations;
+
+        // Also check depletion at the winning landing (winning move may bring chain to limit).
+        const chainFinallyDepleted = chainWasDepleted ||
+          (state.chainLengthTotal > 0 && _chainLengthUsed() >= state.chainLengthTotal);
+
+        // Under-budget: constraints had to be bypassed.
+        // Over-budget: more was allocated than the solution needed.
+        const chainTooShort       = chainExceeded;
+        const chainTooLong        = !chainExceeded && !chainFinallyDepleted && state.chainLengthTotal > 0;
+        const gearsTooFew         = gearsExhausted;
+        const gearsTooMany        = !gearsExhausted && state.gearsLeft > 0;
+
+        const issues = [
+          chainTooShort  && 'chain too short (bypassed)',
+          chainTooLong   && 'chain too long (never depleted)',
+          gearsTooFew    && 'gears too few (bypassed)',
+          gearsTooMany   && 'gears too many (underused)',
+        ].filter(Boolean);
+
+        if (issues.length) {
           failures++;
-          const what = chainExceeded && gearsExhausted
-            ? 'chain length + gears both miscalculated'
-            : chainExceeded ? 'chain length miscalculated' : 'gears miscalculated';
-          console.group(`%cLevel ${displayNum} — completed but generator miscalculated: ${what}`, 'color:#e80; font-weight:bold');
-          console.log(`Miscalculated: ${what}`);
-          console.log(`Chain limit: ${state.chainLengthTotal}, final chain used: ${_chainLengthUsed()}`);
-          console.log(`Gear budget: ${state.totalGears}, gears remaining: ${state.gearsLeft}`);
+          console.group(`%cLevel ${displayNum} — completed but generator miscalculated: ${issues.join(', ')}`, 'color:#e80; font-weight:bold');
+          console.log(`Issues: ${issues.join(', ')}`);
+          console.log(`Chain: limit ${state.chainLengthTotal}, used at win ${_chainLengthUsed()}, ever depleted: ${chainFinallyDepleted}`);
+          console.log(`Gears: budget ${state.totalGears}, remaining at win ${state.gearsLeft}`);
           console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
           console.log('Level JSON:', JSON.stringify({ id: level.id, seed: level.seed, width: level.width, height: level.height, start: level.start, goal: level.goal, effectiveChainLength: level.effectiveChainLength, effectiveCogs: level.effectiveCogs }));
           console.groupEnd();
@@ -1089,6 +1105,9 @@ function _executeMove(dx, dy) {
   // Landing on an existing gear, the boat, or retracing the last segment is a backtrack —
   // chain shortens, so no cap.  Only cap genuine forward moves into new territory.
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+  if (_batchBypassConstraints && _batchViolations && state.chainLengthTotal > 0 && chainAvail === 0) {
+    _batchViolations.chainWasDepleted = true;
+  }
   const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
   if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
