@@ -28,6 +28,10 @@ let _levelLoadCount = 0;
 // Intercepted by _handleWin and _scheduleDeadEndCheck instead of showing banners.
 let _batchHook = null;
 
+// Actual step-by-step execution log collected during auto-play.
+// Each entry: { idx, move, fromPos, toPos, chainBefore, chainAfter, gearsBefore, gearsAfter, wsAfter }
+let _execTrace = [];
+
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
 const QUEUE_WINDOW_MS = 300;
@@ -89,6 +93,7 @@ export function init() {
 function loadLevel(level) {
   _autoPlaying = false;
   _batchHook   = null;
+  _execTrace   = [];
   _levelLoadCount++;
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
@@ -643,6 +648,27 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
     traceLines.push(`  (solver expected goal at (${level.goal.x},${level.goal.y}))`);
     console.log('Solver path re-simulation (chainAvail = limit − total traveled, NOT actual chain length):\n' + traceLines.join('\n'));
   }
+
+  // Actual execution trace — what the game really did, step by step.
+  // chain = _chainLengthUsed() = Manhattan distance boat→waypoints→player (NOT total traveled).
+  // Compare with solver re-simulation above to find the divergence point.
+  if (_execTrace.length) {
+    const execLines = [`  (chain = actual Manhattan distance of live chain, NOT total cells traveled)`];
+    for (const e of _execTrace) {
+      const arrow = ARROW[`${e.move.dx},${e.move.dy}`] ?? `(${e.move.dx},${e.move.dy})`;
+      const toStr    = e.toPos    !== null ? `(${e.toPos.x},${e.toPos.y})` : '(pending)';
+      const chainStr = e.chainAfter !== null
+        ? `chain:${e.chainBefore}→${e.chainAfter}/${state.chainLengthTotal}`
+        : `chain:${e.chainBefore}/?`;
+      const gearsStr = e.gearsAfter !== null
+        ? `gears:${e.gearsBefore}→${e.gearsAfter}`
+        : `gears:${e.gearsBefore}→?`;
+      const wsStr = e.wsAfter !== null ? e.wsAfter.toString(2).padStart(8, '0') : '????????';
+      execLines.push(`  ${e.idx}. ${arrow}: (${e.fromPos.x},${e.fromPos.y})→${toStr}  ${chainStr}  ${gearsStr}  ws:${wsStr}`);
+    }
+    console.log('Actual execution trace (real game state after each move):\n' + execLines.join('\n'));
+  }
+
   console.log('Grid:\n' + _renderGrid(level));
   console.log('Level JSON:\n' + JSON.stringify({
     id: level.id, seed: level.seed,
@@ -684,12 +710,21 @@ function _renderGrid(level) {
 
 function _autoPlayNext(moves, idx) {
   if (state.won || !_autoPlaying) { _autoPlaying = false; return; }
+  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
+
+  // Animation settled — fill in the "after" side of the previous move's trace entry.
+  if (idx > 0 && _execTrace.length >= idx) {
+    const entry = _execTrace[idx - 1];
+    if (entry && entry.toPos === null) {
+      entry.toPos      = { ...state.playerPos };
+      entry.chainAfter = _chainLengthUsed();
+      entry.gearsAfter = state.gearsLeft;
+      entry.wsAfter    = state.worldState;
+    }
+  }
+
   if (idx >= moves.length) {
-    // All moves dispatched — wait for the last animation to settle before
-    // deciding outcome. _handleWin sets state.won asynchronously via animation
-    // callbacks, so we must not call onStuck while a slide is still in flight.
-    if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
-    // Animation done and no win — solver/game divergence (chain length mismatch?).
+    // All moves dispatched and last animation settled — no win means divergence.
     _autoPlaying = false;
     if (_batchHook) {
       const h = _batchHook; _batchHook = null;
@@ -697,7 +732,21 @@ function _autoPlayNext(moves, idx) {
     }
     return;
   }
-  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
+
+  // Capture pre-state for this move (post-state filled on next settled tick above).
+  _execTrace.push({
+    idx:         idx + 1,
+    move:        moves[idx],
+    fromPos:     { ...state.playerPos },
+    chainBefore: _chainLengthUsed(),
+    gearsBefore: state.gearsLeft,
+    wsBefore:    state.worldState,
+    toPos:       null,
+    chainAfter:  null,
+    gearsAfter:  null,
+    wsAfter:     null,
+  });
+
   handleMove(moves[idx].dx, moves[idx].dy);
   setTimeout(() => _autoPlayNext(moves, idx + 1), 50);
 }

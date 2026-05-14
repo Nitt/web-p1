@@ -167,21 +167,41 @@ batch test with a count matching that level number).
 
 ---
 
-## Known hypotheses for level failures
+## Suspected generator bug (primary hypothesis)
 
-1. **Chain length one cell too short** — observed on level 24. The generated
-   chain limit (`effectiveChainLength`) may not account for the gear waypoints
-   that extend the physical chain beyond the Manhattan-distance path length.
-   The solver finds a path that fits in `chainLengthTotal` cells of travel, but
-   the actual chain (routed through gear waypoints) is longer.
+**The level generator is believed to produce unsolvable levels in some cases.**
+The most likely root cause: the generator computes `effectiveChainLength` and
+`effectiveCogs` (gear budget) based on a solved path, but does not account for
+the gear waypoints that physically extend the chain. A path that bends N times
+routes the chain through N extra waypoints, making the real chain longer than
+a straight-line distance. If the physical chain (routed through gear waypoints)
+exceeds `chainLengthTotal`, or if the number of bends exceeds the gear budget,
+the level is unsolvable.
 
-2. **Solver misses backtrack paths** — some levels may only be solvable by
-   intentionally backtracking to a gear to shorten the chain, then advancing
-   again. The solver never backtracks and would return `null` for these.
+**How to diagnose**: Compare the "Solver path re-simulation" with the "Actual
+execution trace" in the failure log. Find the first move where:
+- `chain:` diverges between the two (actual chain grew faster than solver
+  predicted — waypoints are routing it longer), OR
+- `gears:` hits 0 and a later move requires a direction change (gear budget
+  exhausted — the game dead-ends; the solver never knew).
 
-3. **Gear budget exhaustion mid-path** — if the shortest-chain-length path
-   requires many direction changes, it may exhaust `gearsLeft` before reaching
-   the goal. The solver doesn't check gear budget.
+---
+
+## Known failure modes (ranked most→least common)
+
+1. **Gear budget exhaustion** — the solver doesn't track `gearsLeft`. It can
+   plan a path requiring N direction changes even when only M < N gears remain.
+   The game dead-ends when gears run out; the solver had no idea.
+
+2. **Chain length exceeds budget due to waypoints** — the solver tracks total
+   cells *traveled*, but the game tracks the *physical chain length* (boat →
+   each waypoint → player). Zigzag paths add waypoint detours that make the
+   real chain longer than the solver's cost estimate. A slide gets capped
+   shorter than expected, and subsequent moves follow a wrong path.
+
+3. **Solver misses backtrack paths** — some levels may only be solvable by
+   intentionally backtracking to a gear (shortening the chain), then advancing
+   again. The solver never backtracks and returns `null` for these.
 
 ---
 
