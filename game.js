@@ -20,6 +20,13 @@ let _deadEndTimer = null;
 // Set to true while auto-play is running; cleared on cancel or level load.
 let _autoPlaying = false;
 
+// Incremented every time loadLevel() is called — lets batch playthrough await the next level.
+let _levelLoadCount = 0;
+
+// { onWin, onStuck } callbacks set during a batch playthrough.
+// Intercepted by _handleWin and _scheduleDeadEndCheck instead of showing banners.
+let _batchHook = null;
+
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
 const QUEUE_WINDOW_MS = 300;
@@ -80,6 +87,8 @@ export function init() {
 // ─── level loading ────────────────────────────────────────────────────────────
 function loadLevel(level) {
   _autoPlaying = false;
+  _batchHook   = null;
+  _levelLoadCount++;
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
   _retractToken++;
@@ -269,7 +278,12 @@ function _scheduleDeadEndCheck() {
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
         playDeadEnd();
-        _showBanner(deadEndBanner, () => loadLevel(state.level));
+        if (_batchHook) {
+          _autoPlaying = false;
+          const h = _batchHook; _batchHook = null; h.onStuck('dead-end');
+        } else {
+          _showBanner(deadEndBanner, () => loadLevel(state.level));
+        }
       }
     }, 1000);
   }
@@ -402,7 +416,7 @@ export function getCurrentLevel() {
 /** Start auto-playing a solution to the current level. */
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
-  const moves = solve(state.level, state.playerPos, state.worldState, state.toggleMap);
+  const moves = solve(state.level, state.playerPos, state.worldState, state.toggleMap, state.chainLengthTotal);
   if (!moves || moves.length === 0) return;
   _autoPlaying = true;
   _autoPlayNext(moves, 0);
@@ -413,15 +427,143 @@ export function stopAutoPlay() {
   _autoPlaying = false;
 }
 
+/**
+ * Play through the first `count` levels with full animations, automatically
+ * advancing on win and logging detailed info on any failure.
+ * Levels are generated with the same seed/recipe sequence as the game.
+ */
+export async function runBatchPlaythrough(count = 50) {
+  console.group(`Batch playthrough: levels 1–${count}`);
+  let failures = 0;
+
+  // Pre-generate level sequence using the same seed progression as the game.
+  const levelSeq = [SAMPLE_LEVELS[0]];
+  let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0;
+  for (let n = 2; n <= count; n++) {
+    const recipe = getRecipe(levelIdx, sinceKeyDoor);
+    const level  = generateFallback(seed, id, recipe);
+    levelSeq.push(level);
+    sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+    seed += recipe.candidates;
+    id++; levelIdx++;
+  }
+
+  for (let i = 0; i < levelSeq.length; i++) {
+    const displayNum = i + 1;
+
+    // Load the level and wait for the initial auto-slide to finish.
+    const prevCount = _levelLoadCount;
+    loadLevel(levelSeq[i]);
+    await _waitForNewLevel(prevCount);
+
+    const level = state.level;
+    const moves = solve(level, state.playerPos, state.worldState, state.toggleMap, state.chainLengthTotal);
+
+    let outcome;
+    if (!moves) {
+      outcome = 'solver found no path';
+    } else {
+      outcome = await new Promise(resolve => {
+        _batchHook = { onWin: () => resolve('won'), onStuck: r => resolve(r) };
+        _autoPlaying = true;
+        _autoPlayNext(moves, 0);
+      });
+    }
+
+    if (outcome === 'won') {
+      console.log(`Level ${displayNum}: ✓`);
+    } else {
+      failures++;
+      _logPlaythroughFailure(level, displayNum, outcome, moves);
+    }
+  }
+
+  if (failures === 0) {
+    console.log(`All ${count} levels solved ✓`);
+  } else {
+    console.warn(`${failures}/${count} failed — see groups above`);
+  }
+  console.groupEnd();
+}
+
+/** Poll until a new level has loaded and its initial slide animation is done. */
+function _waitForNewLevel(prevCount) {
+  return new Promise(resolve => {
+    function check() {
+      if (_levelLoadCount !== prevCount && !state.isMoving) { resolve(); return; }
+      setTimeout(check, 50);
+    }
+    setTimeout(check, 50);
+  });
+}
+
+function _logPlaythroughFailure(level, displayNum, reason, plannedMoves) {
+  const goalDepth  = level.depths
+    ? level.depths[level.goal.y * level.width + level.goal.x] : 0;
+  const gearBudget = (level.effectiveCogs ?? goalDepth) > 0
+    ? (level.effectiveCogs ?? goalDepth) : 1;
+  const ARROW = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
+
+  console.group(`%cLevel ${displayNum} — ${reason}`, 'color:#e05; font-weight:bold');
+  console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
+  console.log('Start:', level.start, '  Goal:', level.goal);
+  console.log('Chain limit:', state.chainLengthTotal, '  Gear budget:', gearBudget);
+  console.log('Player stopped at:', { ...state.playerPos },
+              '  World state:', state.worldState.toString(2).padStart(8, '0'));
+  console.log('Chain used:', _chainLengthUsed(), '/', state.chainLengthTotal,
+              '  Gears left:', state.gearsLeft, '/', state.totalGears);
+  if (plannedMoves?.length) {
+    console.log('Planned moves:',
+      plannedMoves.map(m => ARROW[`${m.dx},${m.dy}`] ?? `(${m.dx},${m.dy})`).join(' '));
+  }
+  console.log('Grid:\n' + _renderGrid(level));
+  console.log('Level JSON:\n' + JSON.stringify({
+    id: level.id, seed: level.seed,
+    width: level.width, height: level.height,
+    start: level.start, goal: level.goal,
+    effectiveChainLength: level.effectiveChainLength,
+    effectiveCogs:        level.effectiveCogs,
+    goalDifficulty:       level.goalDifficulty,
+    cells:                Array.from(level.cells),
+    doorRequirements:     level.doorRequirements
+      ? Array.from(level.doorRequirements.entries()) : [],
+  }, null, 2));
+  console.groupEnd();
+}
+
+/** Render a level's grid as a readable ASCII string. */
+function _renderGrid(level) {
+  const SYM  = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D'];
+  const { width, height, cells, start, goal } = level;
+  const lines = [];
+  for (let y = 0; y < height; y++) {
+    let row = '';
+    for (let x = 0; x < width; x++) {
+      if (x === goal.x  && y === goal.y)                 { row += 'G '; continue; }
+      if (x === start.x && y === 0 && start.y < 0)       { row += '^ '; continue; }
+      row += (SYM[cells[y * width + x]] ?? '?') + ' ';
+    }
+    lines.push(row.trimEnd());
+  }
+  return lines.join('\n');
+}
+
 function _autoPlayNext(moves, idx) {
-  if (idx >= moves.length || state.won || !_autoPlaying) {
+  if (state.won || !_autoPlaying) { _autoPlaying = false; return; }
+  if (idx >= moves.length) {
+    // All moves dispatched — wait for the last animation to settle before
+    // deciding outcome. _handleWin sets state.won asynchronously via animation
+    // callbacks, so we must not call onStuck while a slide is still in flight.
+    if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
+    // Animation done and no win — solver/game divergence (chain length mismatch?).
     _autoPlaying = false;
+    if (_batchHook) {
+      const h = _batchHook; _batchHook = null;
+      h.onStuck('solver path exhausted without reaching goal (chain mismatch?)');
+    }
     return;
   }
-  if (state.isMoving) {
-    setTimeout(() => _autoPlayNext(moves, idx), 50);
-    return;
-  }
+  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
   handleMove(moves[idx].dx, moves[idx].dy);
   setTimeout(() => _autoPlayNext(moves, idx + 1), 50);
 }
@@ -595,7 +737,13 @@ function _handleWin() {
   state.won = true;
   playWin();
   state.queuedMove = null;
-  _animateWinRetract(() => _showBanner(winBanner, _nextLevel));
+  _animateWinRetract(() => {
+    if (_batchHook) {
+      const h = _batchHook; _batchHook = null; h.onWin();
+    } else {
+      _showBanner(winBanner, _nextLevel);
+    }
+  });
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {

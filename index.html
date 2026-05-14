@@ -61,6 +61,7 @@
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
+    <button id="batch-test-btn" class="btn-ghost">test 50</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.25" max="8" step="0.25" value="1">
@@ -105,7 +106,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, autoPlay } from './game.js';
+    import { init, skipLevel, autoPlay, runBatchPlaythrough } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -119,6 +120,9 @@
 
     document.getElementById('autoplay-btn')
       .addEventListener('click', () => autoPlay());
+
+    document.getElementById('batch-test-btn')
+      .addEventListener('click', () => runBatchPlaythrough(50));
 
     document.getElementById('speed-slider').addEventListener('input', e => {
       const m = parseFloat(e.target.value);
