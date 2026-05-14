@@ -469,27 +469,42 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
 export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, difficultyTarget = null } = {}) {
-  let best           = null;
-  let bestScore      = Infinity; // used as |diff - target| when targeting, -Infinity when maximising
-  let bestSeed       = seed;
+  let best           = null;  // best solver-validated candidate
+  let bestFallback   = null;  // best unvalidated candidate (used only if no valid one found)
+  let bestScore      = Infinity;
+  let bestFallbackScore = Infinity;
+  const GENEROUS = (width + height) * 4;
 
   for (let i = 0; i < candidates; i++) {
     const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
+
+    // Track best overall as fallback in case no solver-validated candidate is found.
+    if (score < bestFallbackScore) { bestFallbackScore = score; bestFallback = level; }
+
+    // Validate: solver must find a path within the computed chain budget.
+    // Rejects levels where the solver's chain-length approximation diverges enough
+    // from the real physical chain to prevent it from finding the solution.
+    const toggleMap  = buildToggleMap(level.cells);
+    const initSlide  = slidePlayer(level, level.start, 0, 1, toggleMap, 0, null, GENEROUS);
+    const landPos    = { x: initSlide.x, y: initSlide.y };
+    if (!solve(level, landPos, 0, toggleMap, level.effectiveChainLength)) continue;
+
     if (score < bestScore) {
       bestScore = score;
-      bestSeed  = seed + i;
       best      = level;
       // Close enough to the target — no point evaluating more candidates.
       if (difficultyTarget !== null && bestScore < 0.5) break;
     }
   }
 
+  if (!best) best = bestFallback; // no solver-valid candidate found; use best available
   const label = difficultyTarget !== null
     ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
     : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
-  best.weights = weights;
+  best.weights    = weights;
+  best.useKeyDoor = useKeyDoor;
   return best;
 }
 
@@ -1171,6 +1186,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, crumbles, keys, doors
     if (cells[k] >= 3 && cells[k] <= 6) continue;                          // skip one-ways (player slides through, never lands on them)
     if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
+    if (!bestKeyForPos.has(k)) continue;                                // skip cells the player can never naturally stop on (only pass through)
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);
