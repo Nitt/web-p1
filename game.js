@@ -28,6 +28,12 @@ let _levelLoadCount = 0;
 // Intercepted by _handleWin and _scheduleDeadEndCheck instead of showing banners.
 let _batchHook = null;
 
+// When true, chain-length and gear-count hard stops are bypassed so auto-play
+// can finish levels that the generator under-budgeted.  Violations are recorded
+// in _batchViolations and reported as failures even if the level completes.
+let _batchBypassConstraints = false;
+let _batchViolations = null; // { chainExceeded: bool, gearsExhausted: bool }
+
 // Actual step-by-step execution log collected during auto-play.
 // Each entry: { idx, move, fromPos, toPos, chainBefore, chainAfter, gearsBefore, gearsAfter, wsAfter }
 let _execTrace = [];
@@ -499,48 +505,73 @@ export function stopAutoPlay() {
 export async function runBatchPlaythrough(count = 50) {
   console.group(`Batch playthrough: levels 1–${count}`);
   let failures = 0;
+  _batchBypassConstraints = true;
 
-  // Pre-generate level sequence using the same seed progression as the game.
-  const levelSeq = [SAMPLE_LEVELS[0]];
-  let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0;
-  for (let n = 2; n <= count; n++) {
-    const recipe = getRecipe(levelIdx, sinceKeyDoor);
-    const level  = generateFallback(seed, id, recipe);
-    levelSeq.push(level);
-    sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
-    seed += recipe.candidates;
-    id++; levelIdx++;
-  }
-
-  for (let i = 0; i < levelSeq.length; i++) {
-    const displayNum = i + 1;
-
-    // Load the level and wait for the initial auto-slide to finish.
-    const prevCount = _levelLoadCount;
-    loadLevel(levelSeq[i]);
-    await _waitForNewLevel(prevCount);
-
-    const level       = state.level;
-    const solverStart = { ...state.playerPos };
-    const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
-
-    let outcome;
-    if (!moves) {
-      outcome = 'solver found no path';
-    } else {
-      outcome = await new Promise(resolve => {
-        _batchHook = { onWin: () => resolve('won'), onStuck: r => resolve(r) };
-        _autoPlaying = true;
-        _autoPlayNext(moves, 0);
-      });
+  try {
+    // Pre-generate level sequence using the same seed progression as the game.
+    const levelSeq = [SAMPLE_LEVELS[0]];
+    let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0;
+    for (let n = 2; n <= count; n++) {
+      const recipe = getRecipe(levelIdx, sinceKeyDoor);
+      const level  = generateFallback(seed, id, recipe);
+      levelSeq.push(level);
+      sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+      seed += recipe.candidates;
+      id++; levelIdx++;
     }
 
-    if (outcome === 'won') {
-      console.log(`Level ${displayNum}: ✓`);
-    } else {
-      failures++;
-      _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart, 0);
+    for (let i = 0; i < levelSeq.length; i++) {
+      const displayNum = i + 1;
+
+      // Reset violation tracker for this level.
+      _batchViolations = { chainExceeded: false, gearsExhausted: false };
+
+      // Load the level and wait for the initial auto-slide to finish.
+      const prevCount = _levelLoadCount;
+      loadLevel(levelSeq[i]);
+      await _waitForNewLevel(prevCount);
+
+      const level       = state.level;
+      const solverStart = { ...state.playerPos };
+      const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
+
+      let outcome;
+      if (!moves) {
+        outcome = 'solver found no path';
+      } else {
+        outcome = await new Promise(resolve => {
+          _batchHook = { onWin: () => resolve('won'), onStuck: r => resolve(r) };
+          _autoPlaying = true;
+          _autoPlayNext(moves, 0);
+        });
+      }
+
+      if (outcome === 'won') {
+        const { chainExceeded, gearsExhausted } = _batchViolations;
+        if (chainExceeded || gearsExhausted) {
+          // Completed only because constraints were bypassed — generator miscalculated.
+          failures++;
+          const what = chainExceeded && gearsExhausted
+            ? 'chain length + gears both miscalculated'
+            : chainExceeded ? 'chain length miscalculated' : 'gears miscalculated';
+          console.group(`%cLevel ${displayNum} — completed but generator miscalculated: ${what}`, 'color:#e80; font-weight:bold');
+          console.log(`Miscalculated: ${what}`);
+          console.log(`Chain limit: ${state.chainLengthTotal}, final chain used: ${_chainLengthUsed()}`);
+          console.log(`Gear budget: ${state.totalGears}, gears remaining: ${state.gearsLeft}`);
+          console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
+          console.log('Level JSON:', JSON.stringify({ id: level.id, seed: level.seed, width: level.width, height: level.height, start: level.start, goal: level.goal, effectiveChainLength: level.effectiveChainLength, effectiveCogs: level.effectiveCogs }));
+          console.groupEnd();
+        } else {
+          console.log(`Level ${displayNum}: ✓`);
+        }
+      } else {
+        failures++;
+        _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart, 0);
+      }
     }
+  } finally {
+    _batchBypassConstraints = false;
+    _batchViolations = null;
   }
 
   if (failures === 0) {
@@ -825,9 +856,18 @@ function _buildDepartureCtx(target, dx, dy) {
   // 2+ gears → real loop; place the gear normally.
   const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && state.gears.length === 1;
 
-  if (willUseGear && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return null; }
-  if (isBoatEntry && isBend && !isAtLastCog && state.gears.length >= 2 && state.gearsLeft === 0) { _scheduleDeadEndCheck(); return null; }
-  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) { _scheduleDeadEndCheck(); return null; }
+  if (willUseGear && state.gearsLeft === 0) {
+    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
+    else { _scheduleDeadEndCheck(); return null; }
+  }
+  if (isBoatEntry && isBend && !isAtLastCog && state.gears.length >= 2 && state.gearsLeft === 0) {
+    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
+    else { _scheduleDeadEndCheck(); return null; }
+  }
+  if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) {
+    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
+    else { _scheduleDeadEndCheck(); return null; }
+  }
 
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
   const effectiveGearCount = state.gears.length + (pendingBendGear ? 1 : 0);
@@ -1050,7 +1090,9 @@ function _executeMove(dx, dy) {
   // chain shortens, so no cap.  Only cap genuine forward moves into new territory.
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
   const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
-  const moveTarget = (revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail)
+  const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
+  if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
+  const moveTarget = (chainWouldExceed && !_batchBypassConstraints)
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
