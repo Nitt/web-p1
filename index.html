@@ -454,12 +454,22 @@
           }
         }
 
-        // Frontier dots: red circle on each queued position for this universe.
+        // Frontier dots: red = normal queue entry, blue = door-requeue entry.
+        const r = Math.max(1.5, uW * 0.18);
         const frontierSet = step.frontier?.get(key);
         if (frontierSet?.size) {
-          const r = Math.max(1.5, uW * 0.18);
           ctx.fillStyle = 'rgba(220, 40, 40, 0.9)';
           for (const pi of frontierSet) {
+            const fcx = pi % pw, fcy = Math.floor(pi / pw);
+            ctx.beginPath();
+            ctx.arc(ox + fcx * uW + uW / 2, oy + fcy * uW + uW / 2, r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        const doorFrontierSet = step.doorFrontier?.get(key);
+        if (doorFrontierSet?.size) {
+          ctx.fillStyle = 'rgba(40, 120, 220, 0.95)';
+          for (const pi of doorFrontierSet) {
             const fcx = pi % pw, fcy = Math.floor(pi / pw);
             ctx.beginPath();
             ctx.arc(ox + fcx * uW + uW / 2, oy + fcy * uW + uW / 2, r, 0, Math.PI * 2);

@@ -171,14 +171,26 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     for (const [k, vd] of universeVDs) {
       allUniverseVDs.set(k, new Map([...vd].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
     }
-    // Snapshot the frontier: queued positions grouped by universe key.
-    const frontier = new Map();
+    // Also surface universes that are queued but not yet dequeued — universeVDs
+    // only gets an entry on dequeue, so without this new panels wouldn't appear
+    // until the branch is actually processed.
     for (const item of branchQueue) {
       const uKey = (item.activated ?? []).join(',');
-      if (!frontier.has(uKey)) frontier.set(uKey, new Set());
-      frontier.get(uKey).add(item.y * pw + item.x);
+      if (!allUniverseVDs.has(uKey) && item.initialVD) {
+        allUniverseVDs.set(uKey, new Map([...item.initialVD].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
+      }
     }
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
+    // Snapshot the frontier grouped by universe key.
+    // doorFrontier = blue dots: cells re-queued because a wall became a door.
+    const frontier     = new Map();
+    const doorFrontier = new Map();
+    for (const item of branchQueue) {
+      const uKey = (item.activated ?? []).join(',');
+      const target = item.isDoorRequeue ? doorFrontier : frontier;
+      if (!target.has(uKey)) target.set(uKey, new Set());
+      target.get(uKey).add(item.y * pw + item.x);
+    }
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
   }
 
   // True when at least two cells beyond (nx, ny) in dir are reachable — required
@@ -224,13 +236,38 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         keyDoorPairs.push({ keyI: ni, doorI: door.ci });
         doorToKeyPaddedMap.set(door.ci, ni);
         rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
-        enqueue(nx, ny);
-        const keyAct = [...currentBranchActivated, ni].sort((a, b) => a - b);
+        // Queue the key cell in the key-activated universe: the player lands on
+        // the key and immediately collects it, so exploration from this position
+        // must see the door as open.
+        { const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
+          const kuk = ka.join(',');
+          const bpk = `${kuk}|${nx},${ny}`;
+          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka, initialVD: new Map(currentVD) }); } }
+        // Seed the key universe from EMPTY cells directly beyond the door
+        // (natural entry point from the far side).
         for (const d of DIRS) {
           const ex = door.px + d.dx, ey = door.py + d.dy;
           if (cells[idx(ex, ey)] === G.EMPTY) {
             const reverseDirIdx = DIRS.find(r => r.dx === -d.dx && r.dy === -d.dy).idx;
-            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: keyAct, initialVD: new Map(currentVD) });
+            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: [...currentBranchActivated, ni].sort((a, b) => a - b), initialVD: new Map(currentVD) });
+          }
+        }
+        // For EVERY existing universe: if a cell in that universe already explored
+        // toward the door (when it was a BLOCK), create a new universe =
+        // source-universe + key and re-queue that cell with resumeDir so it can
+        // now slide through the open door.  The new universe inherits the SOURCE
+        // universe's VD (not currentVD) so exploration stays coherent.
+        for (const [srcKey, srcVD] of universeVDs) {
+          const srcActivated = srcKey ? srcKey.split(',').map(Number) : [];
+          const newActivated = [...srcActivated, ni].sort((a, b) => a - b);
+          for (let di = 0; di < DIRS.length; di++) {
+            const adjX = door.px - DIRS[di].dx;
+            const adjY = door.py - DIRS[di].dy;
+            if (adjX < 1 || adjY < 1 || adjX >= pw - 1 || adjY >= ph - 1) continue;
+            const adjI = idx(adjX, adjY);
+            if ((srcVD.get(adjI) ?? 0) & (1 << di)) {
+              branchQueue.push({ x: adjX, y: adjY, resumeDir: di, activated: newActivated, initialVD: new Map(srcVD), isDoorRequeue: true });
+            }
           }
         }
       } else {
@@ -298,7 +335,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-          enqueue(nx, ny);
+          const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
+          const kuk = ka.join(',');
+          const bpk = `${kuk}|${nx},${ny}`;
+          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka, initialVD: new Map(currentVD) }); }
         }
         break;
       case G.DOOR: {
