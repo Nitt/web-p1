@@ -634,6 +634,8 @@ body.chain-debug .player {
 }
 
 .gen-debug-controls button:hover { background: #3a3734; }
+.gen-debug-controls button.active { background: #3a6fd8; border-color: #5a8fe8; color: #fff; }
+.gen-debug-controls button.active:hover { background: #2a5fc8; }
 
 #gen-debug-canvas-wrap {
   flex: 1;
@@ -642,7 +644,7 @@ body.chain-debug .player {
   align-items: flex-start;
   gap: 0.35rem;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 #gen-debug-canvas {
@@ -682,6 +684,10 @@ body.chain-debug .player {
 .gl-crumble::before   { background: #7d5a40; }
 .gl-from::before      { background: transparent; border: 2px solid #3a6fd8; }
 .gl-to::before        { background: transparent; border: 2px solid #e8a020; }
+.gl-key::before       { background: #d4a820; }
+.gl-door::before      { background: #4a80b0; }
+.gl-depth::before     { background: #3a6fd8; }
+.gl-chain::before     { background: #30a090; }
 
 #gen-debug-label {
   flex-shrink: 0;

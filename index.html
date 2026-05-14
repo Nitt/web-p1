@@ -79,6 +79,7 @@
         <label>w <input id="gen-debug-w" type="number" value="9" min="3" max="20"></label>
         <label>h <input id="gen-debug-h" type="number" value="9" min="3" max="20"></label>
         <button id="gen-debug-run">Generate</button>
+        <button id="gen-debug-universes">universes</button>
         <button id="gen-debug-close">✕</button>
       </div>
     </div>
@@ -91,8 +92,12 @@
         <span class="gl-block">block</span>
         <span class="gl-oneway">oneway</span>
         <span class="gl-crumble">crumble</span>
+        <span class="gl-key">key</span>
+        <span class="gl-door">door</span>
         <span class="gl-from">▶ from</span>
         <span class="gl-to">● to</span>
+        <span class="gl-depth">gear depth</span>
+        <span class="gl-chain">chain len</span>
       </div>
     </div>
     <div id="gen-debug-label">—</div>
@@ -170,12 +175,23 @@
     });
     document.getElementById('gen-debug-close').addEventListener('click', () => { panel.hidden = true; });
 
-    let _steps       = [];
-    let _depths      = null;   // Int16Array from final generateLevel result
-    let _difficulties = null;  // Float32Array
-    let _levelW      = 0;
-    let _levelH      = 0;
-    let _levelStart  = null;
+    document.getElementById('gen-debug-universes').addEventListener('click', () => {
+      _universeMode = !_universeMode;
+      document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
+      renderStep(+slider.value);
+    });
+
+    let _steps            = [];
+    let _depths           = null;   // Int16Array from final generateLevel result
+    let _difficulties     = null;   // Float32Array
+    let _levelW           = 0;
+    let _levelH           = 0;
+    let _levelStart       = null;
+    let _universeMode          = false;
+    let _doorRequirements      = null;   // Map<outputFlatIdx, toggleIdx> from final result
+    let _finalCells            = null;   // Uint8Array output cells (CellType values)
+    let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
+    let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
 
     function runGenerate(weights) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
@@ -183,11 +199,15 @@
       const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
       _steps = [];
       const result = generateLevel(w, h, { seed, id: 'dbg', weights, _steps });
-      _depths       = result.depths;
-      _difficulties = result.difficulties;
-      _levelW       = w;
-      _levelH       = h;
-      _levelStart   = result.start;
+      _depths           = result.depths;
+      _difficulties     = result.difficulties;
+      _levelW           = w;
+      _levelH           = h;
+      _levelStart       = result.start;
+      _doorRequirements     = result.doorRequirements;
+      _finalCells           = result.cells;
+      _universeDepths       = result.universeDepths;
+      _universeChainLengths = result.universeChainLengths;
       slider.max   = Math.max(0, _steps.length - 1);
       slider.value = _steps.length - 1;
       renderStep(_steps.length - 1);
@@ -217,9 +237,13 @@
       const step = _steps[Math.min(i, _steps.length - 1)];
       label.textContent   = step.label;
       counter.textContent = `${i + 1} / ${_steps.length}`;
-      // Use final depth/difficulty values so numbers stay stable as the slider advances.
-      // The per-step recomputation caused values to jump as partial grids opened new paths.
-      drawStep(step, _depths, _difficulties);
+      if (_universeMode) {
+        drawUniverses(step);
+      } else {
+        // Use final depth/difficulty values so numbers stay stable as the slider advances.
+        // The per-step recomputation caused values to jump as partial grids opened new paths.
+        drawStep(step, _depths, _difficulties);
+      }
     }
 
     // G enum values → fill colours (matches generator.js G object)
@@ -230,6 +254,8 @@
       '#2b2926',    // 3 BLOCK
       '#7ab8a0',    // 4 ONEWAY
       '#7d5a40',    // 5 CRUMBLE
+      '#d4a820',    // 6 KEY
+      '#4a80b0',    // 7 DOOR
     ];
 
     function drawStep(step, depths, difficulties) {
@@ -274,10 +300,11 @@
             }
           }
 
-          // Direction arrows: show which directions have been explored FROM this cell.
-          // visitedDirs uses padded indices (cy * pw + cx) directly.
-          if (step.visitedDirs && size >= 8 && cell !== 0 /* not UNTOUCHED */) {
-            const dirs = step.visitedDirs.get(cy * pw + cx);
+          // Direction arrows: show which directions have been explored FROM this cell
+          // in the currently-active universe.
+          const _activeVD = step.allUniverseVDs?.get(step.currentUniverseKey ?? '');
+          if (_activeVD && size >= 8 && cell !== 0 /* not UNTOUCHED */) {
+            const dirs = _activeVD.get(cy * pw + cx);
             if (dirs && dirs.size > 0) {
               const px = cx * size, py = cy * size;
               const half = (size - 1) / 2;
@@ -324,6 +351,193 @@
         ctx.lineWidth   = Math.max(2, size * 0.15);
         ctx.strokeRect(toX * size + 1, toY * size + 1, size - 3, size - 3);
       }
+    }
+    // ── Universe matrix view ──────────────────────────────────────────────────
+    // Shows all 2^N worldState variants of the current generation step side by
+    // side.  Toggle map is built from _finalCells so bitmask indices stay
+    // consistent across steps and match the _doorRequirements indices.
+    function drawUniverses(step) {
+      if (!_finalCells) return;
+      const { grid, pw, ph, fromX, fromY, toX, toY } = step;
+      const w = pw - 2, h = ph - 2;
+
+      // Build toggle map from final output cells (CellType: CRUMBLE=7, KEY=8)
+      // so toggle indices are stable and match _doorRequirements.
+      const finalToggleMap = new Map(); // outputFlatIdx → toggleIdx
+      let toggleCount = 0;
+      for (let i = 0; i < _finalCells.length; i++) {
+        if (_finalCells[i] === 7 || _finalCells[i] === 8) finalToggleMap.set(i, toggleCount++);
+      }
+
+      // Convert a VD key (sorted padded cell indices joined by ',') → bitmask integer.
+      function vdKeyToWS(key) {
+        if (!key) return 0;
+        let ws = 0;
+        for (const s of key.split(',')) {
+          const pi = parseInt(s, 10);
+          const cx = pi % pw, cy = Math.floor(pi / pw);
+          if (cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1) {
+            const ti = finalToggleMap.get((cy - 1) * w + (cx - 1));
+            if (ti !== undefined) ws |= (1 << ti);
+          }
+        }
+        return ws;
+      }
+
+      // Collect only the universes the carver has actually entered at this step,
+      // sorted by their bitmask (base universe "∅" always first).
+      const knownVDs = step.allUniverseVDs ?? new Map();
+      const activeUniverses = [];
+      for (const [key, vd] of knownVDs) {
+        activeUniverses.push({ key, u: vdKeyToWS(key), vd });
+      }
+      activeUniverses.sort((a, b) => a.u - b.u);
+
+      // Current-step active bitmask (which universe the carver is IN right now).
+      let activeWS = 0;
+      for (const paddedIdx of (step.activated ?? [])) {
+        const cx = paddedIdx % pw, cy = Math.floor(paddedIdx / pw);
+        if (cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1) {
+          const ti = finalToggleMap.get((cy - 1) * w + (cx - 1));
+          if (ti !== undefined) activeWS |= (1 << ti);
+        }
+      }
+
+      const universeCount = activeUniverses.length || 1;
+      const cols          = Math.min(8, universeCount);
+      const rows          = Math.ceil(universeCount / cols);
+
+      const LABEL_H = 14;
+      const GAP     = 6;
+
+      const wrap  = canvas.parentElement;
+      const availW = Math.max(800, (wrap.clientWidth || 800) - 20);
+      const uW    = Math.max(4, Math.floor((availW - GAP * (cols + 1)) / cols / pw));
+      const gridPixW = pw * uW;
+      const gridPixH = ph * uW;
+
+      canvas.width  = cols * (gridPixW + GAP) + GAP;
+      canvas.height = rows * (gridPixH + LABEL_H + GAP) + GAP;
+
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      activeUniverses.forEach(({ key, u, vd }, idx) => {
+        const col = idx % cols;
+        const row = Math.floor(idx / cols);
+        const ox  = GAP + col * (gridPixW + GAP);
+        const oy  = GAP + row * (gridPixH + LABEL_H + GAP) + LABEL_H;
+
+        // Label: bitmask string; gold + bold when this is the current universe
+        const isActive = u === activeWS;
+        const lbl = toggleCount > 0 ? u.toString(2).padStart(toggleCount, '0') : '∅';
+        ctx.fillStyle = isActive ? '#f0c040' : (u === 0 ? '#e4e0da' : '#aaa');
+        ctx.font = `${isActive ? '900' : '400'} ${Math.max(8, Math.min(11, LABEL_H - 3))}px monospace`;
+        ctx.fillText(lbl, ox, oy - 3);
+
+        // Draw cells — apply this universe's state (crumbles/keys passable if activated)
+        for (let cy = 0; cy < ph; cy++) {
+          for (let cx = 0; cx < pw; cx++) {
+            let cell = grid[cy * pw + cx];
+            if (cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1) {
+              const outFlat = (cy - 1) * w + (cx - 1);
+              if (cell === 5 /* G.CRUMBLE */ || cell === 6 /* G.KEY */) {
+                const ti = finalToggleMap.get(outFlat);
+                if (ti !== undefined && (u & (1 << ti))) cell = 1;
+              } else if (cell === 7 /* G.DOOR */ && _doorRequirements) {
+                const req = _doorRequirements.get(outFlat);
+                if (req !== undefined && (u & (1 << req))) cell = 1;
+              }
+            }
+            ctx.fillStyle = CELL_COLORS[cell] ?? '#999';
+            ctx.fillRect(ox + cx * uW, oy + cy * uW, uW - 1, uW - 1);
+          }
+        }
+
+        // Per-universe depth (blue) and chain length (teal) overlays
+        if (uW >= 12 && _universeDepths) {
+          const uDep = _universeDepths[u];
+          const uCL  = _universeChainLengths?.[u];
+          const fontSize = Math.max(5, Math.floor(uW * 0.28));
+          ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+          for (let cy = 1; cy < ph - 1; cy++) {
+            for (let cx = 1; cx < pw - 1; cx++) {
+              const cell = grid[cy * pw + cx];
+              if (cell === 0 || cell === 3) continue;
+              const fi = (cy - 1) * w + (cx - 1);
+              const d  = uDep?.[fi];
+              const cl = uCL?.[fi];
+              if (d !== undefined && d >= 0) {
+                ctx.fillStyle = '#3a6fd8';
+                ctx.fillText(d, ox + cx * uW + 2, oy + cy * uW + fontSize + 1);
+              }
+              if (cl !== undefined && cl >= 0 && uW >= 18) {
+                ctx.fillStyle = '#30a090';
+                const txt = String(cl);
+                const tw  = ctx.measureText(txt).width;
+                ctx.fillText(txt, ox + cx * uW + uW - tw - 2, oy + cy * uW + uW - 3);
+              }
+            }
+          }
+        }
+
+        // Gold border on active universe
+        if (isActive) {
+          ctx.strokeStyle = '#f0c040';
+          ctx.lineWidth   = 2;
+          ctx.strokeRect(ox - 1, oy - 1, gridPixW + 1, gridPixH + 1);
+        }
+
+        // from / to cell highlights
+        if (fromX >= 0 && fromY >= 0) {
+          ctx.strokeStyle = '#3a6fd8';
+          ctx.lineWidth   = Math.max(1, uW * 0.18);
+          ctx.strokeRect(ox + fromX * uW + 0.5, oy + fromY * uW + 0.5, uW - 2, uW - 2);
+        }
+        if (toX >= 0 && toY >= 0) {
+          ctx.strokeStyle = '#e8a020';
+          ctx.lineWidth   = Math.max(1, uW * 0.18);
+          ctx.strokeRect(ox + toX * uW + 0.5, oy + toY * uW + 0.5, uW - 2, uW - 2);
+        }
+
+        // Direction arrows for this universe's VD
+        if (uW >= 8 && vd) {
+          const half   = (uW - 1) / 2;
+          const aw     = Math.max(1, uW * 0.18);
+          const margin = Math.max(1, uW * 0.08);
+          ctx.fillStyle = 'rgba(255, 230, 0, 0.85)';
+          for (let cy = 0; cy < ph; cy++) {
+            for (let cx = 0; cx < pw; cx++) {
+              if (grid[cy * pw + cx] === 0) continue;
+              const dirs = vd.get(cy * pw + cx);
+              if (!dirs || dirs.size === 0) continue;
+              const px = ox + cx * uW, py = oy + cy * uW;
+              for (const dir of dirs) {
+                ctx.beginPath();
+                if (dir === 'UP') {
+                  ctx.moveTo(px + half - aw, py + aw * 2 + margin);
+                  ctx.lineTo(px + half + aw, py + aw * 2 + margin);
+                  ctx.lineTo(px + half,       py + margin);
+                } else if (dir === 'DOWN') {
+                  ctx.moveTo(px + half - aw, py + uW - 1 - aw * 2 - margin);
+                  ctx.lineTo(px + half + aw, py + uW - 1 - aw * 2 - margin);
+                  ctx.lineTo(px + half,       py + uW - 1 - margin);
+                } else if (dir === 'LEFT') {
+                  ctx.moveTo(px + aw * 2 + margin, py + half - aw);
+                  ctx.lineTo(px + aw * 2 + margin, py + half + aw);
+                  ctx.lineTo(px + margin,            py + half);
+                } else if (dir === 'RIGHT') {
+                  ctx.moveTo(px + uW - 1 - aw * 2 - margin, py + half - aw);
+                  ctx.lineTo(px + uW - 1 - aw * 2 - margin, py + half + aw);
+                  ctx.lineTo(px + uW - 1 - margin,            py + half);
+                }
+                ctx.closePath();
+                ctx.fill();
+              }
+            }
+          }
+        }
+      });
     }
   </script>
 </body>

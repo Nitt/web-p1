@@ -88,25 +88,34 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   // ── State tracking ──
-  // visitedDirs: cellIndex → number  (4-bit bitmask, one bit per direction index)
-  const visitedDirs  = new Map();
+  // Each universe has its own visited-directions map so exploration is truly independent.
+  // universeKey = sorted activated padded-cell-indices joined by ','. Base universe = ''.
+  const universeVDs      = new Map();
+  universeVDs.set('', new Map());
+  let currentVD          = universeVDs.get('');  // pointer to the active universe's VD
+  let currentUniverseKey = '';
   // onewayDir: cellIndex → dirIdx  (the direction index a ONEWAY cell allows)
-  const onewayDir    = new Map();
-  const branchPosSet = new Set();
-  const branchQueue  = [];
+  const onewayDir        = new Map();
+  const branchPosSet     = new Set();   // dedup key: `${universeKey}|${x},${y}`
+  const branchQueue      = [];
+  // Active-universe state — updated whenever a branch is dequeued.
+  let currentBranchActivated = [];
+  let currentActivatedSet    = new Set();
+  // Maps padded door idx → padded key idx, populated as keys are placed.
+  const doorToKeyPaddedMap   = new Map();
 
-  // Direction-index helpers — faster than Set<string> operations.
+  // Direction-index helpers — operate on the CURRENT universe's VD.
   function hasVisited(i, dirIdx) {
-    return ((visitedDirs.get(i) ?? 0) & (1 << dirIdx)) !== 0;
+    return ((currentVD.get(i) ?? 0) & (1 << dirIdx)) !== 0;
   }
   function markVisited(i, dirIdx) {
-    visitedDirs.set(i, (visitedDirs.get(i) ?? 0) | (1 << dirIdx));
+    currentVD.set(i, (currentVD.get(i) ?? 0) | (1 << dirIdx));
   }
   function enqueue(x, y) {
-    const key = `${x},${y}`;
+    const key = `${currentUniverseKey}|${x},${y}`;
     if (!branchPosSet.has(key)) {
       branchPosSet.add(key);
-      branchQueue.push({ x, y });
+      branchQueue.push({ x, y, activated: currentBranchActivated.slice() });
     }
   }
 
@@ -157,7 +166,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // ── Step recorder (no-op when _steps is null) ──
   function rec(fromX, fromY, toX, toY, label) {
     if (!_steps) return;
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), visitedDirs: new Map([...visitedDirs].map(([k, bits]) => [k, dirBitsToSet(bits)])), pw, ph, fromX, fromY, toX, toY, label });
+    // Snapshot every universe's VD so the visualiser can show per-universe exploration.
+    const allUniverseVDs = new Map();
+    for (const [k, vd] of universeVDs) {
+      allUniverseVDs.set(k, new Map([...vd].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
+    }
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
   }
 
   // True when at least two cells beyond (nx, ny) in dir are reachable — required
@@ -193,23 +207,23 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       cells[ni] = G.CRUMBLE;
       rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
       enqueue(x, y);
-      branchQueue.push({ x, y, resumeDir: dirIdx });
+      const crumbleAct = [...currentBranchActivated, ni].sort((a, b) => a - b);
+      branchQueue.push({ x, y, resumeDir: dirIdx, activated: crumbleAct, initialVD: new Map(currentVD) });
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door) {
         cells[ni] = G.KEY;
         cells[door.ci] = G.DOOR;
         keyDoorPairs.push({ keyI: ni, doorI: door.ci });
+        doorToKeyPaddedMap.set(door.ci, ni);
         rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
         enqueue(nx, ny);
-        // Post-key parallel universe: door is now open — same mechanism as crumble resumeDir.
-        // For each EMPTY neighbor of the door, push a branch that re-carves toward the door
-        // so the carver can slide through it (door is passable in carve(), like crumble).
+        const keyAct = [...currentBranchActivated, ni].sort((a, b) => a - b);
         for (const d of DIRS) {
           const ex = door.px + d.dx, ey = door.py + d.dy;
           if (cells[idx(ex, ey)] === G.EMPTY) {
             const reverseDirIdx = DIRS.find(r => r.dx === -d.dx && r.dy === -d.dy).idx;
-            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx });
+            branchQueue.push({ x: ex, y: ey, resumeDir: reverseDirIdx, activated: keyAct, initialVD: new Map(currentVD) });
           }
         }
       } else {
@@ -244,8 +258,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         break;
       case G.CRUMBLE:
-        rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        if (currentActivatedSet.has(ni)) {
+          rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        } else {
+          rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
+          enqueue(x, y);
+        }
         break;
       case G.BLOCK:
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
@@ -267,14 +286,25 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         break;
       }
       case G.KEY:
-        rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-        enqueue(nx, ny);
+        if (currentActivatedSet.has(ni)) {
+          rec(x, y, nx, ny, `slide-key-collected (${nx-1},${ny-1})`);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        } else {
+          rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
+          enqueue(nx, ny);
+        }
         break;
-      case G.DOOR:
-        // Door is open in this parallel universe (key was collected) — treat as passable, same as crumble.
-        rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+      case G.DOOR: {
+        const keyPad = doorToKeyPaddedMap.get(ni);
+        if (keyPad !== undefined && currentActivatedSet.has(keyPad)) {
+          rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        } else {
+          rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
+          enqueue(x, y);
+        }
         break;
+      }
     }
   }
 
@@ -285,12 +315,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // where the first slide always passes through the entry cell.
   carve(3 /* DOWN */, startX, startY + 1);
   while (branchQueue.length > 0) {
-    const { x, y, resumeDir } = branchQueue.shift();
+    const { x, y, resumeDir, activated, initialVD } = branchQueue.shift();
+    currentBranchActivated = activated ?? [];
+    currentActivatedSet    = new Set(currentBranchActivated);
+    currentUniverseKey     = currentBranchActivated.join(',');
+    if (!universeVDs.has(currentUniverseKey)) {
+      universeVDs.set(currentUniverseKey, initialVD ? new Map(initialVD) : new Map());
+    }
+    currentVD = universeVDs.get(currentUniverseKey);
     if (resumeDir !== undefined) {
-      // Parallel universe branch (crumble broken / key collected → door open):
-      // un-mark the direction so carve can slide through the now-passable cell.
+      // Parallel universe branch: un-mark the direction in THIS universe's VD
+      // so carve can slide through the now-passable cell.
       const ci = idx(x, y);
-      visitedDirs.set(ci, (visitedDirs.get(ci) ?? 0) & ~(1 << resumeDir));
+      currentVD.set(ci, (currentVD.get(ci) ?? 0) & ~(1 << resumeDir));
       carve(resumeDir, x, y);
     } else {
       rec(x, y, -1, -1, `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining`);
@@ -352,7 +389,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, depths, difficulties, chainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
+  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   // Compute per-key cog depths and the effective gear budget.
@@ -378,16 +415,16 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     goalChainLength >= 0 ? goalChainLength : 0
   );
 
-  // Translate visitedDirs from padded indices → unpadded flat indices for export
+  // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
-  for (const [pi, bits] of visitedDirs) {
+  for (const [pi, bits] of (universeVDs.get('') ?? [])) {
     const px = pi % pw, py = Math.floor(pi / pw);
     if (px >= 1 && px < pw - 1 && py >= 1 && py < ph - 1) {
       visitedDirsOut.set((py - 1) * width + (px - 1), dirBitsToSet(bits));
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, seed, visitedDirs: visitedDirsOut };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
 }
 
 /**
@@ -623,6 +660,12 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   const landingVisited  = new Map();
   const depths          = new Map();
 
+  // Per-universe tracking: ws → Map<posKey, value>
+  const uDepths    = new Map();
+  const uChainLens = new Map();
+  const _recUD  = (ws, k, d) => { let m = uDepths.get(ws);    if (!m) { m = new Map(); uDepths.set(ws, m); }    if ((m.get(k) ?? Infinity) > d) m.set(k, d); };
+  const _recUCL = (ws, k, v) => { let m = uChainLens.get(ws); if (!m) { m = new Map(); uChainLens.set(ws, m); } if ((m.get(k) ?? Infinity) > v) m.set(k, v); };
+
   // Parent-pointer tables for path-crossing detection (added after BFS completes).
   // parentOf     : stateKey → { fromKey, landing: {x,y} }
   // bestKeyForPos: posFlat  → stateKey at minimum depth (in-grid cells only)
@@ -634,6 +677,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
   landingVisited.set(stateKey(start, 3, 0), 0);
   depths.set(posKey(start), 0);
+  _recUD(0, posKey(start), 0);
+  _recUCL(0, posKey(start), 0);
   // 0-1 BFS: bfsCurr holds nodes at the current bend-depth, bfsNext at current+1.
   // 0-cost (same direction) → push to bfsCurr; 1-cost (bend) → push to bfsNext.
   let bfsCurr = [{ pos: start, depth: 0, worldState: 0, di: 3 }];
@@ -660,6 +705,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const pk = posKey(ancPos);
         if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
         bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi });
+        if (ancPos.y >= 0) _recUD(newWorldState, pk, ancDepth);
       }
       curKey = entry.fromKey;
     }
@@ -693,6 +739,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       for (const p of path) {
         const k = posKey(p);
         if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
+        _recUD(worldState, k, nd);
       }
 
       if (path.length > 0) {
@@ -706,6 +753,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
           (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
         }
+        // Key landing: record the landing cell in the universe AFTER key collection too.
+        if (keyPos) _recUD(effectiveWS, posKey(landing), nd);
       }
 
       if (crumblePos && crumblePos.toggleIdx !== undefined) {
@@ -718,6 +767,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const crumbleNd = path.length === 0 ? depth : nd;
         const crumbleDi = path.length === 0 ? di : i;
         if (!depths.has(fk) || depths.get(fk) > crumbleNd) depths.set(fk, crumbleNd);
+        _recUD(newWorldState, fk, crumbleNd);
         const lk = stateKey(from, crumbleDi, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > crumbleNd) {
           landingVisited.set(lk, crumbleNd);
@@ -868,19 +918,26 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
       if (path.length === 0 && !crumblePos) continue;
       const nCl = cl + path.length;
-      for (const p of path) { const k=posKey(p); if (!clLenMap.has(k)||clLenMap.get(k)>nCl) clLenMap.set(k,nCl); }
+      for (const p of path) {
+        const k = posKey(p);
+        if (!clLenMap.has(k) || clLenMap.get(k) > nCl) clLenMap.set(k, nCl);
+        _recUCL(worldState, k, nCl);
+      }
       if (path.length > 0) {
-        const landing = path[path.length-1];
-        const ews = keyPos ? (worldState|(1<<keyPos.toggleIdx)) : worldState;
+        const landing = path[path.length - 1];
+        const ews = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
         const lk = stateKey(landing, i, ews);
-        if ((clVisMap.get(lk)??Infinity) > nCl) { clVisMap.set(lk,nCl); clPush({pos:landing,cl:nCl,worldState:ews,di:i}); }
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: landing, cl: nCl, worldState: ews, di: i }); }
+        if (keyPos) _recUCL(ews, posKey(landing), nCl);
       }
       if (crumblePos && crumblePos.toggleIdx !== undefined) {
-        const nws = worldState|(1<<crumblePos.toggleIdx);
-        const from = path.length>0 ? path[path.length-1] : pos;
-        const fk = posKey(from); if (!clLenMap.has(fk)||clLenMap.get(fk)>nCl) clLenMap.set(fk,nCl);
+        const nws = worldState | (1 << crumblePos.toggleIdx);
+        const from = path.length > 0 ? path[path.length - 1] : pos;
+        const fk = posKey(from);
+        if (!clLenMap.has(fk) || clLenMap.get(fk) > nCl) clLenMap.set(fk, nCl);
+        _recUCL(nws, fk, nCl);
         const lk = stateKey(from, i, nws);
-        if ((clVisMap.get(lk)??Infinity) > nCl) { clVisMap.set(lk,nCl); clPush({pos:from,cl:nCl,worldState:nws,di:i}); }
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: from, cl: nCl, worldState: nws, di: i }); }
       }
     }
   }
@@ -892,6 +949,23 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   for (const [k, d] of depths)       depthArray[k]       = d;
   for (const [k, d] of difficulties) difficultyArray[k]  = d;
   for (const [k, v] of clLenMap)     chainLengthArray[k] = v;
+
+  // ── Per-universe arrays: one Int16Array per worldState ───────────────────
+  // universeDepths[ws][flatIdx]       = min gear depth in universe ws, -1 = unreachable
+  // universeChainLengths[ws][flatIdx] = min chain length in universe ws, -1 = unreachable
+  const universeCount        = 1 << toggleCount;
+  const universeDepths       = Array.from({ length: universeCount }, (_, ws) => {
+    const arr = new Int16Array(width * height).fill(-1);
+    const m = uDepths.get(ws);
+    if (m) for (const [k, d] of m) arr[k] = d;
+    return arr;
+  });
+  const universeChainLengths = Array.from({ length: universeCount }, (_, ws) => {
+    const arr = new Int16Array(width * height).fill(-1);
+    const m = uChainLens.get(ws);
+    if (m) for (const [k, v] of m) arr[k] = v;
+    return arr;
+  });
 
   // ── Chain-crossing bonus ──────────────────────────────────────────────────
   // For every valid goal candidate, trace back its shortest path via parentOf.
@@ -943,6 +1017,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     }
   }
 
-  return { goal: bestPos, depths: depthArray, difficulties: difficultyArray, chainLengths: chainLengthArray };
+  return { goal: bestPos, depths: depthArray, difficulties: difficultyArray, chainLengths: chainLengthArray,
+           toggleCount, universeDepths, universeChainLengths };
 }
 
