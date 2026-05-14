@@ -712,14 +712,19 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const newWorldState = worldState | (1 << crumblePos.toggleIdx);
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk   = posKey(from);
-        if (!depths.has(fk) || depths.get(fk) > nd) depths.set(fk, nd);
-        const lk = stateKey(from, i, newWorldState);
-        if ((landingVisited.get(lk) ?? Infinity) > nd) {
-          landingVisited.set(lk, nd);
+        // Zero-move crumble bounce: the game's pending-cog-pop immediately refunds
+        // the gear placed for any bend and resets prevDir to the approach direction (di).
+        // So a zero-move bounce costs 0 gears and the effective direction stays di.
+        const crumbleNd = path.length === 0 ? depth : nd;
+        const crumbleDi = path.length === 0 ? di : i;
+        if (!depths.has(fk) || depths.get(fk) > crumbleNd) depths.set(fk, crumbleNd);
+        const lk = stateKey(from, crumbleDi, newWorldState);
+        if ((landingVisited.get(lk) ?? Infinity) > crumbleNd) {
+          landingVisited.set(lk, crumbleNd);
           parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from });
           const pf = posKey(from);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
-          (isBendMove ? bfsNext : bfsCurr).push({ pos: from, depth: nd, worldState: newWorldState, di: i });
+          (crumbleDi !== di ? bfsNext : bfsCurr).push({ pos: from, depth: crumbleNd, worldState: newWorldState, di: crumbleDi });
         }
 
         // "Free-backtrack" variant: the player can break the crumble and retract
