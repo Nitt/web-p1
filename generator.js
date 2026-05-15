@@ -3,7 +3,7 @@ import { slidePlayer, buildToggleMap } from './puzzle.js';
 import { solve } from './solver.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7, TELEPORTER: 8 };
 
 const DIRS = [
   { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
@@ -35,6 +35,7 @@ export const DIFFICULTY_WEIGHTS = {
   DOOR_TRAVERSE:   1.0,   // sliding through an already-open door
   DOOR_LOCKED:     3.5,   // stopped by a locked door (high load — player must find the key)
   CHAIN_CROSSING:  3.0,   // shortest path requires revisiting a previous waypoint (chain shortens)
+  TELEPORTER:      2.0,   // sliding through a teleporter cell
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, _steps = null } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -366,6 +367,36 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // ── Place teleporter pair post-carve ─────────────────────────────────────────
+  // Placed after carving so the full carved topology is known.
+  // Both cells and all their neighbours must be EMPTY so the player always slides
+  // through without stopping, and the chain never routes around adjacent walls.
+  const teleporterPaddedPairs = []; // [[paddedIdxA, paddedIdxB], ...]
+  const teleporterPaddedMap   = new Map(); // paddedIdx ↔ paddedIdx (bidirectional)
+
+  if (useTeleporter) {
+    const candidates = [];
+    for (let py = startY + 1; py < ph - 1; py++) {
+      for (let px = 1; px < pw - 1; px++) {
+        const ci = idx(px, py);
+        if (cells[ci] !== G.EMPTY) continue;
+        const allNeighboursEmpty = DIRS.every(d => cells[idx(px + d.dx, py + d.dy)] === G.EMPTY);
+        if (allNeighboursEmpty) candidates.push(ci);
+      }
+    }
+    if (candidates.length >= 2) {
+      const i1 = Math.floor(rng() * candidates.length);
+      let   i2 = Math.floor(rng() * (candidates.length - 1));
+      if (i2 >= i1) i2++;
+      const a = candidates[i1], b = candidates[i2];
+      cells[a] = G.TELEPORTER;
+      cells[b] = G.TELEPORTER;
+      teleporterPaddedMap.set(a, b);
+      teleporterPaddedMap.set(b, a);
+      teleporterPaddedPairs.push([a, b]);
+    }
+  }
+
   // ── Convert padded grid → output level cells ──
   const outCells = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
@@ -381,10 +412,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
           break;
         }
-        case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
-        case G.KEY:     out = 8; break;   // CellType.KEY
-        case G.DOOR:    out = 9; break;   // CellType.DOOR
-        case G.BLOCK:   out = 1; break;   // CellType.WALL
+        case G.CRUMBLE:     out = 7;  break;  // CellType.CRUMBLE
+        case G.KEY:         out = 8;  break;  // CellType.KEY
+        case G.DOOR:        out = 9;  break;  // CellType.DOOR
+        case G.TELEPORTER:  out = 10; break;  // CellType.TELEPORTER
+        case G.BLOCK:       out = 1;  break;  // CellType.WALL
         default:        out = 0; break;   // CellType.EMPTY  (UNTOUCHED — never carved)
       }
       outCells[y * width + x] = out;
@@ -401,6 +433,20 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   const start = { x: startX - 1, y: -1 };
+
+  // Build unpadded teleporter map and pairs array from padded pairs.
+  const teleporterPairs = [];
+  const teleporterMap   = new Map();
+  for (const [pa, pb] of teleporterPaddedPairs) {
+    const ax = (pa % pw) - 1, ay = Math.floor(pa / pw) - 1;
+    const bx = (pb % pw) - 1, by = Math.floor(pb / pw) - 1;
+    if (ax >= 0 && ax < width && ay >= 0 && ay < height && bx >= 0 && bx < width && by >= 0 && by < height) {
+      const flatA = ay * width + ax, flatB = by * width + bx;
+      teleporterMap.set(flatA, flatB);
+      teleporterMap.set(flatB, flatA);
+      teleporterPairs.push([flatA, flatB]);
+    }
+  }
 
   // Build doorRequirements from key-door pairs placed during carving.
   // Toggle indices must match what _findGoal's toggleMap assigns: sequential over
@@ -420,7 +466,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
+  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask, teleporterMap);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   const goalDepth = depths[goal.y * width + goal.x];
@@ -435,7 +481,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // The BFS-based estimates diverge from the game because the game's solver starts
   // from the landed position (after the initial auto-slide) with a fresh cost counter,
   // so it doesn't account for chain already consumed by the initial slide.
-  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements);
+  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements, teleporterMap);
 
   // Fall back to BFS estimates only if the solver found no path (shouldn't happen).
   const goalChainLength = chainLengths[goal.y * width + goal.x];
@@ -457,7 +503,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterPairs, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
 }
 
 /**
@@ -468,7 +514,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, difficultyTarget = null } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null } = {}) {
   let best           = null;  // best solver-validated candidate
   let bestFallback   = null;  // best unvalidated candidate (used only if no valid one found)
   let bestScore      = Infinity;
@@ -476,7 +522,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   const GENEROUS = (width + height) * 4;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 
@@ -487,7 +533,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     // Rejects levels where the solver's chain-length approximation diverges enough
     // from the real physical chain to prevent it from finding the solution.
     const toggleMap  = buildToggleMap(level.cells);
-    const initSlide  = slidePlayer(level, level.start, 0, 1, toggleMap, 0, null, GENEROUS);
+    const initSlide  = slidePlayer(level, level.start, 0, 1, toggleMap, 0, null, GENEROUS, level.teleporterMap);
     const landPos    = { x: initSlide.x, y: initSlide.y };
     let initWS2 = 0;
     if (initSlide.crumble?.toggleIdx      !== undefined) initWS2 |= (1 << initSlide.crumble.toggleIdx);
@@ -514,7 +560,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
 // ── Debug logging ─────────────────────────────────────────────────────────────
 
 function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D', 'T'];
 
   // Column header: "   x: 0 1 2 3 ..."
   const colHeader = '    x: ' + Array.from({ length: width }, (_, i) => i).join(' ');
@@ -549,7 +595,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 // toggleMap       : Map<flatIdx, toggleIdx>   — from buildToggleMap()
 // worldState      : number                    — bitmask of active toggles
 // doorRequirements: Map<flatIdx, toggleIdx>   — which toggle each door cell requires
-function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, gearSet = null) {
+function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, gearSet = null, teleporterMap = null) {
   const path = [];
   let x = pos.x, y = pos.y;
   let blockedByOneway  = null; // {x, y} of the oneway cell if blocked, else null
@@ -557,6 +603,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
   let blockedByDoor    = false;
   let crumblePos       = null;
   let keyPos           = null;
+  const usedTeleporters = teleporterMap ? new Set() : null;
 
   while (true) {
     const nx = x + dx, ny = y + dy;
@@ -604,6 +651,19 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
     }
     x = nx; y = ny;
     path.push({ x, y, cell });
+
+    // TELEPORTER: jump to partner and continue from exit (free — no extra step cost)
+    if (usedTeleporters && cell === 10) {
+      const partnerIdx = teleporterMap.get(flatIdx);
+      if (partnerIdx !== undefined && !usedTeleporters.has(flatIdx)) {
+        usedTeleporters.add(flatIdx);
+        usedTeleporters.add(partnerIdx);
+        x = partnerIdx % width;
+        y = Math.floor(partnerIdx / width);
+        continue;
+      }
+    }
+
     if (cell === 2) break;                                           // STICKY
     if (gearSet && gearSet.has(flatIdx)) break;                      // GEAR (acts as sticky)
   }
@@ -617,6 +677,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
     if (cell === 7)             cost += DIFFICULTY_WEIGHTS.CRUMBLE_TRAVERSE;
     if (cell === 8)             cost += DIFFICULTY_WEIGHTS.KEY;
     if (cell === 9)             cost += DIFFICULTY_WEIGHTS.DOOR_TRAVERSE;
+    if (cell === 10)            cost += DIFFICULTY_WEIGHTS.TELEPORTER;
   }
   if (blockedByOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
   if (blockedByCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE;
@@ -691,13 +752,13 @@ export function computeStepAnalysis(step, width, height, start) {
 //     because the solver's cost is total-cells-traveled (starting at 0 from landPos)
 //     while the game's physical chain already includes the initial boat→landPos segment.
 //   Final: effectiveChainLength = max(ECL₁, ECL₂), effectiveCogs from constrained path.
-function _simulatePath(cells, width, height, start, goal, doorRequirements) {
-  const level = { cells, width, height, goal, doorRequirements, start };
+function _simulatePath(cells, width, height, start, goal, doorRequirements, teleporterMap = null) {
+  const level = { cells, width, height, goal, doorRequirements, start, teleporterMap };
   const GENEROUS = (width + height) * 4;
   const toggleMap = buildToggleMap(cells);
 
   // Initial auto-slide: always DOWN from the boat (y=-1).
-  const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS);
+  const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS, teleporterMap);
   const landPos    = { x: initResult.x, y: initResult.y };
 
   // Carry forward any worldState changes from the initial slide (key collected, crumble hit).
@@ -728,7 +789,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
 
     for (const { dx, dy } of moves) {
       const gearSet = new Set(gears.map(g => g.y * width + g.x));
-      const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, gearSet, GENEROUS);
+      const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, gearSet, GENEROUS, teleporterMap);
 
       if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
@@ -836,7 +897,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
   };
 }
 
-function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
+function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   // ── Build toggle map ───────────────────────────────────────────────────────
@@ -930,7 +991,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, null, teleporterMap);
 
       // A reversal (moving exactly opposite the arrival direction) is a free retraction —
       // the pending cog at the current position retracts with the player.
@@ -1065,7 +1126,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, null, teleporterMap);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = diff + cost;
@@ -1124,7 +1185,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if ((clVisMap.get(stateKey(pos, di, worldState)) ?? Infinity) < cl) continue;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, null, teleporterMap);
       if (path.length === 0 && !crumblePos) continue;
       const nCl = cl + path.length;
       for (const p of path) {
@@ -1213,7 +1274,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
     if (k < 0 || k >= width * height) continue;                        // skip off-grid keys (e.g. boat at y=-1)
-    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, crumbles, keys, doors
+    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9 || cells[k] === 10) continue;  // skip walls, crumbles, keys, doors, teleporters
     if (cells[k] >= 3 && cells[k] <= 6) continue;                          // skip one-ways (player slides through, never lands on them)
     if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
     if (!bestKeyForPos.has(k)) continue;                                // skip cells the player can never naturally stop on (only pass through)

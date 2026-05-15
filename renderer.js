@@ -117,6 +117,15 @@ export function buildGrid(container, level) {
   gridEl.className = 'grid';
   container.appendChild(gridEl);
 
+  // Build teleporter pair index: flatIdx → pair number (for color-coding matched cells)
+  const teleporterPairIdx = new Map();
+  if (level.teleporterPairs) {
+    level.teleporterPairs.forEach(([a, b], i) => {
+      teleporterPairIdx.set(a, i % 4);
+      teleporterPairIdx.set(b, i % 4);
+    });
+  }
+
   for (let y = 0; y < level.height; y++) {
     for (let x = 0; x < level.width; x++) {
       const cell = document.createElement('div');
@@ -133,6 +142,12 @@ export function buildGrid(container, level) {
       if (isOneway(type)) {
         cell.dataset.type = 'oneway';
         cell.dataset.dir  = ONEWAY_DIR_ATTR[type];
+      }
+      if (type === CellType.TELEPORTER) {
+        cell.dataset.type = 'teleporter';
+        const flatIdx = y * level.width + x;
+        const pairIdx = teleporterPairIdx.get(flatIdx);
+        if (pairIdx !== undefined) cell.dataset.pair = pairIdx;
       }
       const coord = document.createElement('span');
       coord.className = 'cell-coord';
