@@ -63,7 +63,7 @@
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
-    <button id="batch-test-btn" class="btn-ghost">test 50</button>
+    <button id="batch-test-btn" class="btn-ghost">test ∞</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.25" max="8" step="0.25" value="1">
@@ -113,7 +113,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, autoPlay, runBatchPlaythrough, jumpToLevel } from './game.js';
+    import { init, skipLevel, autoPlay, runBatchPlaythrough, stopBatchPlaythrough, jumpToLevel } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -128,8 +128,19 @@
     document.getElementById('autoplay-btn')
       .addEventListener('click', () => autoPlay());
 
-    document.getElementById('batch-test-btn')
-      .addEventListener('click', () => runBatchPlaythrough(50));
+    const batchBtn = document.getElementById('batch-test-btn');
+    batchBtn.addEventListener('click', () => {
+      if (batchBtn.dataset.running === '1') {
+        stopBatchPlaythrough();
+      } else {
+        batchBtn.dataset.running = '1';
+        batchBtn.textContent = 'stop test';
+        runBatchPlaythrough().then(() => {
+          batchBtn.dataset.running = '0';
+          batchBtn.textContent = 'test ∞';
+        });
+      }
+    });
 
     const levelJumpInput = document.getElementById('level-jump-input');
     document.getElementById('level-jump-btn').addEventListener('click', () => {

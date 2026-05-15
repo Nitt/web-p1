@@ -1,7 +1,7 @@
 import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
 import { solve } from './solver.js';
 import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -34,6 +34,13 @@ let _batchHook = null;
 let _batchBypassConstraints = false;
 // { chainExceeded, gearsExhausted, chainWasDepleted } — set during play, read at win
 let _batchViolations = null;
+
+// True while runBatchPlaythrough is active.
+let _batchRunning = false;
+// True once stopBatchPlaythrough() is called — signals the loop to exit.
+let _batchStopped = false;
+// When true, skip win retract animation and use minimal move delays.
+let _batchFast = false;
 
 // Actual step-by-step execution log collected during auto-play.
 // Each entry: { idx, move, fromPos, toPos, chainBefore, chainAfter, gearsBefore, gearsAfter, wsAfter }
@@ -499,40 +506,47 @@ export function stopAutoPlay() {
 }
 
 /**
- * Play through the first `count` levels with full animations, automatically
- * advancing on win and logging detailed info on any failure.
- * Levels are generated with the same seed/recipe sequence as the game.
+ * Start an infinite batch playthrough that runs until stopBatchPlaythrough() is called.
+ * Uses fast animation speed and skips the win retract animation.
+ * Returns a promise that resolves when the batch ends.
  */
-export async function runBatchPlaythrough(count = 50) {
-  console.group(`Batch playthrough: levels 1–${count}`);
-  let failures = 0;
+export async function runBatchPlaythrough() {
+  if (_batchRunning) return;
+
+  _batchRunning         = true;
+  _batchStopped         = false;
+  _batchFast            = true;
   _batchBypassConstraints = true;
+  setSpeedMultiplier(0.05); // 20× faster animations
+
+  let failures = 0, total = 0;
+  let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0, levelNum = 0;
+
+  console.group('Batch playthrough: ∞ (click stop to end)');
 
   try {
-    // Pre-generate level sequence using the same seed progression as the game.
-    const levelSeq = [SAMPLE_LEVELS[0]];
-    let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0;
-    for (let n = 2; n <= count; n++) {
-      const recipe = getRecipe(levelIdx, sinceKeyDoor);
-      const level  = generateFallback(seed, id, recipe);
-      levelSeq.push(level);
-      sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
-      seed += recipe.candidates;
-      id++; levelIdx++;
-    }
+    while (!_batchStopped) {
+      levelNum++;
+      let level;
+      if (levelNum === 1) {
+        level = SAMPLE_LEVELS[0];
+      } else {
+        const recipe = getRecipe(levelIdx, sinceKeyDoor);
+        level = generateFallback(seed, id, recipe);
+        sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+        seed += recipe.candidates;
+        id++; levelIdx++;
+      }
 
-    for (let i = 0; i < levelSeq.length; i++) {
-      const displayNum = i + 1;
-
-      // Reset violation tracker for this level.
+      total++;
       _batchViolations = { chainExceeded: false, gearsExhausted: false, chainWasDepleted: false };
 
-      // Load the level and wait for the initial auto-slide to finish.
       const prevCount = _levelLoadCount;
-      loadLevel(levelSeq[i]);
+      loadLevel(level);
       await _waitForNewLevel(prevCount);
 
-      const level       = state.level;
+      if (_batchStopped) break;
+
       const solverStart = { ...state.playerPos };
       const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
 
@@ -547,30 +561,27 @@ export async function runBatchPlaythrough(count = 50) {
         });
       }
 
+      if (outcome === 'stopped') break;
+
       if (outcome === 'won') {
         const { chainExceeded, gearsExhausted, chainWasDepleted } = _batchViolations;
-
-        // Also check depletion at the winning landing (winning move may bring chain to limit).
         const chainFinallyDepleted = chainWasDepleted ||
           (state.chainLengthTotal > 0 && _chainLengthUsed() >= state.chainLengthTotal);
-
-        // Under-budget: constraints had to be bypassed.
-        // Over-budget: more was allocated than the solution needed.
-        const chainTooShort       = chainExceeded;
-        const chainTooLong        = !chainExceeded && !chainFinallyDepleted && state.chainLengthTotal > 0;
-        const gearsTooFew         = gearsExhausted;
-        const gearsTooMany        = !gearsExhausted && state.gearsLeft > 0;
+        const chainTooShort = chainExceeded;
+        const chainTooLong  = !chainExceeded && !chainFinallyDepleted && state.chainLengthTotal > 0;
+        const gearsTooFew   = gearsExhausted;
+        const gearsTooMany  = !gearsExhausted && state.gearsLeft > 0;
 
         const issues = [
-          chainTooShort  && 'chain too short (bypassed)',
-          chainTooLong   && 'chain too long (never depleted)',
-          gearsTooFew    && 'gears too few (bypassed)',
-          gearsTooMany   && 'gears too many (underused)',
+          chainTooShort && 'chain too short (bypassed)',
+          chainTooLong  && 'chain too long (never depleted)',
+          gearsTooFew   && 'gears too few (bypassed)',
+          gearsTooMany  && 'gears too many (underused)',
         ].filter(Boolean);
 
         if (issues.length) {
           failures++;
-          console.group(`%cLevel ${displayNum} — completed but generator miscalculated: ${issues.join(', ')}`, 'color:#e80; font-weight:bold');
+          console.group(`%cLevel ${levelNum} — completed but generator miscalculated: ${issues.join(', ')}`, 'color:#e80; font-weight:bold');
           console.log(`Issues: ${issues.join(', ')}`);
           console.log(`Chain: limit ${state.chainLengthTotal}, used at win ${_chainLengthUsed()}, ever depleted: ${chainFinallyDepleted}`);
           console.log(`Gears: budget ${state.totalGears}, remaining at win ${state.gearsLeft}`);
@@ -578,24 +589,36 @@ export async function runBatchPlaythrough(count = 50) {
           console.log('Level JSON:', JSON.stringify({ id: level.id, seed: level.seed, width: level.width, height: level.height, start: level.start, goal: level.goal, effectiveChainLength: level.effectiveChainLength, effectiveCogs: level.effectiveCogs }));
           console.groupEnd();
         } else {
-          console.log(`Level ${displayNum}: ✓`);
+          console.log(`Level ${levelNum}: ✓`);
         }
       } else {
         failures++;
-        _logPlaythroughFailure(level, displayNum, outcome, moves, solverStart, 0);
+        _logPlaythroughFailure(level, levelNum, outcome, moves, solverStart, 0);
       }
     }
   } finally {
+    _batchRunning         = false;
+    _batchFast            = false;
+    _batchStopped         = false;
     _batchBypassConstraints = false;
-    _batchViolations = null;
+    _batchViolations      = null;
+    setSpeedMultiplier(1);
   }
 
   if (failures === 0) {
-    console.log(`All ${count} levels solved ✓`);
+    console.log(`Stopped after ${total} levels — all passed ✓`);
   } else {
-    console.warn(`${failures}/${count} failed — see groups above`);
+    console.warn(`Stopped after ${total} levels — ${failures}/${total} failed`);
   }
   console.groupEnd();
+}
+
+/** Stop an in-progress runBatchPlaythrough. */
+export function stopBatchPlaythrough() {
+  if (!_batchRunning) return;
+  _batchStopped = true;
+  _autoPlaying  = false;
+  if (_batchHook) { const h = _batchHook; _batchHook = null; h.onStuck('stopped'); }
 }
 
 /** Poll until a new level has loaded and its initial slide animation is done. */
@@ -757,7 +780,7 @@ function _renderGrid(level) {
 
 function _autoPlayNext(moves, idx) {
   if (state.won || !_autoPlaying) { _autoPlaying = false; return; }
-  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), 50); return; }
+  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), _batchFast ? 10 : 50); return; }
 
   // Animation settled — fill in the "after" side of the previous move's trace entry.
   if (idx > 0 && _execTrace.length >= idx) {
@@ -795,7 +818,7 @@ function _autoPlayNext(moves, idx) {
   });
 
   handleMove(moves[idx].dx, moves[idx].dy);
-  setTimeout(() => _autoPlayNext(moves, idx + 1), 50);
+  setTimeout(() => _autoPlayNext(moves, idx + 1), _batchFast ? 0 : 50);
 }
 
 function _showBanner(bannerEl, onDismiss) {
@@ -976,13 +999,16 @@ function _handleWin() {
   state.won = true;
   playWin();
   state.queuedMove = null;
-  _animateWinRetract(() => {
-    if (_batchHook) {
-      const h = _batchHook; _batchHook = null; h.onWin();
-    } else {
-      _showBanner(winBanner, _nextLevel);
-    }
-  });
+  if (_batchFast) {
+    // Skip retract animation during batch testing
+    if (_batchHook) { const h = _batchHook; _batchHook = null; h.onWin(); }
+    else { _showBanner(winBanner, _nextLevel); }
+  } else {
+    _animateWinRetract(() => {
+      if (_batchHook) { const h = _batchHook; _batchHook = null; h.onWin(); }
+      else { _showBanner(winBanner, _nextLevel); }
+    });
+  }
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {
