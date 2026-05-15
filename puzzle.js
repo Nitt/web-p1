@@ -10,6 +10,7 @@ export const CellType = {
   CRUMBLE:      7,   // acts like a wall, but crumbles when the player stops against it
   KEY:          8,   // player stops on it and collects it (activates its toggle)
   DOOR:         9,   // blocks like a wall; passable once the paired key's toggle is active
+  TELEPORTER:  10,   // paired cells; player slides into entry and continues from paired exit
 };
 
 /** Returns true for any one-way cell type. */
@@ -189,10 +190,11 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
-  let crumble         = null;
-  let keyCollected    = null;
-  let blockedByOneway = null;
-  let stepsTaken      = 0;
+  let crumble          = null;
+  let keyCollected     = null;
+  let blockedByOneway  = null;
+  let teleportCrossing = null;
+  let stepsTaken       = 0;
 
   while (true) {
     const nx = x + dx;
@@ -258,6 +260,26 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       break;
     }
 
+    // ── TELEPORTER: enter entry cell, jump to exit, continue sliding ───────
+    if (cell === CellType.TELEPORTER) {
+      x = nx; y = ny; stepsTaken++;
+      const exitFlat = level.teleporterMap?.get(flatIdx);
+      if (exitFlat !== undefined) {
+        const exitX = exitFlat % width;
+        const exitY = Math.floor(exitFlat / width);
+        teleportCrossing = { entryX: x, entryY: y, exitX, exitY };
+        x = exitX; y = exitY;
+        // Check stop conditions at the exit cell
+        if (level.goal && x === level.goal.x && y === level.goal.y) break;
+        const exitCell = cells[y * width + x];
+        if (exitCell === CellType.STICKY) break;
+        if (gearSet && gearSet.has(y * width + x)) break;
+        continue; // continue sliding from exit in the same direction
+      }
+      // No exit mapped — treat as a stop
+      break;
+    }
+
     // ── Move onto the cell ────────────────────────────────────────────────
     x = nx;
     y = ny;
@@ -277,5 +299,5 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     }
   }
 
-  return { x, y, crumble, keyCollected, blockedByOneway };
+  return { x, y, crumble, keyCollected, blockedByOneway, teleportCrossing };
 }

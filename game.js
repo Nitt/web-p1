@@ -75,6 +75,45 @@ const state = {
   pendingOnewayBreak:   null,   // { dx, dy, owx, owy } — set after first blocked-by-oneway press
 };
 
+// ─── teleporter test level (?tp in URL) ──────────────────────────────────────
+//
+// 5-column × 6-row grid.  Boat enters above column 2.
+//
+//   0 1 2 3 4
+// 0 . . . . .
+// 1 # . . . #
+// 2 # . T . #   T at (2,2) ↔ T at (2,4)
+// 3 # . . . #
+// 4 # . T . #
+// 5 G . . . .
+//
+// Path: (2,-1) down → hits T(2,2), exits T(2,4) → slides to (2,5) → go left → (0,5) = goal.
+function _makeTeleporterTestLevel() {
+  const E = CellType.EMPTY, W = CellType.WALL, T = CellType.TELEPORTER;
+  const width = 5, height = 6;
+  const cells = new Uint8Array([
+    E, E, E, E, E,
+    W, E, E, E, W,
+    W, E, T, E, W,
+    W, E, E, E, W,
+    W, E, T, E, W,
+    E, E, E, E, E,
+  ]);
+  // teleporterMap: (2,2) ↔ (2,4)
+  const tp1 = 2 * width + 2;  // flat index of (2,2)
+  const tp2 = 4 * width + 2;  // flat index of (2,4)
+  const teleporterMap = new Map([[tp1, tp2], [tp2, tp1]]);
+  return {
+    id: 'tp-test', seed: 0, width, height,
+    cells,
+    start: { x: 2, y: -1 },
+    goal:  { x: 0, y: 5 },
+    teleporterMap,
+    effectiveChainLength: 20,
+    effectiveCogs: 3,
+  };
+}
+
 // ─── entry point ─────────────────────────────────────────────────────────────
 export function init() {
   gridContainer  = document.getElementById('grid-container');
@@ -100,7 +139,8 @@ export function init() {
     }
   }).observe(gridContainer);
 
-  loadLevel(SAMPLE_LEVELS[0]);
+  const urlParams = new URLSearchParams(window.location.search);
+  loadLevel(urlParams.has('tp') ? _makeTeleporterTestLevel() : SAMPLE_LEVELS[0]);
 }
 
 // ─── level loading ────────────────────────────────────────────────────────────
@@ -215,9 +255,13 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
   const token = ++_retractToken;
 
   // Build ordered waypoints: tailStart → fromGears[last] → … → tailEnd.
+  // Teleport crossings are not physical bend waypoints — skip them so the
+  // retract animation doesn't try to animate through the teleport gap.
   const waypoints = [];
   if (tailStartOverride) waypoints.push(tailStartOverride);
-  for (let i = fromGears.length - 1; i >= targetLength; i--) waypoints.push(fromGears[i]);
+  for (let i = fromGears.length - 1; i >= targetLength; i--) {
+    if (!fromGears[i].isTeleport) waypoints.push(fromGears[i]);
+  }
   waypoints.push(tailEndOverride ?? (targetLength > 0 ? fromGears[targetLength - 1] : playerPos));
 
   // Pixel coords and cumulative grid-cell distances along the waypoint path.
@@ -351,8 +395,9 @@ function _executeBacktrack(gearIdx) {
   state.isMoving = true;
   setChainSpinning(true, -1);
 
-  const freed         = state.gears.length - gearIdx - 1; // works for gearIdx=-1
   const gearsSnapshot = state.gears.slice();
+  // Only bend gears (non-teleport) consume gear budget — count them for the refund.
+  const freed = gearsSnapshot.slice(gearIdx + 1).filter(g => !g.isTeleport).length;
 
   state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
   state.gearsLeft += freed;
@@ -363,13 +408,12 @@ function _executeBacktrack(gearIdx) {
   // e.g. if gears were [A,B,C,D,E] and we backtrack to B: freedGears = [C,D,E].
   const freedGears = gearsSnapshot.slice(gearIdx + 1);
 
-  // Walk the player back one freed gear at a time: E→D, D→C, C→B.
-  // Before each step, strip the "from" gear from the displayed chain so the
-  // chain tail cleanly follows the player rather than snapping all at once.
-  // waypoints: freed gears in reverse (minus the player's starting pos) + backtrack target.
-  // e.g. [D, C, B]
+  // Walk the player back through bend waypoints only — teleport crossings are not
+  // physical positions the player animates to.
+  // waypoints: freed REAL gears in reverse + backtrack target. e.g. [D, C, B]
+  const freedBend = freedGears.filter(g => !g.isTeleport);
   const waypoints = [
-    ...freedGears.slice(0, -1).reverse(),
+    ...freedBend.slice(0, -1).reverse(),
     backtrackPos,
   ];
 
@@ -403,8 +447,10 @@ function _executeBacktrack(gearIdx) {
         // committed to a new bend yet, so release it (mirrors _onPlayerLanded).
         if (gearIdx >= 0 && state.gears.length > 0) {
           const last = state.gears[state.gears.length - 1];
-          if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-            const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+          if (!last.isTeleport && last.x === state.playerPos.x && last.y === state.playerPos.y) {
+            const prev = state.gears.length > 1
+              ? _gearOutPos(state.gears[state.gears.length - 2])
+              : state.level.start;
             state.gears.pop();
             state.gearsLeft++;
             state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
@@ -759,7 +805,7 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
 
 /** Render a level's grid as a readable ASCII string with x/y coordinate labels. */
 function _renderGrid(level) {
-  const SYM  = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D'];
+  const SYM  = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D', 'T'];
   const { width, height, cells, start, goal } = level;
   const lines = [];
   // Column header: x=0,1,2,...
@@ -861,7 +907,11 @@ function _buildDepartureCtx(target, dx, dy) {
   if (!isBoatEntry && state.gears.length > 0) {
     const last = state.gears[state.gears.length - 1];
     if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-      const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+      // Use effective outgoing position for direction check so teleport crossings
+      // don't falsely report wrong direction.
+      const prev = state.gears.length > 1
+        ? _gearOutPos(state.gears[state.gears.length - 2])
+        : state.level.start;
       if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
         isStraightThrough = true;
         state.gears.pop();
@@ -876,7 +926,10 @@ function _buildDepartureCtx(target, dx, dy) {
 
   let isRetractingTowardLastCog = false;
   if (isBendRaw && !isBoatEntry) {
-    const anchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+    // Use outgoing position so teleport crossings compare against exit, not entry.
+    const anchor = state.gears.length > 0
+      ? _gearOutPos(state.gears[state.gears.length - 1])
+      : state.level.start;
     isRetractingTowardLastCog =
       dx === Math.sign(anchor.x - state.playerPos.x) &&
       dy === Math.sign(anchor.y - state.playerPos.y);
@@ -885,21 +938,23 @@ function _buildDepartureCtx(target, dx, dy) {
   const isBend = isBendRaw && !isRetractingTowardLastCog;
 
   const revisitIdx = isBoatEntry ? -2 : state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  const isAtLastCog = state.gears.length > 0 &&
-    state.gears[state.gears.length - 1].x === state.playerPos.x &&
-    state.gears[state.gears.length - 1].y === state.playerPos.y;
+  const _lastG    = state.gears.length > 0 ? state.gears[state.gears.length - 1] : null;
+  const isAtLastCog = _lastG !== null && !_lastG.isTeleport &&
+    _lastG.x === state.playerPos.x && _lastG.y === state.playerPos.y;
   const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog;
 
   // 0 gears → simple V, skip placement.
   // 1 gear  → pop it and retract cleanly instead of creating a V.
   // 2+ gears → real loop; place the gear normally.
-  const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && state.gears.length === 1;
+  // Count only real bend gears (not teleport crossings) for this shape decision.
+  const bendGearCount = _bendGears().length;
+  const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && bendGearCount === 1;
 
   if (willUseGear && state.gearsLeft === 0) {
     if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
     else { _scheduleDeadEndCheck(); return null; }
   }
-  if (isBoatEntry && isBend && !isAtLastCog && state.gears.length >= 2 && state.gearsLeft === 0) {
+  if (isBoatEntry && isBend && !isAtLastCog && bendGearCount >= 2 && state.gearsLeft === 0) {
     if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
     else { _scheduleDeadEndCheck(); return null; }
   }
@@ -911,7 +966,7 @@ function _buildDepartureCtx(target, dx, dy) {
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
   const effectiveGearCount = state.gears.length + (pendingBendGear ? 1 : 0);
   const isOneBack = (!isBoatEntry && revisitIdx >= 0 && revisitIdx === effectiveGearCount - 2)
-                 || (isBoatEntry && state.gears.length === 1);
+                 || (isBoatEntry && _bendGears().length === 1);
 
   return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
            revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract };
@@ -966,30 +1021,55 @@ function _applyCollectibles(target) {
 
 function _animateWinRetract(onDone) {
   const gearsSnapshot = state.gears.slice();
-  // Walk back: goal → each gear in reverse → start (boat entry)
-  const waypoints = [...gearsSnapshot.slice().reverse(), state.level.start];
+
+  // Build the retract step list by walking gears in reverse (player→boat direction).
+  // Teleport crossings require a reverse-flash: enter at exit side, emerge at entry side.
+  const steps = [];
+  for (const g of [...gearsSnapshot].reverse()) {
+    if (g.isTeleport) {
+      const gRef = g;
+      steps.push({
+        toPos:        { x: g.x, y: g.y },
+        teleportInfo: {
+          entryPos: { x: g.exitX, y: g.exitY },
+          exitPos:  { x: g.x,     y: g.y     },
+          onTeleportCrossing: () => {
+            // Remove this crossing from the live display so the chain doesn't show
+            // a backwards segment from exit to the player appearing at entry.
+            displayGears = displayGears.filter(dg => dg !== gRef);
+            drawChain(displayGears, { x: gRef.x, y: gRef.y },
+                      state.gearsLeft, state.totalGears, state.level);
+          },
+        },
+      });
+    } else {
+      steps.push({ toPos: { x: g.x, y: g.y }, teleportInfo: null });
+    }
+  }
+  steps.push({ toPos: state.level.start, teleportInfo: null });
+
   let displayGears = gearsSnapshot.slice();
 
   setChainSpinning(true, -1);
   setGoalFollowsPlayer(true);
 
-  function step(waypointIdx, fromPos) {
-    // Drop the gear the player just left (skip on the first step — fromPos is the goal, not a gear)
-    if (waypointIdx > 0 && displayGears.length > 0) {
+  function step(stepIdx, fromPos) {
+    // Drop the last gear from display after the first step (player has left that position).
+    if (stepIdx > 0 && displayGears.length > 0) {
       displayGears = displayGears.slice(0, displayGears.length - 1);
     }
     drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
 
-    const toPos = waypoints[waypointIdx];
+    const { toPos, teleportInfo } = steps[stepIdx];
     animatePlayer(fromPos, toPos, state.level, () => {
-      if (waypointIdx === waypoints.length - 1) {
+      if (stepIdx === steps.length - 1) {
         setChainSpinning(false);
         setGoalFollowsPlayer(false);
         onDone();
       } else {
-        step(waypointIdx + 1, toPos);
+        step(stepIdx + 1, toPos);
       }
-    });
+    }, teleportInfo);
   }
 
   step(0, state.playerPos);
@@ -1019,19 +1099,22 @@ function _onPlayerLanded(target, dx, dy, ctx) {
 
   if (!isBoatEntry) {
     if (revisitIdx >= 0) {
-      freedOnRevisit   = state.gears.length - revisitIdx - 1;
+      const freed      = state.gears.slice(revisitIdx + 1);
+      freedOnRevisit   = freed.filter(g => !g.isTeleport).length; // only bend gears cost budget
       state.gears      = state.gears.slice(0, revisitIdx + 1);
       state.gearsLeft += freedOnRevisit;
     }
   } else {
-    state.gearsLeft += state.gears.length;
+    state.gearsLeft += state.gears.filter(g => !g.isTeleport).length;
     state.gears = [];
   }
 
   state.prevDir = isBoatEntry ? null : { dx, dy };
 
   if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0) {
-    const anchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+    const anchor = state.gears.length > 0
+      ? _gearOutPos(state.gears[state.gears.length - 1])
+      : state.level.start;
     state.prevDir = {
       dx: Math.sign(state.playerPos.x - anchor.x),
       dy: Math.sign(state.playerPos.y - anchor.y),
@@ -1050,8 +1133,10 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   // bend yet — release it back to the budget regardless of how we got here.
   if (!isBoatEntry && state.gears.length > 0) {
     const last = state.gears[state.gears.length - 1];
-    if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
-      const prev = state.gears.length > 1 ? state.gears[state.gears.length - 2] : state.level.start;
+    if (!last.isTeleport && last.x === state.playerPos.x && last.y === state.playerPos.y) {
+      const prev = state.gears.length > 1
+        ? _gearOutPos(state.gears[state.gears.length - 2])
+        : state.level.start;
       state.gears.pop();
       state.gearsLeft++;
       state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
@@ -1084,12 +1169,31 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   }
 }
 
+// ─── teleport-aware gear helpers ─────────────────────────────────────────────
+
+// Returns only the bend waypoints (non-teleport entries) from the gears array.
+function _bendGears() { return state.gears.filter(g => !g.isTeleport); }
+
+// The "effective outgoing position" of a gear entry: for teleport crossings
+// the chain continues from the EXIT, not the entry.
+function _gearOutPos(g) {
+  return g.isTeleport ? { x: g.exitX, y: g.exitY } : { x: g.x, y: g.y };
+}
+
 function _chainLengthUsed() {
-  const chain = [state.level.start, ...state.gears, state.playerPos];
+  // Teleport crossings contribute zero physical length: skip the entry→exit gap.
   let len = 0;
-  for (let i = 1; i < chain.length; i++) {
-    len += Math.abs(chain[i].x - chain[i-1].x) + Math.abs(chain[i].y - chain[i-1].y);
+  let prevX = state.level.start.x, prevY = state.level.start.y;
+  for (const g of state.gears) {
+    if (g.isTeleport) {
+      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
+      prevX = g.exitX; prevY = g.exitY;
+    } else {
+      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
+      prevX = g.x; prevY = g.y;
+    }
   }
+  len += Math.abs(state.playerPos.x - prevX) + Math.abs(state.playerPos.y - prevY);
   return len;
 }
 
@@ -1099,7 +1203,7 @@ function _executeMove(dx, dy) {
   _deadEndTimer = null;
   deadEndBanner.hidden = true;
 
-  const gearSet = new Set(state.gears.map(g => g.y * state.level.width + g.x));
+  const gearSet = new Set(state.gears.filter(g => !g.isTeleport).map(g => g.y * state.level.width + g.x));
 
   // Call without chain limit so backtrack detection sees the natural landing position.
   // Chain length is only enforced for forward moves (after all backtrack checks below).
@@ -1123,7 +1227,11 @@ function _executeMove(dx, dy) {
   // Detect moves that retrace the last chain segment back toward the previous anchor
   // (last gear or start).  These always shorten the chain so the cap must never block
   // them — doing so causes a softlock when chain is full and a one-way is in the way.
-  const chainAnchor = state.gears.length > 0 ? state.gears[state.gears.length - 1] : state.level.start;
+  // For teleport crossings, the post-teleport segment starts at the EXIT, so use
+  // _gearOutPos to get the correct anchor for backward-direction detection.
+  const chainAnchor = state.gears.length > 0
+    ? _gearOutPos(state.gears[state.gears.length - 1])
+    : state.level.start;
   const isBackwardAlongChain =
     (chainAnchor.x === state.playerPos.x && dx === 0 && dy === Math.sign(chainAnchor.y - state.playerPos.y)) ||
     (chainAnchor.y === state.playerPos.y && dy === 0 && dx === Math.sign(chainAnchor.x - state.playerPos.x));
@@ -1155,11 +1263,33 @@ function _executeMove(dx, dy) {
   _applyPreAnimationChain(ctx);
 
   const moveToken = _moveToken;
+
+  // If the slide crosses a teleporter, provide entry/exit info and a callback
+  // that inserts the crossing into state.gears at the flash-out moment.
+  const tc = moveTarget.teleportCrossing;
+  const teleportInfo = tc ? {
+    entryPos:           { x: tc.entryX, y: tc.entryY },
+    exitPos:            { x: tc.exitX,  y: tc.exitY  },
+    onTeleportCrossing: () => {
+      // If this crossing retraces an existing one (the slide came from the exit side
+      // back toward the entry), remove the old crossing rather than adding a new one.
+      const retracedIdx = state.gears.findIndex(
+        g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
+      );
+      if (retracedIdx >= 0) {
+        state.gears.splice(retracedIdx, 1);
+      } else {
+        state.gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY,
+                           exitX: tc.exitX, exitY: tc.exitY });
+      }
+    },
+  } : null;
+
   animatePlayer(state.playerPos, moveTarget, state.level, () => {
     if (moveToken !== _moveToken) return;
     state.playerPos = { x: moveTarget.x, y: moveTarget.y };
     state.isMoving  = false;
     playLand();
     _onPlayerLanded(moveTarget, dx, dy, ctx);
-  });
+  }, teleportInfo);
 }

@@ -374,6 +374,27 @@ body.chain-debug .player {
   opacity: 0.45;
 }
 
+/* ─── teleporter cell ────────────────────────────────────────────────────── */
+.cell[data-type="teleporter"] {
+  background-color: #2a1048;
+  border: 2px solid rgba(190, 100, 255, 0.7);
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+}
+.cell[data-type="teleporter"]::after {
+  content: '';
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(210, 130, 255, 0.55) 0%, rgba(120, 50, 200, 0.25) 60%, transparent 100%);
+  animation: teleporter-pulse 1.4s ease-in-out infinite;
+}
+@keyframes teleporter-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(0.85); }
+  50%       { opacity: 1.0; transform: scale(1.1);  }
+}
+
 /* player & goal — both float above the grid via absolute positioning */
 .player,
 .goal {

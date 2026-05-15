@@ -41,9 +41,12 @@ let playerPx = { x: 0, y: 0 };
 // Stores the last drawChain arguments so the animation loop can redraw each frame.
 let _chainState = null;
 // Gear spin state — driven by JS so rotation is continuous despite per-frame DOM recreation.
-let _chainSpinning  = false;
-let _tailGearSpins  = true;
+let _chainSpinning   = false;
+let _tailGearSpins   = true;
 let _playerAnimToken = 0;
+// True while the player is mid-teleport flash (invisible between entry and exit).
+// Suppresses the post-bridge chain segment so there is no ghost chain during the flash.
+let _playerInTeleport = false;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
@@ -125,11 +128,12 @@ export function buildGrid(container, level) {
       // The center entry cell (level.start.x) is kept visible for the chain.
       if (y === 0 && x !== level.start.x) cell.classList.add('entry-wall');
       const type = level.cells[y * level.width + x];
-      if (type === CellType.WALL)    cell.dataset.type = 'wall';
-      if (type === CellType.STICKY)  cell.dataset.type = 'sticky';
-      if (type === CellType.CRUMBLE) cell.dataset.type = 'crumble';
-      if (type === CellType.KEY)     cell.dataset.type = 'key';
-      if (type === CellType.DOOR)    cell.dataset.type = 'door';
+      if (type === CellType.WALL)       cell.dataset.type = 'wall';
+      if (type === CellType.STICKY)     cell.dataset.type = 'sticky';
+      if (type === CellType.CRUMBLE)    cell.dataset.type = 'crumble';
+      if (type === CellType.KEY)        cell.dataset.type = 'key';
+      if (type === CellType.DOOR)       cell.dataset.type = 'door';
+      if (type === CellType.TELEPORTER) cell.dataset.type = 'teleporter';
       if (isOneway(type)) {
         cell.dataset.type = 'oneway';
         cell.dataset.dir  = ONEWAY_DIR_ATTR[type];
@@ -230,34 +234,138 @@ export function placePlayer(pos, level) {
 
 /**
  * Animate the player from `from` to `to`, then call `onDone`.
+ *
  * @param {{x,y}} from
  * @param {{x,y}} to
  * @param {object} level
  * @param {()=>void} onDone
+ * @param {{entryPos:{x,y}, exitPos:{x,y}, onTeleportCrossing:()=>void}|null} teleportInfo
+ *   When non-null, the move crosses a teleporter.  The animation plays in three phases:
+ *   slide to entry → flash out/in (calling onTeleportCrossing at the midpoint) → slide to to.
  */
-export function animatePlayer(from, to, level, onDone) {
+export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
+  if (!teleportInfo) {
+    _animateSlide(from, to, level, true, onDone);
+    return;
+  }
+
+  // ── Two-phase teleport animation ─────────────────────────────────────────
+  const { entryPos, exitPos, onTeleportCrossing } = teleportInfo;
+  const token = ++_playerAnimToken;
+  _tailGearSpins = false;
+
+  // Phase 1 — slide from → entryPos
+  _placeOverlay(playerEl, from.x, from.y, level);
+  const startPx1 = { ...playerPx };
+  const steps1   = Math.max(Math.abs(entryPos.x - from.x), Math.abs(entryPos.y - from.y));
+  const dur1     = steps1 * speedMs();
+  const t1Start  = performance.now();
+
+  function phase1(now) {
+    if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+    const t = steps1 > 0 ? Math.min((now - t1Start) / dur1, 1) : 1;
+    const entryPx = _cellPixel(entryPos.x, entryPos.y, level);
+    const cx = startPx1.x + (entryPx.x - startPx1.x) * t;
+    const cy = startPx1.y + (entryPx.y - startPx1.y) * t;
+    _setOverlayPixel(playerEl, cx, cy);
+    if (_chainState) _redrawChain(cx, cy);
+    if (t < 1) { requestAnimationFrame(phase1); } else { beginFlash(); }
+  }
+
+  // Flash — fade out at entry, jump to exit pixel at midpoint, fade in
+  // onTeleportCrossing is called at the midpoint so game.js pushes to state.gears
+  // exactly when the player becomes invisible.
+  const FLASH_MS = 180;
+  let _flashJumped = false;
+
+  function beginFlash() {
+    if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+    _flashJumped      = false;
+    const flashStart  = performance.now();
+    const entryPx     = _cellPixel(entryPos.x, entryPos.y, level);
+    const exitPx      = _cellPixel(exitPos.x,  exitPos.y,  level);
+
+    function flashFrame(now) {
+      if (token !== _playerAnimToken) { _playerInTeleport = false; _tailGearSpins = true; return; }
+      const ft = Math.min((now - flashStart) / (FLASH_MS * _speedMult), 1);
+
+      if (ft < 0.5) {
+        // Fade out — player at entry pixel
+        playerEl.style.opacity = String(1 - ft * 2);
+        _setOverlayPixel(playerEl, entryPx.x, entryPx.y);
+        if (_chainState) _redrawChain(entryPx.x, entryPx.y);
+      } else {
+        // At midpoint: push the crossing to state.gears, jump player to exit
+        if (!_flashJumped) {
+          _flashJumped = true;
+          onTeleportCrossing(); // game.js pushes isTeleport entry to state.gears
+          _playerInTeleport = false; // chain can now draw the post-bridge segment
+        }
+        playerEl.style.opacity = String((ft - 0.5) * 2);
+        _setOverlayPixel(playerEl, exitPx.x, exitPx.y);
+        if (_chainState) _redrawChain(exitPx.x, exitPx.y);
+      }
+
+      if (ft < 1) {
+        requestAnimationFrame(flashFrame);
+      } else {
+        playerEl.style.opacity = '1';
+        beginPhase3();
+      }
+    }
+    requestAnimationFrame(flashFrame);
+  }
+
+  // Phase 3 — slide exitPos → to
+  function beginPhase3() {
+    if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+    const startPx3 = { ...playerPx }; // currently at exitPx
+    const steps3   = Math.max(Math.abs(to.x - exitPos.x), Math.abs(to.y - exitPos.y));
+    const dur3     = steps3 * speedMs();
+    const t3Start  = performance.now();
+
+    if (steps3 === 0) { _tailGearSpins = true; onDone(); return; }
+
+    function phase3(now) {
+      if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+      const t    = Math.min((now - t3Start) / dur3, 1);
+      const endPx = _cellPixel(to.x, to.y, level);
+      const cx   = startPx3.x + (endPx.x - startPx3.x) * t;
+      const cy   = startPx3.y + (endPx.y - startPx3.y) * t;
+      _setOverlayPixel(playerEl, cx, cy);
+      if (_chainState) _redrawChain(cx, cy);
+      if (t < 1) { requestAnimationFrame(phase3); } else { _tailGearSpins = true; onDone(); }
+    }
+    requestAnimationFrame(phase3);
+  }
+
+  requestAnimationFrame(phase1);
+}
+
+// Internal single-phase slide used by animatePlayer (non-teleport) and win/backtrack animations.
+function _animateSlide(from, to, level, manageTailSpin, onDone) {
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
   if (steps === 0) { onDone(); return; }
 
-  const token = ++_playerAnimToken;
+  const token    = ++_playerAnimToken;
   const duration = steps * speedMs();
   const startTime = performance.now();
   _placeOverlay(playerEl, from.x, from.y, level);
   const startPx = { ...playerPx };
 
-  _tailGearSpins = false;
+  if (manageTailSpin) _tailGearSpins = false;
   function frame(now) {
-    if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
-    const t = Math.max(0, Math.min((now - startTime) / duration, 1));
+    if (token !== _playerAnimToken) { if (manageTailSpin) _tailGearSpins = true; return; }
+    const t   = Math.max(0, Math.min((now - startTime) / duration, 1));
     const endPx = _cellPixel(to.x, to.y, level);
-    const cx = startPx.x + (endPx.x - startPx.x) * t;
-    const cy = startPx.y + (endPx.y - startPx.y) * t;
+    const cx  = startPx.x + (endPx.x - startPx.x) * t;
+    const cy  = startPx.y + (endPx.y - startPx.y) * t;
     _setOverlayPixel(playerEl, cx, cy);
     if (_chainState) _redrawChain(cx, cy);
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
-      _tailGearSpins = true;
+      if (manageTailSpin) _tailGearSpins = true;
       onDone();
     }
   }
@@ -589,86 +697,127 @@ function _redrawChain(px, py) {
   const H = gridRect.height;
   chainSvgEl.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
-  // Scale all gear/chain dimensions relative to the current cell size.
-  // 50px is the reference cell size at which the hardcoded values were tuned.
   const cellSize = W / level.width;
   const scale    = cellSize / 68;
+  const COG_R    = 15 * scale;
+  const NS       = 'http://www.w3.org/2000/svg';
 
-  // Build the list of points: start cell → each gear → current player pixel
-  const rawPoints = [
-    _cellPixel(level.start.x, level.start.y, level),
-    ...gears.map(g => _cellPixel(g.x, g.y, level)),
-    { x: px, y: py },
-  ];
+  // ── Build chain segments ───────────────────────────────────────────────────
+  // Teleporter crossings split the chain into solid segments connected by bridges.
+  // Each segment: array of pixel points.  Bridges: {from, to} pixel pairs.
+  const startPx = _cellPixel(level.start.x, level.start.y, level);
+  const segments = [];
+  const bridges  = [];     // { from:{x,y}, to:{x,y} } in pixels
+  let   curSeg   = [startPx];
 
-  if (rawPoints.length < 2) return;
-
-  // Build a realistic chain path where the chain enters and exits each gear
-  // tangentially and wraps around the gear arc between those points.
-  // The chain always runs on the 90° CCW side of its travel direction
-  // (down→left, up→right, right→down, left→up).
-  // The chain wrap radius matches the gear's inner sprocket circle.
-  const COG_R = 15 * scale; // matches gearInnerR — chain rides on inner teeth
-  // Lerp factor for the gear nearest the player (index 1 in reversed path).
-  // Derived from spatial distance: 0 when player is on the gear (centered),
-  // 1 when player is ≥1 cell away (full tangent offset).
-  // Works automatically for both forward moves (player moves away) and
-  // backtrack (player approaches) with no flags or timing needed.
-  let gearLerpT = 0;
-  if (rawPoints.length >= 2) {
-    const lastGear = rawPoints[rawPoints.length - 2]; // gear nearest player in original order
-    const dist = Math.hypot(px - lastGear.x, py - lastGear.y);
-    gearLerpT = Math.min(1, dist / cellSize);
+  for (const g of gears) {
+    if (g.isTeleport) {
+      curSeg.push(_cellPixel(g.x, g.y, level));
+      segments.push(curSeg);
+      const exitPx = _cellPixel(g.exitX, g.exitY, level);
+      bridges.push({ from: curSeg[curSeg.length - 1], to: exitPx });
+      curSeg = [exitPx];
+    } else {
+      curSeg.push(_cellPixel(g.x, g.y, level));
+    }
   }
-  const chainPoints = _buildChainPath([...rawPoints].reverse(), COG_R, gearLerpT);
 
-  const NS = 'http://www.w3.org/2000/svg';
+  // Append player pixel to the last segment — unless mid-flash (player invisible at entry).
+  if (!_playerInTeleport) curSeg.push({ x: px, y: py });
+  segments.push(curSeg);
 
-  // Linked chain along the offset path
-  _drawChainLinks(chainPoints, NS, scale, cellSize);
+  // ── gearLerpT for the last segment's nearest gear ─────────────────────────
+  const lastSeg = segments[segments.length - 1];
+  let gearLerpT = 1;
+  if (!_playerInTeleport && lastSeg.length >= 2) {
+    const nearestGearPx = lastSeg[lastSeg.length - 2];
+    gearLerpT = Math.min(1, Math.hypot(px - nearestGearPx.x, py - nearestGearPx.y) / cellSize);
+  }
 
-  // Gear shapes at each waypoint (skip start and player positions) — at raw cell centres
-  const gearOuterR = 22.5 * scale;
-  const gearInnerR = 15   * scale;
-  const gearHoleR  = 6.25 * scale;
+  // ── Compute per-segment pixel offsets from the player for link phase-locking ──
+  // segOffsets[si] = pixel distance from the player to d=0 of segment si, going
+  // backward through later segments and bridges.  Last segment = 0 (starts at player).
+  const segOffsets = new Array(segments.length).fill(0);
+  {
+    let cum = 0;
+    for (let si = segments.length - 1; si >= 0; si--) {
+      segOffsets[si] = cum;
+      const seg = segments[si];
+      let segLen = 0;
+      for (let i = 1; i < seg.length; i++) {
+        segLen += Math.hypot(seg[i].x - seg[i - 1].x, seg[i].y - seg[i - 1].y);
+      }
+      cum += segLen;
+      if (si > 0) cum += Math.hypot(bridges[si - 1].to.x - bridges[si - 1].from.x,
+                                    bridges[si - 1].to.y - bridges[si - 1].from.y);
+    }
+  }
+
+  // ── Draw solid chain segments ──────────────────────────────────────────────
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si];
+    if (seg.length < 2) continue;
+    const lerpT      = si === segments.length - 1 ? gearLerpT : 1;
+    const chainPoints = _buildChainPath([...seg].reverse(), COG_R, lerpT);
+    _drawChainLinks(chainPoints, NS, scale, cellSize, segOffsets[si]);
+  }
+
+  // ── Draw teleporter bridges ────────────────────────────────────────────────
+  for (const bridge of bridges) {
+    _drawTeleporterBridge(bridge.from, bridge.to, NS, scale);
+  }
+
+  // ── Draw gear shapes ──────────────────────────────────────────────────────
+  const gearOuterR    = 22.5 * scale;
+  const gearInnerR    = 15   * scale;
+  const gearHoleR     = 6.25 * scale;
   const _spinProgress = _spinAngleBase + (_chainSpinning
     ? ((performance.now() - _spinStartTime) / spinPeriodMs()) * 360 * _spinDirection
     : 0);
-  // Seed prevLocalDir from the first chain segment so straight-through gears
-  // at the start of the path get the correct direction without a prior turn.
-  const _seed_dx = rawPoints.length > 1 ? rawPoints[1].x - rawPoints[0].x : 1;
-  const _seed_dy = rawPoints.length > 1 ? rawPoints[1].y - rawPoints[0].y : 0;
-  let prevLocalDir = Math.sign(Math.abs(_seed_dx) - _seed_dy);
-  for (let i = 1; i < rawPoints.length - 1; i++) {
-    // Compute local chain direction using both incoming and outgoing segments.
-    // The cross product of (d_in × d_out) matches the arc-sweep direction from
-    // _buildChainPath: positive → CW on screen, negative → CCW on screen.
-    // For straight-through (cross≈0), inherit the previous gear's direction.
-    const ddx_in  = rawPoints[i].x - rawPoints[i - 1].x;
-    const ddy_in  = rawPoints[i].y - rawPoints[i - 1].y;
-    const ddx_out = rawPoints[i + 1].x - rawPoints[i].x;
-    const ddy_out = rawPoints[i + 1].y - rawPoints[i].y;
-    const cross   = ddx_in * ddy_out - ddy_in * ddx_out;
-    const dot_io  = ddx_in * ddx_out + ddy_in * ddy_out;
-    const localDir  = cross !== 0 ? Math.sign(cross) : prevLocalDir;
-    prevLocalDir    = localDir;
-    // Skip cog for straight-through positions (same direction, no bend or reversal).
-    if (Math.abs(cross) < 0.01 && dot_io > 0) continue;
-    _appendGear(chainSvgEl, rawPoints[i].x, rawPoints[i].y,
-                gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS);
+
+  // Compute prevLocalDir per segment so spin direction is consistent across
+  // teleport gaps. Within each segment the logic is the same as before.
+  let prevLocalDir = 1;
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si];
+    if (seg.length < 1) continue;
+    // Seed direction from first two points of this segment.
+    if (seg.length >= 2) {
+      const sdx = seg[1].x - seg[0].x, sdy = seg[1].y - seg[0].y;
+      if (si === 0) prevLocalDir = Math.sign(Math.abs(sdx) - sdy) || 1;
+    }
+    for (let i = 1; i < seg.length - 1; i++) {
+      const ddx_in  = seg[i].x - seg[i - 1].x, ddy_in  = seg[i].y - seg[i - 1].y;
+      const ddx_out = seg[i + 1].x - seg[i].x, ddy_out = seg[i + 1].y - seg[i].y;
+      const cross   = ddx_in * ddy_out - ddy_in * ddx_out;
+      const dot_io  = ddx_in * ddx_out + ddy_in * ddy_out;
+      const localDir = cross !== 0 ? Math.sign(cross) : prevLocalDir;
+      prevLocalDir   = localDir;
+      if (Math.abs(cross) < 0.01 && dot_io > 0) continue; // straight-through — no cog
+      // First point is the segment anchor (boat/teleport-exit), last is player/teleport-entry.
+      // Don't draw a cog at anchor endpoints.
+      _appendGear(chainSvgEl, seg[i].x, seg[i].y,
+                  gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS);
+    }
+    // Draw teleporter portal circles at segment boundaries (entry and exit).
+    if (si < bridges.length) {
+      _drawTeleporterPortal(bridges[si].from.x, bridges[si].from.y, NS, scale);
+      _drawTeleporterPortal(bridges[si].to.x,   bridges[si].to.y,   NS, scale);
+    }
   }
 
-  // Gear at the player position — spins the same as the last placed gear (unless suppressed).
-  if (rawPoints.length >= 2) {
-    const lastPt = rawPoints[rawPoints.length - 1];
+  // Tail gear at player (skip while mid-flash).
+  if (!_playerInTeleport && lastSeg.length >= 1) {
+    const lastPt = lastSeg[lastSeg.length - 1];
     _appendGear(chainSvgEl, lastPt.x, lastPt.y,
-                gearOuterR, gearInnerR, gearHoleR, _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir, scale, NS);
+                gearOuterR, gearInnerR, gearHoleR,
+                _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir,
+                scale, NS);
   }
 
-  // Update the counter span inside the player div
+  // ── Counter / hearts / chain bar ──────────────────────────────────────────
   if (counterSpan) counterSpan.textContent = gearsLeft;
 
-  // Update gear hearts
   if (_gearHeartsEl && totalGears > 0) {
     _gearHeartsEl.innerHTML = '';
     for (let i = 0; i < totalGears; i++) {
@@ -678,21 +827,49 @@ function _redrawChain(px, py) {
     }
   }
 
-  // Update chain length bar
   if (_chainBarFillEl && _chainLengthTotal > 0) {
-    // Compute cell-unit distance for all fixed segments (start → gears)
-    const cellChain = [level.start, ...gears];
+    // Compute chain length used, skipping the zero-cost teleport gaps.
     let used = 0;
-    for (let i = 1; i < cellChain.length; i++) {
-      used += Math.abs(cellChain[i].x - cellChain[i-1].x) + Math.abs(cellChain[i].y - cellChain[i-1].y);
+    let prevX = level.start.x, prevY = level.start.y;
+    for (const g of gears) {
+      if (g.isTeleport) {
+        used += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
+        prevX = g.exitX; prevY = g.exitY;
+      } else {
+        used += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
+        prevX = g.x; prevY = g.y;
+      }
     }
-    // Last segment uses actual pixel position so the bar updates mid-move
-    const prevPx = rawPoints[rawPoints.length - 2];
-    used += Math.hypot(px - prevPx.x, py - prevPx.y) / cellSize;
+    // Last segment: use pixel distance for mid-move smoothness.
+    const anchorPx = lastSeg.length >= 2 ? lastSeg[lastSeg.length - 2] : lastSeg[0];
+    if (!_playerInTeleport) used += Math.hypot(px - anchorPx.x, py - anchorPx.y) / cellSize;
     const remaining = Math.max(0, 1 - used / _chainLengthTotal);
     _chainBarFillEl.style.width = `${remaining * 100}%`;
-    //_chainBarFillEl.style.background = `hsl(${Math.round(remaining * 200 + 10)}, 70%, 50%)`;
   }
+}
+
+/** Draw a dashed bridge line between two teleporter portal positions. */
+function _drawTeleporterBridge(fromPx, toPx, NS, scale) {
+  const line = document.createElementNS(NS, 'line');
+  line.setAttribute('x1', fromPx.x); line.setAttribute('y1', fromPx.y);
+  line.setAttribute('x2', toPx.x);   line.setAttribute('y2', toPx.y);
+  line.setAttribute('stroke', 'rgba(190, 100, 255, 0.65)');
+  line.setAttribute('stroke-width', String(2.5 * scale));
+  line.setAttribute('stroke-dasharray', `${7 * scale} ${5 * scale}`);
+  line.setAttribute('stroke-linecap', 'round');
+  chainSvgEl.appendChild(line);
+}
+
+/** Draw a glowing portal ring at a teleporter entry/exit position. */
+function _drawTeleporterPortal(cx, cy, NS, scale) {
+  const r = 11 * scale;
+  const outer = document.createElementNS(NS, 'circle');
+  outer.setAttribute('cx', cx); outer.setAttribute('cy', cy);
+  outer.setAttribute('r', String(r));
+  outer.setAttribute('fill', 'rgba(120, 50, 200, 0.25)');
+  outer.setAttribute('stroke', 'rgba(210, 130, 255, 0.9)');
+  outer.setAttribute('stroke-width', String(2 * scale));
+  chainSvgEl.appendChild(outer);
 }
 
 /**
@@ -701,7 +878,7 @@ function _redrawChain(px, py) {
  * the next perpendicular) to mimic the look of a real linked chain.
  * When _chainSpinning is true the links scroll at CHAIN_LINK_SPEED px/ms.
  */
-function _drawChainLinks(points, NS, scale = 1, cellSize = 1) {
+function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0) {
   if (points.length < 2) return;
 
   const orx  = CHAIN_LINK_OUTER_RX * scale;
@@ -764,9 +941,13 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1) {
     return _chainColors(_parseColor(c));
   }
 
-  // Anchor chain links to player (point 0). Path is player→boat so d=0 is always
-  // the player center — no scroll offset needed.
-  const baseIdx = 0;
+  // Phase-lock links to the player end of the full chain.  linkStartDist is the
+  // pixel distance from the player to the start (d=0) of this segment, through
+  // any intervening bridges.  Without it, earlier segments anchor to their own
+  // start (e.g. a teleporter entry) and appear static while the player moves.
+  const phaseShift = linkStartDist % pitch;
+  const startD     = phaseShift > 0.001 ? (pitch - phaseShift) : 0;
+  const baseIdx    = Math.floor((linkStartDist + startD) / pitch) % 2;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
   const ringPath =
@@ -775,7 +956,7 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1) {
 
   const linkTransforms = [];
   let linkIdx = 0;
-  for (let d = 0; d <= totalLen; d += pitch) {
+  for (let d = startD; d <= totalLen; d += pitch) {
     const pt = sample(d);
     if (!pt) break;
     const parity = ((baseIdx + linkIdx) % 2 + 2) % 2;
