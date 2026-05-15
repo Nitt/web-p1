@@ -1161,5 +1161,5 @@ function _executeMove(dx, dy) {
     state.isMoving  = false;
     playLand();
     _onPlayerLanded(moveTarget, dx, dy, ctx);
-  }, moveTarget.teleportStops);
+  });
 }

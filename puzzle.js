@@ -195,7 +195,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   let blockedByOneway = null;
   let stepsTaken      = 0;
   const usedTeleporters = teleporterMap ? new Set() : null;
-  let teleportStops = null;
 
   while (true) {
     const nx = x + dx;
@@ -273,11 +272,8 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       if (partnerIdx !== undefined && !usedTeleporters.has(flatIdx)) {
         usedTeleporters.add(flatIdx);
         usedTeleporters.add(partnerIdx);
-        const entryX = x, entryY = y;
         x = partnerIdx % width;
         y = Math.floor(partnerIdx / width);
-        if (!teleportStops) teleportStops = [];
-        teleportStops.push({ entry: { x: entryX, y: entryY }, exit: { x, y } });
         continue;
       }
     }
@@ -296,5 +292,5 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     }
   }
 
-  return { x, y, crumble, keyCollected, blockedByOneway, teleportStops };
+  return { x, y, crumble, keyCollected, blockedByOneway };
 }

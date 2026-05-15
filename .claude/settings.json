@@ -5,10 +5,7 @@
       "Bash(/usr/local/bin/node --version)",
       "Bash(/opt/homebrew/bin/node --version)",
       "Bash(grep -r \"gen\" /Users/elm/Documents/GitHub/web-p1/*.html /Users/emil/Documents/GitHub/web-p1/*.js 2>/dev/null | grep -i \"visualizer\\\\|slider\\\\|canvas\\\\|draw\" | head -30)",
-      "Read(//Users/elm/Documents/GitHub/**)",
-      "Bash(node -e ' *)",
-      "Read(//usr/local/**)",
-      "Read(//opt/homebrew/**)"
+      "Read(//Users/elm/Documents/GitHub/**)"
     ]
   }
 }
