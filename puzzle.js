@@ -10,7 +10,6 @@ export const CellType = {
   CRUMBLE:      7,   // acts like a wall, but crumbles when the player stops against it
   KEY:          8,   // player stops on it and collects it (activates its toggle)
   DOOR:         9,   // blocks like a wall; passable once the paired key's toggle is active
-  TELEPORTER:   10,  // instantly moves the player to the paired teleporter; chain jump is free
 };
 
 /** Returns true for any one-way cell type. */
@@ -105,7 +104,7 @@ export function canReachGoal(level, pos, worldState, toggleMap) {
     if (x === goal.x && y === goal.y) return true;
 
     for (const { dx, dy } of DIRS) {
-      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true, level.teleporterMap);
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true);
       let nws = ws;
       if (r.crumble      ?.toggleIdx !== undefined) nws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected ?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
@@ -138,7 +137,7 @@ export function canReachAnyOf(level, pos, targets, worldState, toggleMap) {
     if (flatTargets.has(y * width + x)) return true;
 
     for (const { dx, dy } of DIRS) {
-      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true, level.teleporterMap);
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, true);
       let nws = ws;
       if (r.crumble      ?.toggleIdx !== undefined) nws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected ?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
@@ -186,7 +185,7 @@ export function canReachAnyOf(level, pos, targets, worldState, toggleMap) {
  *   In both cases the caller computes the new worldState:
  *     newWS = worldState | (1 << toggleIdx)
  */
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, maxSlideLength = Infinity, teleporterMap = null) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, maxSlideLength = Infinity) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
@@ -194,7 +193,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   let keyCollected    = null;
   let blockedByOneway = null;
   let stepsTaken      = 0;
-  const usedTeleporters = teleporterMap ? new Set() : null;
 
   while (true) {
     const nx = x + dx;
@@ -264,19 +262,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     x = nx;
     y = ny;
     stepsTaken++;
-
-    // TELEPORTER: jump to partner and continue sliding from exit (free — no extra step)
-    if (usedTeleporters && cell === CellType.TELEPORTER) {
-      const flatIdx    = y * width + x;
-      const partnerIdx = teleporterMap.get(flatIdx);
-      if (partnerIdx !== undefined && !usedTeleporters.has(flatIdx)) {
-        usedTeleporters.add(flatIdx);
-        usedTeleporters.add(partnerIdx);
-        x = partnerIdx % width;
-        y = Math.floor(partnerIdx / width);
-        continue;
-      }
-    }
 
     if (level.goal && x === level.goal.x && y === level.goal.y) {
       break;

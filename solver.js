@@ -94,7 +94,7 @@ export function solve(level, startPos, worldState, toggleMap, chainLengthTotal) 
 
     for (const { dx, dy } of DIRS) {
       // Simulate the slide with the same chain cap the game would apply.
-      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, chainAvail, level.teleporterMap);
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, chainAvail);
       let nws = ws;
       if (r.crumble?.toggleIdx      !== undefined) nws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);

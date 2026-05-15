@@ -45,7 +45,6 @@ export function pregenNext(seed, id, recipe) {
     candidates:       recipe.candidates,
     weights:          recipe.weights,
     useKeyDoor:       recipe.useKeyDoor,
-    useTeleporter:    recipe.useTeleporter ?? false,
     difficultyTarget: recipe.difficultyTarget,
   });
 }

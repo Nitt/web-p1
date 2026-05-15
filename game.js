@@ -698,7 +698,7 @@ function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverS
     for (let i = 0; i < plannedMoves.length; i++) {
       const { dx, dy } = plannedMoves[i];
       const avail = Math.max(0, chainLimit - traveled);
-      const r = slidePlayer(level, { x: tx, y: ty }, dx, dy, freshTmap, tws, null, avail, level.teleporterMap);
+      const r = slidePlayer(level, { x: tx, y: ty }, dx, dy, freshTmap, tws, null, avail);
       let nws = tws;
       if (r.crumble?.toggleIdx      !== undefined) nws |= (1 << r.crumble.toggleIdx);
       if (r.keyCollected?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
@@ -1103,7 +1103,7 @@ function _executeMove(dx, dy) {
 
   // Call without chain limit so backtrack detection sees the natural landing position.
   // Chain length is only enforced for forward moves (after all backtrack checks below).
-  const target     = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, Infinity, state.level.teleporterMap);
+  const target     = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
 
@@ -1138,7 +1138,7 @@ function _executeMove(dx, dy) {
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
   if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
   const moveTarget = (chainWouldExceed && !_batchBypassConstraints)
-    ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail, state.level.teleporterMap)
+    ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
   if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
