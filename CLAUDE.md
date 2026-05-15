@@ -80,17 +80,21 @@ game if the gear waypoints push the actual chain length over budget.
 
 ## Batch playthrough — how to use
 
-Add `?debug` to the URL. A "test 50" button appears in the toolbar.
+Add `?debug` to the URL. A **"test ∞"** button appears in the toolbar (runs until
+stopped). Levels are generated sequentially from the same seed/recipe sequence
+as the game (seed starts at 300, increments by `recipe.candidates` each level).
+**Note:** uses `generateFallback` (20 candidates) not the worker (up to 300),
+so generated levels may be easier variants of what the player actually sees.
 
-The playthrough:
-1. Pre-generates levels 1–50 using the same seed/recipe sequence as the game
-   (seed starts at 300, increments by `recipe.candidates` each level).
-   **Note:** uses `generateFallback` (20 candidates) not the worker (up to 300),
-   so generated levels may be easier variants of what the player actually saw.
-2. Loads each level, waits for the initial slide-in.
-3. Runs the solver. If no path → logs failure immediately.
-4. Runs auto-play. Waits for win, dead-end, or moves-exhausted.
-5. Logs failures only; prints `✓` for successes.
+The playthrough per level:
+1. Generates and loads the level, waits for the initial slide-in.
+2. Runs the solver. If no path → logs failure immediately.
+3. Runs auto-play with `_batchBypassConstraints = true` (chain/gear limits are
+   tracked but not enforced, so the player can still win even if budgets are wrong).
+4. On win: checks whether chain was ever depleted and whether gears were
+   exactly used up. Logs a warning if budgets were over- or under-allocated.
+5. On dead-end or path-exhausted: logs a failure.
+6. Prints `✓` for clean passes, skips logging them.
 
 ### Failure reasons
 
@@ -165,33 +169,41 @@ watch the solver's attempt live. Or paste the Level JSON into the DevTools
 console and call `loadLevel` directly (it's not exported, so easiest to use the
 batch test with a count matching that level number).
 
+**Gen visualiser** (`gen` button in the toolbar): shows the BFS carving process
+step-by-step with the optimal path overlaid in pink. Enable **universes** mode
+to see all worldState variants side-by-side. The **"path only"** checkbox
+(visible in universes mode) filters the view to only the universes the optimal
+path actually passes through — useful for verifying which toggles matter for
+the solution.
+
 ---
 
-## Suspected generator bug (primary hypothesis)
+## Generator budget calculation — fixed bug
 
-**The level generator is believed to produce unsolvable levels in some cases.**
-The most likely root cause: the generator computes `effectiveChainLength` and
-`effectiveCogs` (gear budget) based on a solved path, but does not account for
-the gear waypoints that physically extend the chain. A path that bends N times
-routes the chain through N extra waypoints, making the real chain longer than
-a straight-line distance. If the physical chain (routed through gear waypoints)
-exceeds `chainLengthTotal`, or if the number of bends exceeds the gear budget,
-the level is unsolvable.
+`_simulatePath` computes `effectiveChainLength` and `effectiveCogs` by replaying
+the solver's path with full gear mechanics. It was calling `solve()` with
+`worldState = 0` even when the initial auto-slide (boat → grid) had already
+collected a key or broken a crumble. The game's solver starts with the correct
+post-slide worldState, so the two solvers planned different paths — causing the
+simulation to produce wrong budgets (gears or chain over/under-counted).
 
-**How to diagnose**: Compare the "Solver path re-simulation" with the "Actual
-execution trace" in the failure log. Find the first move where:
-- `chain:` diverges between the two (actual chain grew faster than solver
-  predicted — waypoints are routing it longer), OR
-- `gears:` hits 0 and a later move requires a direction change (gear budget
-  exhausted — the game dead-ends; the solver never knew).
+**Fix (generator.js, `_simulatePath`)**: after the initial `slidePlayer` call,
+compute `initWS` from `initResult.crumble` and `initResult.keyCollected`, then
+pass `initWS` to both `solve()` and the simulation loop's starting `ws`.
+The same fix was applied to the validation `solve()` call in `generateHardestLevel`.
+
+**How to diagnose a budget mismatch** if it reappears: in the batch log, compare
+`Chain: limit N, used at win M` and `Gears: budget N, remaining M`. If used ≠ limit
+or remaining ≠ 0, the simulation predicted the wrong path. Check whether the initial
+slide in that level's column activates a toggle (key or crumble).
 
 ---
 
 ## Known failure modes (ranked most→least common)
 
-1. **Gear budget exhaustion** — the solver doesn't track `gearsLeft`. It can
-   plan a path requiring N direction changes even when only M < N gears remain.
-   The game dead-ends when gears run out; the solver had no idea.
+1. **Solver misses backtrack paths** — some levels may only be solvable by
+   intentionally backtracking to a gear (shortening the chain), then advancing
+   again. The solver never backtracks and may return `null` for these.
 
 2. **Chain length exceeds budget due to waypoints** — the solver tracks total
    cells *traveled*, but the game tracks the *physical chain length* (boat →
@@ -199,9 +211,9 @@ execution trace" in the failure log. Find the first move where:
    real chain longer than the solver's cost estimate. A slide gets capped
    shorter than expected, and subsequent moves follow a wrong path.
 
-3. **Solver misses backtrack paths** — some levels may only be solvable by
-   intentionally backtracking to a gear (shortening the chain), then advancing
-   again. The solver never backtracks and returns `null` for these.
+3. **Gear budget exhaustion** — the solver doesn't track `gearsLeft`. It can
+   plan a path requiring N direction changes even when only M < N gears remain.
+   The game dead-ends when gears run out; the solver had no idea.
 
 ---
 
