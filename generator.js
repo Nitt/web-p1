@@ -48,7 +48,7 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, _steps = null } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -420,7 +420,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask);
+  let teleporterMap = null;
+  if (useTeleporter) {
+    teleporterMap = _placeTeleporters(outCells, width, height, carvedMask, start, rng);
+  }
+
+  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask, teleporterMap);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
   const goalDepth = depths[goal.y * width + goal.x];
@@ -435,7 +440,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // The BFS-based estimates diverge from the game because the game's solver starts
   // from the landed position (after the initial auto-slide) with a fresh cost counter,
   // so it doesn't account for chain already consumed by the initial slide.
-  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements);
+  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements, teleporterMap);
 
   // Fall back to BFS estimates only if the solver found no path (shouldn't happen).
   const goalChainLength = chainLengths[goal.y * width + goal.x];
@@ -457,7 +462,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
 }
 
 /**
@@ -468,7 +473,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, difficultyTarget = null } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null } = {}) {
   let best           = null;  // best solver-validated candidate
   let bestFallback   = null;  // best unvalidated candidate (used only if no valid one found)
   let bestScore      = Infinity;
@@ -476,7 +481,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   const GENEROUS = (width + height) * 4;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 
@@ -506,15 +511,16 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   const label = difficultyTarget !== null
     ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
     : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
-  best.weights    = weights;
-  best.useKeyDoor = useKeyDoor;
+  best.weights       = weights;
+  best.useKeyDoor    = useKeyDoor;
+  best.useTeleporter = useTeleporter;
   return best;
 }
 
 // ── Debug logging ─────────────────────────────────────────────────────────────
 
 function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D', 'T'];
 
   // Column header: "   x: 0 1 2 3 ..."
   const colHeader = '    x: ' + Array.from({ length: width }, (_, i) => i).join(' ');
@@ -549,7 +555,7 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
 // toggleMap       : Map<flatIdx, toggleIdx>   — from buildToggleMap()
 // worldState      : number                    — bitmask of active toggles
 // doorRequirements: Map<flatIdx, toggleIdx>   — which toggle each door cell requires
-function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, gearSet = null) {
+function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, teleporterMap = null, gearSet = null) {
   const path = [];
   let x = pos.x, y = pos.y;
   let blockedByOneway  = null; // {x, y} of the oneway cell if blocked, else null
@@ -557,6 +563,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
   let blockedByDoor    = false;
   let crumblePos       = null;
   let keyPos           = null;
+  let teleportSeen     = null; // Set of entry flatIdx — prevents infinite loops (T1→T2→T1→…)
 
   while (true) {
     const nx = x + dx, ny = y + dy;
@@ -602,6 +609,26 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
       blockedByOneway = { x: nx, y: ny };                              // ONEWAY wrong dir
       break;
     }
+
+    // ── TELEPORTER: enter entry, jump to exit, continue sliding ──────────────
+    if (cell === 10 && teleporterMap) {
+      if (!teleportSeen) teleportSeen = new Set();
+      if (teleportSeen.has(flatIdx)) break;                           // loop guard
+      teleportSeen.add(flatIdx);
+      x = nx; y = ny;
+      path.push({ x, y, cell });
+      const exitFlat = teleporterMap.get(flatIdx);
+      if (exitFlat !== undefined) {
+        x = exitFlat % width;
+        y = Math.floor(exitFlat / width);
+        const exitCell = cells[exitFlat];
+        if (exitCell === 2) { path.push({ x, y, cell: exitCell }); break; }  // sticky exit
+        if (gearSet && gearSet.has(exitFlat)) { path.push({ x, y, cell: exitCell }); break; }
+        continue;                                                      // continue from exit
+      }
+      break;                                                           // no exit — stop at entry
+    }
+
     x = nx; y = ny;
     path.push({ x, y, cell });
     if (cell === 2) break;                                           // STICKY
@@ -691,8 +718,8 @@ export function computeStepAnalysis(step, width, height, start) {
 //     because the solver's cost is total-cells-traveled (starting at 0 from landPos)
 //     while the game's physical chain already includes the initial boat→landPos segment.
 //   Final: effectiveChainLength = max(ECL₁, ECL₂), effectiveCogs from constrained path.
-function _simulatePath(cells, width, height, start, goal, doorRequirements) {
-  const level = { cells, width, height, goal, doorRequirements, start };
+function _simulatePath(cells, width, height, start, goal, doorRequirements, teleporterMap = null) {
+  const level = { cells, width, height, goal, doorRequirements, start, teleporterMap };
   const GENEROUS = (width + height) * 4;
   const toggleMap = buildToggleMap(cells);
 
@@ -713,10 +740,14 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
     let pos   = { ...landPos };
     let gears = [];
     const chainLen = () => {
-      const pts = [start, ...gears, pos];
       let len = 0;
-      for (let i = 1; i < pts.length; i++)
-        len += Math.abs(pts[i].x - pts[i-1].x) + Math.abs(pts[i].y - pts[i-1].y);
+      let px = start.x, py = start.y;
+      for (const g of gears) {
+        len += Math.abs(g.x - px) + Math.abs(g.y - py);
+        px = g.isTeleport ? g.exitX : g.x;
+        py = g.isTeleport ? g.exitY : g.y;
+      }
+      len += Math.abs(pos.x - px) + Math.abs(pos.y - py);
       return len;
     };
 
@@ -727,7 +758,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
     let maxChainLen  = chainLen();
 
     for (const { dx, dy } of moves) {
-      const gearSet = new Set(gears.map(g => g.y * width + g.x));
+      const gearSet = new Set(gears.filter(g => !g.isTeleport).map(g => g.y * width + g.x));
       const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, gearSet, GENEROUS);
 
       if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
@@ -740,7 +771,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
       if (!didMove && !hasCrumble) { prevDx = dx; prevDy = dy; continue; }
 
       const isBoatEntry = r.y < 0;
-      const revisitIdx  = didMove ? gears.findIndex(g => g.x === r.x && g.y === r.y) : -1;
+      const revisitIdx  = didMove ? gears.findIndex(g => !g.isTeleport && g.x === r.x && g.y === r.y) : -1;
 
       // ── Replicate _buildDepartureCtx ─────────────────────────────────────────
 
@@ -812,6 +843,18 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
       if (!isBoatEntry) prevDirNull = false;
       prevDx = npx; prevDy = npy;
 
+      if (r.teleportCrossing) {
+        const tc = r.teleportCrossing;
+        const retracedIdx = gears.findIndex(
+          g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
+        );
+        if (retracedIdx >= 0) {
+          gears.splice(retracedIdx, 1);
+        } else {
+          gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY, exitX: tc.exitX, exitY: tc.exitY });
+        }
+      }
+
       const cl = chainLen();
       if (cl > maxChainLen) maxChainLen = cl;
     }
@@ -836,7 +879,65 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
   };
 }
 
-function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null) {
+// Returns true if placing a teleporter pair at (x1,y1)↔(x2,y2) is safe:
+// for every direction D, if the cell behind T can be approached from -D, then
+// the cell one step past the partner in direction D must be non-wall and in-bounds.
+function _isTeleporterPairValid(cells, width, height, x1, y1, x2, y2) {
+  const DIRS4 = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+  for (const { dx, dy } of DIRS4) {
+    // Can the player approach T1 moving in direction (dx,dy)? (i.e. non-wall behind T1)
+    const ax1 = x1 - dx, ay1 = y1 - dy;
+    if (ax1 >= 0 && ax1 < width && ay1 >= 0 && ay1 < height
+        && cells[ay1 * width + ax1] !== 1) {
+      const ex2 = x2 + dx, ey2 = y2 + dy;
+      if (ex2 < 0 || ex2 >= width || ey2 < 0 || ey2 >= height) return false;
+      if (cells[ey2 * width + ex2] === 1) return false;
+    }
+    // Can the player approach T2 moving in direction (dx,dy)?
+    const ax2 = x2 - dx, ay2 = y2 - dy;
+    if (ax2 >= 0 && ax2 < width && ay2 >= 0 && ay2 < height
+        && cells[ay2 * width + ax2] !== 1) {
+      const ex1 = x1 + dx, ey1 = y1 + dy;
+      if (ex1 < 0 || ex1 >= width || ey1 < 0 || ey1 >= height) return false;
+      if (cells[ey1 * width + ex1] === 1) return false;
+    }
+  }
+  return true;
+}
+
+// Post-processing: pick two carved EMPTY cells for a teleporter pair.
+// Modifies outCells in place and returns a teleporterMap, or null if no valid pair found.
+function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
+  const candidates = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const fi = y * width + x;
+      if (!carvedMask[fi]) continue;
+      if (outCells[fi] !== 0) continue;
+      if (x === start.x && y <= 1) continue; // keep entry tunnel clear
+      candidates.push(fi);
+    }
+  }
+  if (candidates.length < 2) return null;
+
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const i1 = Math.floor(rng() * candidates.length);
+    let   i2 = Math.floor(rng() * (candidates.length - 1));
+    if (i2 >= i1) i2++;
+    const fi1 = candidates[i1], fi2 = candidates[i2];
+    const x1 = fi1 % width, y1 = Math.floor(fi1 / width);
+    const x2 = fi2 % width, y2 = Math.floor(fi2 / width);
+    if (Math.abs(x1 - x2) + Math.abs(y1 - y2) < 4) continue;
+    if (!_isTeleporterPairValid(outCells, width, height, x1, y1, x2, y2)) continue;
+    outCells[fi1] = 10; // CellType.TELEPORTER
+    outCells[fi2] = 10;
+    const map = new Map([[fi1, fi2], [fi2, fi1]]);
+    return map;
+  }
+  return null;
+}
+
+function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   // ── Build toggle map ───────────────────────────────────────────────────────
@@ -930,7 +1031,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, teleporterMap);
 
       // A reversal (moving exactly opposite the arrival direction) is a free retraction —
       // the pending cog at the current position retracts with the player.
@@ -1065,7 +1166,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, cost, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, teleporterMap);
       if (path.length === 0 && !crumblePos) continue;
 
       const nd = diff + cost;
@@ -1124,7 +1225,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if ((clVisMap.get(stateKey(pos, di, worldState)) ?? Infinity) < cl) continue;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements);
+      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, teleporterMap);
       if (path.length === 0 && !crumblePos) continue;
       const nCl = cl + path.length;
       for (const p of path) {
@@ -1213,7 +1314,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
     if (k < 0 || k >= width * height) continue;                        // skip off-grid keys (e.g. boat at y=-1)
-    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9) continue;  // skip walls, crumbles, keys, doors
+    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9 || cells[k] === 10) continue;  // skip walls, crumbles, keys, doors, teleporters
     if (cells[k] >= 3 && cells[k] <= 6) continue;                          // skip one-ways (player slides through, never lands on them)
     if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
     if (!bestKeyForPos.has(k)) continue;                                // skip cells the player can never naturally stop on (only pass through)

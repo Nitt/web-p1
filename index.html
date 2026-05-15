@@ -184,7 +184,7 @@
         document.getElementById('gen-debug-seed').value = lvl.seed ?? 0;
         document.getElementById('gen-debug-w').value    = lvl.width  ?? 9;
         document.getElementById('gen-debug-h').value    = lvl.height ?? 9;
-        runGenerate(lvl.weights, lvl.useKeyDoor ?? false);
+        runGenerate(lvl.weights, lvl.useKeyDoor ?? false, lvl.useTeleporter ?? false);
       }
     });
     document.getElementById('gen-debug-close').addEventListener('click', () => { panel.hidden = true; });
@@ -212,13 +212,14 @@
     let _pathCellOrder  = null;   // [{px,py,ws}] padded-grid cells in path order
     let _pathCellReveal = null;   // Map<"px,py" → stepIndex> when each cell first appears
     let _pathUniverses  = null;   // Set<number> of worldState bitmasks the optimal path uses
+    let _teleporterMap  = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
 
-    function runGenerate(weights, useKeyDoor = false) {
+    function runGenerate(weights, useKeyDoor = false, useTeleporter = false) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
       const w    = parseInt(document.getElementById('gen-debug-w').value)    || 9;
       const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
       _steps = [];
-      const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, _steps });
+      const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, _steps });
       _depths           = result.depths;
       _difficulties     = result.difficulties;
       _levelW           = w;
@@ -226,6 +227,7 @@
       _levelStart       = result.start;
       _doorRequirements     = result.doorRequirements;
       _finalCells           = result.cells;
+      _teleporterMap        = result.teleporterMap ?? null;
       _universeDepths       = result.universeDepths;
       _universeChainLengths = result.universeChainLengths;
 
@@ -237,8 +239,10 @@
         const chainLimit = result.effectiveChainLength > 0 ? result.effectiveChainLength : (w + h);
         const moves      = solve(result, result.start, 0, toggleMap, chainLimit);
         if (moves) {
-          // Build waypoints: boat (y=-1) → landing → each slide endpoint
-          // segmentWS[i] = worldState active while travelling segment i→i+1
+          // Build waypoints: boat (y=-1) → landing → each slide endpoint.
+          // Teleport crossings split a move into three segments:
+          //   prev→entry (normal), entry→exit (jump, marked), exit→final (normal).
+          // segmentWS[i] = worldState active while travelling segment i→i+1.
           const waypoints = [{ x: result.start.x, y: -1 }, { ...result.start }];
           const segmentWS = [0]; // boat→landing always in ws=0
           let pos = { ...result.start }, ws = 0, totalCells = 0;
@@ -249,16 +253,28 @@
             if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
             if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
             totalCells += Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
+            if (r.teleportCrossing) {
+              const tc = r.teleportCrossing;
+              waypoints.push({ x: tc.entryX, y: tc.entryY });          segmentWS.push(wsBefore);
+              waypoints.push({ x: tc.exitX,  y: tc.exitY, isTeleportJump: true }); segmentWS.push(wsBefore);
+            }
             pos = { x: r.x, y: r.y };
             waypoints.push({ ...pos });
             segmentWS.push(wsBefore); // ws active during this slide (before toggle fires)
           }
 
-          // Expand waypoints into individual cells (padded coords) + travel direction + universe
+          // Expand waypoints into individual cells (padded coords) + travel direction + universe.
+          // Teleport-jump segments add only the exit cell — no cells in between are traced.
           const seen = new Set(), order = [];
           for (let wi = 0; wi < waypoints.length - 1; wi++) {
             const a = waypoints[wi], b = waypoints[wi + 1];
             const segWS = segmentWS[wi];
+            if (b.isTeleportJump) {
+              const px = b.x + 1, py = b.y + 1;
+              const key = `${px},${py}`;
+              if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx: 0, sdy: 0, ws: segWS }); }
+              continue;
+            }
             const sdx = Math.sign(b.x - a.x), sdy = Math.sign(b.y - a.y);
             if (sdx === 0 && sdy === 0) continue;
             let cx = a.x, cy = a.y;
@@ -314,7 +330,7 @@
 
     document.getElementById('gen-debug-run').addEventListener('click', () => {
       const lvl = getCurrentLevel();
-      runGenerate(lvl?.weights, lvl?.useKeyDoor ?? false);
+      runGenerate(lvl?.weights, lvl?.useKeyDoor ?? false, lvl?.useTeleporter ?? false);
     });
 
     slider.addEventListener('input', () => renderStep(parseInt(slider.value)));
@@ -432,6 +448,72 @@
                 ctx.closePath();
                 ctx.fill();
               }
+            }
+          }
+        }
+      }
+
+      // Teleporter cells — placed as post-processing on outCells, not in the carving grid,
+      // so overlay them from _finalCells at every step so the layout is always visible.
+      if (_finalCells) {
+        const half = (size - 1) / 2;
+
+        // Dashed connector line between each pair
+        if (_teleporterMap) {
+          const drawn = new Set();
+          ctx.save();
+          ctx.strokeStyle = 'rgba(185, 100, 255, 0.55)';
+          ctx.lineWidth   = Math.max(1, size * 0.08);
+          ctx.setLineDash([Math.max(2, size * 0.2), Math.max(2, size * 0.2)]);
+          for (let fi = 0; fi < _finalCells.length; fi++) {
+            if (_finalCells[fi] !== 10) continue;
+            const partner = _teleporterMap.get(fi);
+            if (partner === undefined || drawn.has(fi)) continue;
+            drawn.add(fi); drawn.add(partner);
+            const ax = (fi % _levelW + 1) * size + half;
+            const ay = (Math.floor(fi / _levelW) + 1) * size + half;
+            const bx = (partner % _levelW + 1) * size + half;
+            const by = (Math.floor(partner / _levelW) + 1) * size + half;
+            ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+          }
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+
+        // Fill + ring + label for each teleporter cell
+        for (let iy = 0; iy < _levelH; iy++) {
+          for (let ix = 0; ix < _levelW; ix++) {
+            if (_finalCells[iy * _levelW + ix] !== 10) continue;
+            const cx = (ix + 1) * size, cy = (iy + 1) * size;
+            const mx = cx + half, my = cy + half;
+
+            ctx.fillStyle = '#7b2fbe';
+            ctx.fillRect(cx, cy, size - 1, size - 1);
+
+            // Outer ring
+            const r1 = Math.max(1.5, half * 0.72);
+            ctx.strokeStyle = 'rgba(220, 170, 255, 0.9)';
+            ctx.lineWidth   = Math.max(1, size * 0.1);
+            ctx.beginPath(); ctx.arc(mx, my, r1, 0, Math.PI * 2); ctx.stroke();
+
+            // Inner ring (only if cells are large enough)
+            if (size >= 14) {
+              const r2 = Math.max(1, half * 0.38);
+              ctx.strokeStyle = 'rgba(220, 170, 255, 0.5)';
+              ctx.lineWidth   = Math.max(0.5, size * 0.06);
+              ctx.beginPath(); ctx.arc(mx, my, r2, 0, Math.PI * 2); ctx.stroke();
+            }
+
+            // 'T' label
+            if (size >= 10) {
+              const fontSize = Math.max(5, Math.floor(size * 0.28));
+              ctx.font          = `700 ${fontSize}px system-ui, sans-serif`;
+              ctx.textAlign     = 'center';
+              ctx.textBaseline  = 'middle';
+              ctx.fillStyle     = 'rgba(240, 210, 255, 0.95)';
+              ctx.fillText('T', mx, my);
+              ctx.textAlign    = 'left';
+              ctx.textBaseline = 'alphabetic';
             }
           }
         }

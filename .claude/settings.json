@@ -11,7 +11,12 @@
       "Read(//usr/local/**)",
       "Read(//opt/homebrew/**)",
       "Bash(xargs '-I{}' bash -c 'python3 -c \" *)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(/usr/local/bin/node --version 2>/dev/null || which node || ls /usr/local/bin/node /usr/bin/node 2>/dev/null)",
+      "Read(//usr/bin/**)",
+      "Bash(npx --yes acorn --ecma2020 --module /Users/emil/Documents/GitHub/web-p1/generator.js)",
+      "Bash(ls /usr/local/lib/node_modules 2>/dev/null; ls ~/.nvm/versions 2>/dev/null; ls /opt/homebrew/bin/node 2>/dev/null)",
+      "Read(//Users/emil/.nvm/**)"
     ]
   }
 }

@@ -67,6 +67,7 @@ export const PROGRESSION = [
     levels:           5,
     weights:          { sticky: 0.06, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
     keyDoor:          false,
+    useTeleporter:    true,
     difficultyTarget: [22, 30],
     candidates:       240,
   },
@@ -75,6 +76,7 @@ export const PROGRESSION = [
     levels:           Infinity,
     weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
     keyDoor:          { minInterval: 4, maxInterval: 15 },
+    useTeleporter:    true,
     difficultyTarget: null,   // pick hardest
     candidates:       300,
   },
@@ -137,9 +139,10 @@ export function getRecipe(levelIndex, levelsSinceKeyDoor, rng = null) {
   }
 
   return {
-    weights:    stage.weights,
+    weights:       stage.weights,
     useKeyDoor,
+    useTeleporter: stage.useTeleporter ?? false,
     difficultyTarget,
-    candidates: stage.candidates,
+    candidates:    stage.candidates,
   };
 }
