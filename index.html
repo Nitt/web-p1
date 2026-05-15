@@ -80,6 +80,7 @@
         <label>h <input id="gen-debug-h" type="number" value="9" min="3" max="20"></label>
         <button id="gen-debug-run">Generate</button>
         <button id="gen-debug-universes">universes</button>
+        <label id="gen-debug-path-filter-wrap" hidden><input type="checkbox" id="gen-debug-path-filter"> path only</label>
         <button id="gen-debug-close">✕</button>
       </div>
     </div>
@@ -191,8 +192,11 @@
     document.getElementById('gen-debug-universes').addEventListener('click', () => {
       _universeMode = !_universeMode;
       document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
+      document.getElementById('gen-debug-path-filter-wrap').hidden = !_universeMode;
       renderStep(+slider.value);
     });
+
+    document.getElementById('gen-debug-path-filter').addEventListener('change', () => renderStep(+slider.value));
 
     let _steps            = [];
     let _depths           = null;   // Int16Array from final generateLevel result
@@ -205,8 +209,9 @@
     let _finalCells            = null;   // Uint8Array output cells (CellType values)
     let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
     let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
-    let _pathCellOrder  = null;   // [{px,py}] padded-grid cells in path order
+    let _pathCellOrder  = null;   // [{px,py,ws}] padded-grid cells in path order
     let _pathCellReveal = null;   // Map<"px,py" → stepIndex> when each cell first appears
+    let _pathUniverses  = null;   // Set<number> of worldState bitmasks the optimal path uses
 
     function runGenerate(weights, useKeyDoor = false) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
@@ -298,6 +303,7 @@
 
           _pathCellOrder  = order;
           _pathCellReveal = reveal;
+          _pathUniverses  = new Set(order.map(c => c.ws));
         }
       }
 
@@ -532,9 +538,12 @@
       // Collect only the universes the carver has actually entered at this step,
       // sorted by their bitmask (base universe "∅" always first).
       const knownVDs = step.allUniverseVDs ?? new Map();
+      const pathFilterOn = document.getElementById('gen-debug-path-filter').checked && _pathUniverses;
       const activeUniverses = [];
       for (const [key, vd] of knownVDs) {
-        activeUniverses.push({ key, u: vdKeyToWS(key), vd });
+        const u = vdKeyToWS(key);
+        if (pathFilterOn && !_pathUniverses.has(u)) continue;
+        activeUniverses.push({ key, u, vd });
       }
       activeUniverses.sort((a, b) => a.u - b.u);
 

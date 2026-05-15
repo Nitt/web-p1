@@ -489,7 +489,10 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     const toggleMap  = buildToggleMap(level.cells);
     const initSlide  = slidePlayer(level, level.start, 0, 1, toggleMap, 0, null, GENEROUS);
     const landPos    = { x: initSlide.x, y: initSlide.y };
-    if (!solve(level, landPos, 0, toggleMap, level.effectiveChainLength)) continue;
+    let initWS2 = 0;
+    if (initSlide.crumble?.toggleIdx      !== undefined) initWS2 |= (1 << initSlide.crumble.toggleIdx);
+    if (initSlide.keyCollected?.toggleIdx !== undefined) initWS2 |= (1 << initSlide.keyCollected.toggleIdx);
+    if (!solve(level, landPos, initWS2, toggleMap, level.effectiveChainLength)) continue;
 
     if (score < bestScore) {
       bestScore = score;
@@ -697,9 +700,14 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
   const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS);
   const landPos    = { x: initResult.x, y: initResult.y };
 
+  // Carry forward any worldState changes from the initial slide (key collected, crumble hit).
+  let initWS = 0;
+  if (initResult.crumble?.toggleIdx      !== undefined) initWS |= (1 << initResult.crumble.toggleIdx);
+  if (initResult.keyCollected?.toggleIdx !== undefined) initWS |= (1 << initResult.keyCollected.toggleIdx);
+
   // Run solver with solverBudget, replay moves tracking physical chain and gear usage.
   function runSim(solverBudget) {
-    const moves = solve(level, landPos, 0, toggleMap, solverBudget);
+    const moves = solve(level, landPos, initWS, toggleMap, solverBudget);
     if (!moves) return null;
 
     let pos   = { ...landPos };
@@ -712,7 +720,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements) {
       return len;
     };
 
-    let ws           = 0;
+    let ws           = initWS;
     let prevDx       = 0, prevDy = 1;
     let prevDirNull  = false;
     let gearsUsed    = 0;
