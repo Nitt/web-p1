@@ -734,9 +734,13 @@ function _redrawChain(px, py) {
     gearLerpT = Math.min(1, Math.hypot(px - nearestGearPx.x, py - nearestGearPx.y) / cellSize);
   }
 
-  // ── Compute per-segment pixel offsets from the player for link phase-locking ──
-  // segOffsets[si] = pixel distance from the player to d=0 of segment si, going
-  // backward through later segments and bridges.  Last segment = 0 (starts at player).
+  // ── Compute per-segment chain-length offsets from the player for link phase-locking ──
+  // segOffsets[si] = chain length (pixels) from the player to d=0 of segment si,
+  // accumulated only through physical segments — NOT through bridges, which carry
+  // zero chain length.  Excluding bridge pixel distance is critical: if we included
+  // it, a discontinuous jump in linkStartDist would occur the moment onTeleportCrossing
+  // fires (the bridge length would suddenly appear in the offset), causing a visible
+  // phase-shift in the link pattern.  Last segment offset = 0 (player is at d=0).
   const segOffsets = new Array(segments.length).fill(0);
   {
     let cum = 0;
@@ -748,8 +752,7 @@ function _redrawChain(px, py) {
         segLen += Math.hypot(seg[i].x - seg[i - 1].x, seg[i].y - seg[i - 1].y);
       }
       cum += segLen;
-      if (si > 0) cum += Math.hypot(bridges[si - 1].to.x - bridges[si - 1].from.x,
-                                    bridges[si - 1].to.y - bridges[si - 1].from.y);
+      // Bridges are zero-cost — do not add their pixel length.
     }
   }
 
