@@ -848,7 +848,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
         const retracedIdx = gears.findIndex(
           g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
         );
-        if (retracedIdx >= 0) {
+        if (retracedIdx >= 0 && retracedIdx === gears.length - 1) {
           gears.splice(retracedIdx, 1);
         } else {
           gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY, exitX: tc.exitX, exitY: tc.exitY });

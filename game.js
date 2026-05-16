@@ -1271,12 +1271,14 @@ function _executeMove(dx, dy) {
     entryPos:           { x: tc.entryX, y: tc.entryY },
     exitPos:            { x: tc.exitX,  y: tc.exitY  },
     onTeleportCrossing: () => {
-      // If this crossing retraces an existing one (the slide came from the exit side
-      // back toward the entry), remove the old crossing rather than adding a new one.
+      // A crossing is a retrace only if it's the most recent gear — meaning no
+      // subsequent gears were placed after it.  If newer gears exist, the player has
+      // moved on from that crossing and this is a new forward traversal through the
+      // partner teleporter, so a new crossing must be added instead of removing the old one.
       const retracedIdx = state.gears.findIndex(
         g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
       );
-      if (retracedIdx >= 0) {
+      if (retracedIdx >= 0 && retracedIdx === state.gears.length - 1) {
         state.gears.splice(retracedIdx, 1);
       } else {
         state.gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY,

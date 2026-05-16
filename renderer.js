@@ -276,11 +276,19 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
   // onTeleportCrossing is called at the midpoint so game.js pushes to state.gears
   // exactly when the player becomes invisible.
   const FLASH_MS = 180;
-  let _flashJumped = false;
+  let _flashJumped      = false;
+  let _flashWasSpinning = false;  // whether _chainSpinning was true when flash started
 
   function beginFlash() {
     if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
     _flashJumped      = false;
+    // Freeze gear rotation for the duration of the flash — chain is not moving
+    // while the player is invisible, so spinning gears look wrong.
+    _flashWasSpinning = _chainSpinning;
+    if (_chainSpinning) {
+      _spinAngleBase += ((performance.now() - _spinStartTime) / spinPeriodMs()) * 360 * _spinDirection;
+      _chainSpinning  = false;
+    }
     const flashStart  = performance.now();
     const entryPx     = _cellPixel(entryPos.x, entryPos.y, level);
     const exitPx      = _cellPixel(exitPos.x,  exitPos.y,  level);
@@ -319,6 +327,10 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
   // Phase 3 — slide exitPos → to
   function beginPhase3() {
     if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+    if (_flashWasSpinning) {
+      _spinStartTime = performance.now();
+      _chainSpinning = true;
+    }
     const startPx3 = { ...playerPx }; // currently at exitPx
     const steps3   = Math.max(Math.abs(to.x - exitPos.x), Math.abs(to.y - exitPos.y));
     const dur3     = steps3 * speedMs();
