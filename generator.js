@@ -35,6 +35,7 @@ export const DIFFICULTY_WEIGHTS = {
   DOOR_TRAVERSE:   1.0,   // sliding through an already-open door
   DOOR_LOCKED:     3.5,   // stopped by a locked door (high load — player must find the key)
   CHAIN_CROSSING:  3.0,   // shortest path requires revisiting a previous waypoint (chain shortens)
+  TELEPORT:        2.0,   // passing through a teleporter (spatial disorientation)
 };
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -644,6 +645,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
     if (cell === 7)             cost += DIFFICULTY_WEIGHTS.CRUMBLE_TRAVERSE;
     if (cell === 8)             cost += DIFFICULTY_WEIGHTS.KEY;
     if (cell === 9)             cost += DIFFICULTY_WEIGHTS.DOOR_TRAVERSE;
+    if (cell === 10)            cost += DIFFICULTY_WEIGHTS.TELEPORT;
   }
   if (blockedByOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
   if (blockedByCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE;
