@@ -884,11 +884,12 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
   if (!constrained) return generous;
 
   return {
-    effectiveChainLength: Math.max(generous.effectiveChainLength, constrained.effectiveChainLength),
-    // Take the max of both passes: the constrained pass can find a teleporter-heavy path
-    // with very few gear changes, while the game's solver may prefer a different path
-    // needing more gears.  Using the generous pass's gear count as a floor prevents
-    // massive under-budgeting.
+    // Use constrained ECL: it already has generous ECL as its budget cap, so it reflects
+    // the path the game's solver will actually take.  Taking max would over-allocate when
+    // the constrained pass found a more efficient path (especially with teleporters).
+    effectiveChainLength: constrained.effectiveChainLength,
+    // Take the max of both passes for gears: prevents massive under-budgeting when the
+    // constrained solver finds a teleporter-heavy path needing fewer bends than the real path.
     effectiveCogs: Math.max(generous.effectiveCogs, constrained.effectiveCogs),
   };
 }
