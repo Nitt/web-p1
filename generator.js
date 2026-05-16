@@ -883,14 +883,21 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
   const constrained = runSim(generous.effectiveChainLength);
   if (!constrained) return generous;
 
+  // Pass 3 (only when ECL shrank): if the constrained pass found a more efficient path
+  // (ECL₂ < ECL₁), re-simulate with ECL₂ as the budget so the gear count reflects the
+  // path the game's solver will actually take with that tighter limit.  Without this,
+  // the game solver (running with ECL₂) can pick a bend-heavier path than pass 2 modelled.
+  let final = constrained;
+  if (constrained.effectiveChainLength < generous.effectiveChainLength) {
+    const reConstrained = runSim(constrained.effectiveChainLength);
+    if (reConstrained) final = reConstrained;
+  }
+
   return {
-    // Use constrained ECL: it already has generous ECL as its budget cap, so it reflects
-    // the path the game's solver will actually take.  Taking max would over-allocate when
-    // the constrained pass found a more efficient path (especially with teleporters).
-    effectiveChainLength: constrained.effectiveChainLength,
-    // Take the max of both passes for gears: prevents massive under-budgeting when the
-    // constrained solver finds a teleporter-heavy path needing fewer bends than the real path.
-    effectiveCogs: Math.max(generous.effectiveCogs, constrained.effectiveCogs),
+    effectiveChainLength: final.effectiveChainLength,
+    // Take the max across all passes for gears: each pass may model a different path,
+    // and the game's solver might follow any of them.  Floor prevents under-budgeting.
+    effectiveCogs: Math.max(generous.effectiveCogs, constrained.effectiveCogs, final.effectiveCogs),
   };
 }
 
