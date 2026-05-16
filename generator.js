@@ -498,7 +498,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     let initWS2 = 0;
     if (initSlide.crumble?.toggleIdx      !== undefined) initWS2 |= (1 << initSlide.crumble.toggleIdx);
     if (initSlide.keyCollected?.toggleIdx !== undefined) initWS2 |= (1 << initSlide.keyCollected.toggleIdx);
-    if (!solve(level, landPos, initWS2, toggleMap, level.effectiveChainLength)) continue;
+    if (!solve(level, landPos, initWS2, toggleMap, level.effectiveChainLength, level.effectiveCogs, { dx: 0, dy: 1 })) continue;
 
     if (score < bestScore) {
       bestScore = score;
@@ -735,8 +735,12 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
   if (initResult.keyCollected?.toggleIdx !== undefined) initWS |= (1 << initResult.keyCollected.toggleIdx);
 
   // Run solver with solverBudget, replay moves tracking physical chain and gear usage.
+  // prevDir after the initial auto-slide is always DOWN (boat → grid is always dy=+1).
+  const GENEROUS_GEARS = 20;
+  const INIT_PREV_DIR  = { dx: 0, dy: 1 };
+
   function runSim(solverBudget) {
-    const moves = solve(level, landPos, initWS, toggleMap, solverBudget);
+    const moves = solve(level, landPos, initWS, toggleMap, solverBudget, GENEROUS_GEARS, INIT_PREV_DIR);
     if (!moves) return null;
 
     let pos   = { ...landPos };
@@ -872,33 +876,10 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
     return { effectiveChainLength: maxChainLen, effectiveCogs: gearsUsed };
   }
 
-  // Pass 1: generous budget — establishes the physical chain peak for that path.
-  const generous = runSim(GENEROUS);
-  if (!generous) return null;
-
-  // Pass 2: constrained budget (= generous physical chain peak) — the same limit the
-  // game will give the solver.  May find a different path with more bends (gears) and
-  // a higher physical chain peak (because the initial boat→landPos chain length is
-  // already consumed before the solver starts counting).
-  const constrained = runSim(generous.effectiveChainLength);
-  if (!constrained) return generous;
-
-  // Pass 3 (only when ECL shrank): if the constrained pass found a more efficient path
-  // (ECL₂ < ECL₁), re-simulate with ECL₂ as the budget so the gear count reflects the
-  // path the game's solver will actually take with that tighter limit.  Without this,
-  // the game solver (running with ECL₂) can pick a bend-heavier path than pass 2 modelled.
-  let final = constrained;
-  if (constrained.effectiveChainLength < generous.effectiveChainLength) {
-    const reConstrained = runSim(constrained.effectiveChainLength);
-    if (reConstrained) final = reConstrained;
-  }
-
-  return {
-    effectiveChainLength: final.effectiveChainLength,
-    // Take the max across all passes for gears: each pass may model a different path,
-    // and the game's solver might follow any of them.  Floor prevents under-budgeting.
-    effectiveCogs: Math.max(generous.effectiveCogs, constrained.effectiveCogs, final.effectiveCogs),
-  };
+  // Single pass with generous budgets: the gear-aware solver finds the globally optimal
+  // path (minimum chain, minimum gears within that).  The game's solver, given the exact
+  // budgets produced by this replay, will find the same path — no multi-pass needed.
+  return runSim(GENEROUS);
 }
 
 // Returns true if placing a teleporter pair at (x1,y1)↔(x2,y2) is safe:
