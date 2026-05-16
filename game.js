@@ -1251,7 +1251,12 @@ function _executeMove(dx, dy) {
   if (_batchBypassConstraints && _batchViolations && state.chainLengthTotal > 0 && chainAvail === 0) {
     _batchViolations.chainWasDepleted = true;
   }
-  const slideLen   = Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
+  // For teleporter moves the physical chain extension is dist(playerPos→entry) + dist(exit→target),
+  // not the straight Manhattan from playerPos to target (which can over- or under-estimate).
+  const slideLen = target.teleportCrossing
+    ? Math.abs(target.teleportCrossing.entryX - state.playerPos.x) + Math.abs(target.teleportCrossing.entryY - state.playerPos.y)
+    + Math.abs(target.x - target.teleportCrossing.exitX) + Math.abs(target.y - target.teleportCrossing.exitY)
+    : Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
   if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
   const moveTarget = (chainWouldExceed && !_batchBypassConstraints)

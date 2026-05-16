@@ -884,9 +884,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
   if (!constrained) return generous;
 
   return {
-    // +2 safety margin: the simulation's peak chain can be slightly under the physical
-    // peak the game sees when gear-waypoint routing diverges from the simulated path.
-    effectiveChainLength: Math.max(generous.effectiveChainLength, constrained.effectiveChainLength) + 2,
+    effectiveChainLength: Math.max(generous.effectiveChainLength, constrained.effectiveChainLength),
     // Take the max of both passes: the constrained pass can find a teleporter-heavy path
     // with very few gear changes, while the game's solver may prefer a different path
     // needing more gears.  Using the generous pass's gear count as a floor prevents
