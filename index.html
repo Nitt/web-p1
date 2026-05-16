@@ -237,22 +237,46 @@
       if (result.start && result.goal && _steps.length > 0) {
         const toggleMap  = buildToggleMap(result.cells);
         const chainLimit = result.effectiveChainLength > 0 ? result.effectiveChainLength : (w + h);
-        const moves      = solve(result, result.start, 0, toggleMap, chainLimit);
+        const maxGears   = result.effectiveCogs ?? 20;
+
+        // Perform the initial auto-slide (boat → grid) to get the real start position and worldState,
+        // mirroring exactly what the game does before calling the solver.
+        const initSlide = slidePlayer(result, result.start, 0, 1, toggleMap, 0, null, chainLimit);
+        const landPos   = { x: initSlide.x, y: initSlide.y };
+        let initWS = 0;
+        if (initSlide.crumble?.toggleIdx      !== undefined) initWS |= (1 << initSlide.crumble.toggleIdx);
+        if (initSlide.keyCollected?.toggleIdx !== undefined) initWS |= (1 << initSlide.keyCollected.toggleIdx);
+
+        // Solve from the landed position — same parameters as the game's auto-solver.
+        const moves = solve(result, landPos, initWS, toggleMap, chainLimit, maxGears, { dx: 0, dy: 1 });
         if (moves) {
-          // Build waypoints: boat (y=-1) → landing → each slide endpoint.
+          // Build waypoints: boat (y=-1) → [teleport segments if initial slide crossed one] → landing
+          //                  → each subsequent slide endpoint.
           // Teleport crossings split a move into three segments:
           //   prev→entry (normal), entry→exit (jump, marked), exit→final (normal).
           // segmentWS[i] = worldState active while travelling segment i→i+1.
-          const waypoints = [{ x: result.start.x, y: -1 }, { ...result.start }];
-          const segmentWS = [0]; // boat→landing always in ws=0
-          let pos = { ...result.start }, ws = 0, totalCells = 0;
+          const waypoints = [{ x: result.start.x, y: -1 }];
+          const segmentWS = [];
+          if (initSlide.teleportCrossing) {
+            const tc = initSlide.teleportCrossing;
+            waypoints.push({ x: tc.entryX, y: tc.entryY }); segmentWS.push(0);
+            waypoints.push({ x: tc.exitX,  y: tc.exitY, isTeleportJump: true }); segmentWS.push(0);
+          }
+          waypoints.push({ ...landPos });
+          segmentWS.push(0); // boat → landing always in ws=0
+
+          let pos = { ...landPos }, ws = initWS, totalCells = 0;
           for (const { dx, dy } of moves) {
             const wsBefore = ws;
             const chainAvail = Math.max(0, chainLimit - totalCells);
             const r = slidePlayer(result, pos, dx, dy, toggleMap, ws, null, chainAvail);
             if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
             if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
-            totalCells += Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
+            // Physical chain extension — teleporter moves route through entry and exit.
+            totalCells += r.teleportCrossing
+              ? Math.abs(r.teleportCrossing.entryX - pos.x) + Math.abs(r.teleportCrossing.entryY - pos.y)
+                + Math.abs(r.x - r.teleportCrossing.exitX) + Math.abs(r.y - r.teleportCrossing.exitY)
+              : Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
             if (r.teleportCrossing) {
               const tc = r.teleportCrossing;
               waypoints.push({ x: tc.entryX, y: tc.entryY });          segmentWS.push(wsBefore);
@@ -271,16 +295,19 @@
             const segWS = segmentWS[wi];
             if (b.isTeleportJump) {
               const px = b.x + 1, py = b.y + 1;
-              const key = `${px},${py}`;
+              const key = `${px},${py},${segWS},0,0`;
               if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx: 0, sdy: 0, ws: segWS }); }
               continue;
             }
             const sdx = Math.sign(b.x - a.x), sdy = Math.sign(b.y - a.y);
             if (sdx === 0 && sdy === 0) continue;
-            let cx = a.x, cy = a.y;
+            // Skip the starting cell when coming from a teleport-jump waypoint — that cell
+            // was already added to order by the jump segment above (with sdx=0,sdy=0).
+            let cx = a.isTeleportJump ? a.x + sdx : a.x;
+            let cy = a.isTeleportJump ? a.y + sdy : a.y;
             while (true) {
               const px = cx + 1, py = cy + 1; // inner → padded (y=-1 → py=0 = boat row)
-              const key = `${px},${py}`;
+              const key = `${px},${py},${segWS},${sdx},${sdy}`;
               if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx, sdy, ws: segWS }); }
               if (cx === b.x && cy === b.y) break;
               cx += sdx; cy += sdy;
@@ -293,8 +320,8 @@
           // Border/boat cells (py===0) are always carved from the start; reveal at 0.
           const pw = _steps[0].pw, ph = _steps[0].ph;
           const reveal = new Map();
-          for (const { px, py, sdx, sdy } of order) {
-            const key = `${px},${py}`;
+          for (const { px, py, sdx, sdy, ws } of order) {
+            const key = `${px},${py},${ws},${sdx},${sdy}`;
             if (px === 0 || py === 0 || px === pw - 1 || py === ph - 1) {
               reveal.set(key, 0); // border/boat cells visible immediately
               continue;
@@ -552,8 +579,8 @@
           ctx.shadowBlur  = blur;
           ctx.beginPath();
           let inLine = false;
-          for (const { px, py } of _pathCellOrder) {
-            if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) <= currentStep) {
+          for (const { px, py, sdx, sdy, ws } of _pathCellOrder) {
+            if ((_pathCellReveal.get(`${px},${py},${ws},${sdx},${sdy}`) ?? Infinity) <= currentStep) {
               const cx = toCx(px), cy = toCy(py);
               if (!inLine) { ctx.moveTo(cx, cy); inLine = true; }
               else          { ctx.lineTo(cx, cy); }
@@ -572,8 +599,8 @@
         // Dots at each revealed path cell
         ctx.shadowBlur = 0;
         ctx.globalAlpha = 1;
-        for (const { px, py } of _pathCellOrder) {
-          if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) > currentStep) continue;
+        for (const { px, py, sdx, sdy, ws } of _pathCellOrder) {
+          if ((_pathCellReveal.get(`${px},${py},${ws},${sdx},${sdy}`) ?? Infinity) > currentStep) continue;
           const cx = toCx(px), cy = toCy(py);
           const r = Math.max(2, size * 0.16);
           ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -627,6 +654,35 @@
         if (pathFilterOn && !_pathUniverses.has(u)) continue;
         activeUniverses.push({ key, u, vd });
       }
+
+      // Synthetic panels: the solver's path can visit worldState combinations that the
+      // generator's BFS never explicitly entered as a universe (e.g. the generator carved
+      // crumble B from the base universe, so universe 'A,B' was never created even though
+      // the solver goes A→B→goal).  Add empty-VD panels for any path WS missing above.
+      if (pathFilterOn) {
+        const coveredWS = new Set(activeUniverses.map(e => e.u));
+        // Build reverse map: toggleIdx → padded cell index (for key reconstruction).
+        const toggleToPadded = new Map();
+        for (let i = 0; i < _finalCells.length; i++) {
+          const ti = finalToggleMap.get(i);
+          if (ti !== undefined) {
+            const outX = i % w, outY = Math.floor(i / w);
+            toggleToPadded.set(ti, (outY + 1) * pw + (outX + 1));
+          }
+        }
+        for (const ws of _pathUniverses) {
+          if (coveredWS.has(ws)) continue;
+          const pads = [];
+          for (let ti = 0; ti < 31; ti++) {
+            if (!(ws & (1 << ti))) continue;
+            const pi = toggleToPadded.get(ti);
+            if (pi !== undefined) pads.push(pi);
+          }
+          pads.sort((a, b) => a - b);
+          activeUniverses.push({ key: pads.join(','), u: ws, vd: new Map() });
+        }
+      }
+
       activeUniverses.sort((a, b) => a.u - b.u);
 
       // Current-step active bitmask (which universe the carver is IN right now).
@@ -818,7 +874,8 @@
           }
         }
 
-        // Pink path overlay — only cells whose worldState matches this universe
+        // Pink path overlay — ghost shows ancestor-universe trajectory; solid line + dots
+        // show only the cells belonging to this universe (so lines don't cross walls).
         if (_pathCellOrder && _pathCellReveal) {
           const currentStep = parseInt(slider.value);
           const half2 = (uW - 1) / 2;
@@ -826,43 +883,68 @@
           ctx.save();
           ctx.lineJoin = 'round';
           ctx.lineCap  = 'round';
+          ctx.strokeStyle = '#ff2d9b';
+          ctx.shadowColor = '#ff2d9b';
 
+          // 1. Dashed ghost: full path trajectory across ALL worldStates as a faint reference.
+          //    Very low alpha + thin dotted style reads as "trajectory context", not real path,
+          //    so wall-crossings are visually acceptable (the solid line never crosses walls).
+          ctx.shadowBlur  = 0;
+          ctx.globalAlpha = 0.18;
+          ctx.lineWidth   = Math.max(0.5, uW * 0.07);
+          ctx.setLineDash([Math.max(1.5, uW * 0.22), Math.max(1, uW * 0.22)]);
+          ctx.beginPath();
+          let ghostLine = false;
+          for (const { px, py, sdx, sdy, ws: cellWS } of _pathCellOrder) {
+            if ((_pathCellReveal.get(`${px},${py},${cellWS},${sdx},${sdy}`) ?? Infinity) <= currentStep) {
+              const cx2 = ox + px * uW + half2, cy2 = oy + py * uW + half2;
+              if (!ghostLine) { ctx.moveTo(cx2, cy2); ghostLine = true; }
+              else             { ctx.lineTo(cx2, cy2); }
+            } else { ghostLine = false; }
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 1;
+
+          // 2. Solid bright line — only cells whose worldState matches this universe,
+          //    so the line never cuts through walls that are closed in this universe.
           const drawPathLine = (lw, alpha, blur) => {
             ctx.lineWidth   = lw;
             ctx.globalAlpha = alpha;
             ctx.shadowBlur  = blur;
             ctx.beginPath();
             let inLine = false;
-            for (const { px, py, ws: cellWS } of _pathCellOrder) {
+            for (const { px, py, ws: cellWS, sdx, sdy } of _pathCellOrder) {
               if (cellWS !== u) { inLine = false; continue; }
-              if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) <= currentStep) {
+              if ((_pathCellReveal.get(`${px},${py},${cellWS},${sdx},${sdy}`) ?? Infinity) <= currentStep) {
                 const cx2 = ox + px * uW + half2, cy2 = oy + py * uW + half2;
                 if (!inLine) { ctx.moveTo(cx2, cy2); inLine = true; }
                 else          { ctx.lineTo(cx2, cy2); }
-              } else {
-                inLine = false;
-              }
+              } else { inLine = false; }
             }
             ctx.stroke();
           };
-
-          ctx.strokeStyle = '#ff2d9b';
-          ctx.shadowColor = '#ff2d9b';
           drawPathLine(Math.max(2, uW * 0.3),   0.55, Math.max(5, uW * 0.55)); // glow
           drawPathLine(Math.max(1.5, uW * 0.18), 1,   0);                       // solid
 
+          // 3. Dots at each path cell: large + white centre for this universe,
+          //    tiny + faint for other-universe cells (context without cluttering).
           ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1;
-          for (const { px, py, ws: cellWS } of _pathCellOrder) {
-            if (cellWS !== u) continue;
-            if ((_pathCellReveal.get(`${px},${py}`) ?? Infinity) > currentStep) continue;
-            const cx2 = ox + px * uW + half2, cy2 = oy + py * uW + half2;
-            const dotR = Math.max(1.5, uW * 0.16);
+          for (const { px, py, ws: cellWS, sdx, sdy } of _pathCellOrder) {
+            if ((_pathCellReveal.get(`${px},${py},${cellWS},${sdx},${sdy}`) ?? Infinity) > currentStep) continue;
+            const here = cellWS === u;
+            const cx2  = ox + px * uW + half2, cy2 = oy + py * uW + half2;
+            const dotR = here ? Math.max(1.5, uW * 0.16) : Math.max(1, uW * 0.09);
+            ctx.globalAlpha = here ? 1 : 0.4;
             ctx.beginPath(); ctx.arc(cx2, cy2, dotR, 0, Math.PI * 2);
             ctx.fillStyle = '#ff2d9b'; ctx.fill();
-            ctx.beginPath(); ctx.arc(cx2, cy2, Math.max(0.8, dotR * 0.4), 0, Math.PI * 2);
-            ctx.fillStyle = 'white'; ctx.fill();
+            if (here) {
+              ctx.globalAlpha = 1;
+              ctx.beginPath(); ctx.arc(cx2, cy2, Math.max(0.8, dotR * 0.4), 0, Math.PI * 2);
+              ctx.fillStyle = 'white'; ctx.fill();
+            }
           }
+          ctx.globalAlpha = 1;
 
           ctx.restore();
         }
