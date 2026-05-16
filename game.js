@@ -973,9 +973,11 @@ function _buildDepartureCtx(target, dx, dy) {
 }
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
-function _applyPreAnimationChain(ctx) {
+function _applyPreAnimationChain(ctx, hasTeleportCrossing = false) {
   const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract } = ctx;
-  if (isOneBack && !pendingBendGear) {
+  // Skip the truncated-gears drawChain when a teleport crossing is involved — the
+  // bridge must remain in _chainState so Phase 1 draws correctly through the teleporter.
+  if (isOneBack && !pendingBendGear && !hasTeleportCrossing) {
     drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
   }
   setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
@@ -986,7 +988,7 @@ function _applyPreAnimationChain(ctx) {
   } else if (isBend && !isAtLastCog && (!isBoatEntry || state.gears.length >= 2)) {
     state.gears.push({ x: state.playerPos.x, y: state.playerPos.y });
     state.gearsLeft--;
-    if (isOneBack) {
+    if (isOneBack && !hasTeleportCrossing) {
       drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
     } else {
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
@@ -1039,6 +1041,9 @@ function _animateWinRetract(onDone) {
             displayGears = displayGears.filter(dg => dg !== gRef);
             drawChain(displayGears, { x: gRef.x, y: gRef.y },
                       state.gearsLeft, state.totalGears, state.level);
+            // The removal above counts as the gear-drop for the next step,
+            // so the next step must not drop another gear.
+            skipNextDrop = true;
           },
         },
       });
@@ -1048,16 +1053,19 @@ function _animateWinRetract(onDone) {
   }
   steps.push({ toPos: state.level.start, teleportInfo: null });
 
-  let displayGears = gearsSnapshot.slice();
+  let displayGears  = gearsSnapshot.slice();
+  let skipNextDrop  = false;
 
   setChainSpinning(true, -1);
   setGoalFollowsPlayer(true);
 
   function step(stepIdx, fromPos) {
     // Drop the last gear from display after the first step (player has left that position).
-    if (stepIdx > 0 && displayGears.length > 0) {
+    // Skip when onTeleportCrossing already removed the crossing — it counts as the drop.
+    if (stepIdx > 0 && displayGears.length > 0 && !skipNextDrop) {
       displayGears = displayGears.slice(0, displayGears.length - 1);
     }
+    skipNextDrop = false;
     drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
 
     const { toPos, teleportInfo } = steps[stepIdx];
@@ -1260,7 +1268,7 @@ function _executeMove(dx, dy) {
 
   state.isMoving = true;
   playSlide();
-  _applyPreAnimationChain(ctx);
+  _applyPreAnimationChain(ctx, !!moveTarget.teleportCrossing);
 
   const moveToken = _moveToken;
 
