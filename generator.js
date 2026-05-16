@@ -741,6 +741,13 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
 
     let pos   = { ...landPos };
     let gears = [];
+    // If the initial auto-slide crossed a teleporter, seed gears with that crossing
+    // so chainLen() routes boat → teleport entry → teleport exit → landPos correctly.
+    // Without this, chainLen() uses a straight boat→landPos line which is wrong.
+    if (initResult.teleportCrossing) {
+      const tc = initResult.teleportCrossing;
+      gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY, exitX: tc.exitX, exitY: tc.exitY });
+    }
     const chainLen = () => {
       let len = 0;
       let px = start.x, py = start.y;
@@ -758,6 +765,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
     let prevDirNull  = false;
     let gearsUsed    = 0;
     let maxChainLen  = chainLen();
+    const gearOutPos = (g) => g.isTeleport ? { x: g.exitX, y: g.exitY } : { x: g.x, y: g.y };
 
     for (const { dx, dy } of moves) {
       const gearSet = new Set(gears.filter(g => !g.isTeleport).map(g => g.y * width + g.x));
@@ -780,7 +788,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
       if (!isBoatEntry && gears.length > 0) {
         const last = gears[gears.length - 1];
         if (last.x === pos.x && last.y === pos.y) {
-          const prev = gears.length > 1 ? gears[gears.length - 2] : start;
+          const prev = gears.length > 1 ? gearOutPos(gears[gears.length - 2]) : start;
           if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
             gears.pop(); gearsUsed--;
           }
@@ -791,7 +799,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
 
       let isRetractingTowardLastCog = false;
       if (isBendRaw && !isBoatEntry && didMove) {
-        const anchor = gears.length > 0 ? gears[gears.length - 1] : start;
+        const anchor = gears.length > 0 ? gearOutPos(gears[gears.length - 1]) : start;
         isRetractingTowardLastCog =
           dx === Math.sign(anchor.x - pos.x) && dy === Math.sign(anchor.y - pos.y);
       }
@@ -808,10 +816,10 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
       if (didMove) pos = { x: r.x, y: r.y };
 
       if (isBoatEntry) {
-        gearsUsed -= gears.length; gears = [];
+        gearsUsed -= gears.filter(g => !g.isTeleport).length; gears = [];
         prevDirNull = true;
       } else if (revisitIdx >= 0) {
-        const freed = gears.length - revisitIdx - 1;
+        const freed = gears.slice(revisitIdx + 1).filter(g => !g.isTeleport).length;
         gearsUsed -= freed;
         gears = gears.slice(0, revisitIdx + 1);
       }
@@ -835,7 +843,7 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
       if (!isBoatEntry && gears.length > 0) {
         const last = gears[gears.length - 1];
         if (last.x === pos.x && last.y === pos.y) {
-          const prev = gears.length > 1 ? gears[gears.length - 2] : start;
+          const prev = gears.length > 1 ? gearOutPos(gears[gears.length - 2]) : start;
           gears.pop(); gearsUsed--;
           npx = Math.sign(last.x - prev.x);
           npy = Math.sign(last.y - prev.y);

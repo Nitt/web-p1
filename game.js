@@ -593,7 +593,8 @@ export async function runBatchPlaythrough() {
 
       if (_batchStopped) break;
 
-      const solverStart = { ...state.playerPos };
+      const solverStart       = { ...state.playerPos };
+      const initialWorldState = state.worldState;
       const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal);
 
       let outcome;
@@ -639,7 +640,7 @@ export async function runBatchPlaythrough() {
         }
       } else {
         failures++;
-        _logPlaythroughFailure(level, levelNum, outcome, moves, solverStart, 0);
+        _logPlaythroughFailure(level, levelNum, outcome, moves, solverStart, initialWorldState);
       }
     }
   } finally {
