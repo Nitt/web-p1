@@ -47,6 +47,9 @@ let _playerAnimToken = 0;
 // True while the player is mid-teleport flash (invisible between entry and exit).
 // Suppresses the post-bridge chain segment so there is no ghost chain during the flash.
 let _playerInTeleport = false;
+// During a retrace flash (second half), holds grid coords of a visual-only bridge that
+// keeps the teleporter visually connected until the player finishes fading in at the exit.
+let _flashRetraceBridge = null;
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
@@ -281,7 +284,8 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
 
   function beginFlash() {
     if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
-    _flashJumped      = false;
+    _flashJumped        = false;
+    _flashRetraceBridge = null;
     // Freeze gear rotation for the duration of the flash — chain is not moving
     // while the player is invisible, so spinning gears look wrong.
     _flashWasSpinning = _chainSpinning;
@@ -306,8 +310,15 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
         // At midpoint: push the crossing to state.gears, jump player to exit
         if (!_flashJumped) {
           _flashJumped = true;
-          onTeleportCrossing(); // game.js pushes isTeleport entry to state.gears
-          _playerInTeleport = false; // chain can now draw the post-bridge segment
+          const wasRetrace = onTeleportCrossing();
+          _playerInTeleport = false;
+          if (wasRetrace) {
+            // Keep a visual bridge from entry→exit while the player fades in at exit.
+            // Without this the crossing gear disappears from state.gears immediately,
+            // making the chain snap to a straight line before the flash finishes.
+            _flashRetraceBridge = { fromX: entryPos.x, fromY: entryPos.y,
+                                    toX: exitPos.x,  toY: exitPos.y };
+          }
         }
         playerEl.style.opacity = String((ft - 0.5) * 2);
         _setOverlayPixel(playerEl, exitPx.x, exitPx.y);
@@ -327,6 +338,7 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
   // Phase 3 — slide exitPos → to
   function beginPhase3() {
     if (token !== _playerAnimToken) { _tailGearSpins = true; return; }
+    _flashRetraceBridge = null;
     if (_flashWasSpinning) {
       _spinStartTime = performance.now();
       _chainSpinning = true;
@@ -738,6 +750,16 @@ function _redrawChain(px, py) {
   if (!_playerInTeleport) curSeg.push({ x: px, y: py });
   segments.push(curSeg);
 
+  // During a retrace flash, keep a visual bridge from entry→exit so the chain
+  // doesn't snap to a straight line while the player is fading in at the exit.
+  if (_flashRetraceBridge) {
+    const fb = _flashRetraceBridge;
+    bridges.push({
+      from: _cellPixel(fb.fromX, fb.fromY, level),
+      to:   _cellPixel(fb.toX,   fb.toY,   level),
+    });
+  }
+
   // ── gearLerpT for the last segment's nearest gear ─────────────────────────
   const lastSeg = segments[segments.length - 1];
   let gearLerpT = 1;
@@ -819,6 +841,13 @@ function _redrawChain(px, py) {
       _drawTeleporterPortal(bridges[si].from.x, bridges[si].from.y, NS, scale);
       _drawTeleporterPortal(bridges[si].to.x,   bridges[si].to.y,   NS, scale);
     }
+  }
+
+  // Portals for the retrace-flash visual bridge (not associated with any segment).
+  if (_flashRetraceBridge) {
+    const fb = bridges[bridges.length - 1];
+    _drawTeleporterPortal(fb.from.x, fb.from.y, NS, scale);
+    _drawTeleporterPortal(fb.to.x,   fb.to.y,   NS, scale);
   }
 
   // Tail gear at player (skip while mid-flash).

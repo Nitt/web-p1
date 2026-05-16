@@ -1280,9 +1280,11 @@ function _executeMove(dx, dy) {
       );
       if (retracedIdx >= 0 && retracedIdx === state.gears.length - 1) {
         state.gears.splice(retracedIdx, 1);
+        return true;  // retrace — caller may want to keep a visual bridge
       } else {
         state.gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY,
                            exitX: tc.exitX, exitY: tc.exitY });
+        return false;
       }
     },
   } : null;
