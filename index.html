@@ -193,10 +193,14 @@
       _universeMode = !_universeMode;
       document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
       document.getElementById('gen-debug-path-filter-wrap').hidden = !_universeMode;
+      _syncSlider(true);
       renderStep(+slider.value);
     });
 
-    document.getElementById('gen-debug-path-filter').addEventListener('change', () => renderStep(+slider.value));
+    document.getElementById('gen-debug-path-filter').addEventListener('change', () => {
+      _syncSlider(true);
+      renderStep(+slider.value);
+    });
 
     let _steps            = [];
     let _depths           = null;   // Int16Array from final generateLevel result
@@ -209,10 +213,29 @@
     let _finalCells            = null;   // Uint8Array output cells (CellType values)
     let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
     let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
-    let _pathCellOrder  = null;   // [{px,py,ws}] padded-grid cells in path order
-    let _pathCellReveal = null;   // Map<"px,py" → stepIndex> when each cell first appears
-    let _pathUniverses  = null;   // Set<number> of worldState bitmasks the optimal path uses
-    let _teleporterMap  = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
+    let _pathCellOrder      = null;   // [{px,py,ws}] padded-grid cells in path order
+    let _pathCellReveal     = null;   // Map<key → stepIndex> when each cell first appears
+    let _pathUniverses      = null;   // Set<number> of worldState bitmasks the optimal path uses
+    let _pathRelevantSteps  = null;   // sorted step-index array used by the path-filter slider
+    let _teleporterMap      = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
+
+    // True when the "path only" slider mode is active (universe mode + checkbox + data all present).
+    function _pathFilterSliderActive() {
+      return _universeMode &&
+             document.getElementById('gen-debug-path-filter').checked &&
+             !!_pathRelevantSteps;
+    }
+
+    // Sync slider.max (and optionally value) to the current filter mode.
+    // jumpToEnd=true resets the slider to the final step (used on mode change).
+    function _syncSlider(jumpToEnd = false) {
+      if (_pathFilterSliderActive()) {
+        slider.max = _pathRelevantSteps.length - 1;
+      } else {
+        slider.max = Math.max(0, _steps.length - 1);
+      }
+      if (jumpToEnd) slider.value = +slider.max;
+    }
 
     function runGenerate(weights, useKeyDoor = false, useTeleporter = false) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
@@ -347,12 +370,21 @@
           _pathCellOrder  = order;
           _pathCellReveal = reveal;
           _pathUniverses  = new Set(order.map(c => c.ws));
+
+          // Build sorted list of step indices that reveal at least one path cell.
+          // Step 0 and the last step are always included so the slider covers the full range.
+          const revealSet = new Set([0, _steps.length - 1]);
+          for (const si of reveal.values()) {
+            if (si >= 0 && si < _steps.length) revealSet.add(si);
+          }
+          _pathRelevantSteps = Array.from(revealSet).sort((a, b) => a - b);
+        } else {
+          _pathRelevantSteps = null;
         }
       }
 
-      slider.max   = Math.max(0, _steps.length - 1);
-      slider.value = _steps.length - 1;
-      renderStep(_steps.length - 1);
+      _syncSlider(true);
+      renderStep(+slider.value);
     }
 
     document.getElementById('gen-debug-run').addEventListener('click', () => {
@@ -374,17 +406,20 @@
       }
     });
 
-    function renderStep(i) {
+    function renderStep(sliderPos) {
       if (!_steps.length) return;
-      const step = _steps[Math.min(i, _steps.length - 1)];
+      const useFilter = _pathFilterSliderActive();
+      const si   = useFilter ? (_pathRelevantSteps[sliderPos] ?? _steps.length - 1) : sliderPos;
+      const step = _steps[Math.min(si, _steps.length - 1)];
       label.textContent   = step.label;
-      counter.textContent = `${i + 1} / ${_steps.length}`;
+      const total = useFilter ? _pathRelevantSteps.length : _steps.length;
+      counter.textContent = `${sliderPos + 1} / ${total}`;
       if (_universeMode) {
-        drawUniverses(step);
+        drawUniverses(step, si);
       } else {
         // Use final depth/difficulty values so numbers stay stable as the slider advances.
         // The per-step recomputation caused values to jump as partial grids opened new paths.
-        drawStep(step, _depths, _difficulties);
+        drawStep(step, _depths, _difficulties, si);
       }
     }
 
@@ -400,7 +435,7 @@
       '#4a80b0',    // 7 DOOR
     ];
 
-    function drawStep(step, depths, difficulties) {
+    function drawStep(step, depths, difficulties, stepIdx) {
       const { grid, pw, ph, fromX, fromY, toX, toY } = step;
 
       // Size canvas to fit the panel, keeping cells square
@@ -562,7 +597,7 @@
 
       // Optimal path overlay — bright pink line, revealed cell-by-cell as the generator carves them
       if (_pathCellOrder && _pathCellReveal && _pathCellOrder.length >= 1) {
-        const currentStep = parseInt(slider.value);
+        const currentStep = stepIdx ?? parseInt(slider.value);
         const half = (size - 1) / 2;
         const toCx = (px) => px * size + half;
         const toCy = (py) => py * size + half;
@@ -616,7 +651,7 @@
     // Shows all 2^N worldState variants of the current generation step side by
     // side.  Toggle map is built from _finalCells so bitmask indices stay
     // consistent across steps and match the _doorRequirements indices.
-    function drawUniverses(step) {
+    function drawUniverses(step, stepIdx) {
       if (!_finalCells) return;
       const { grid, pw, ph, fromX, fromY, toX, toY } = step;
       const w = pw - 2, h = ph - 2;
@@ -877,7 +912,7 @@
         // Pink path overlay — ghost shows ancestor-universe trajectory; solid line + dots
         // show only the cells belonging to this universe (so lines don't cross walls).
         if (_pathCellOrder && _pathCellReveal) {
-          const currentStep = parseInt(slider.value);
+          const currentStep = stepIdx ?? parseInt(slider.value);
           const half2 = (uW - 1) / 2;
 
           ctx.save();
