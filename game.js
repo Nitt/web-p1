@@ -255,23 +255,40 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
   const token = ++_retractToken;
 
   // Build ordered waypoints: tailStart → fromGears[last] → … → tailEnd.
-  // Teleport crossings are not physical bend waypoints — skip them so the
-  // retract animation doesn't try to animate through the teleport gap.
-  const waypoints = [];
-  if (tailStartOverride) waypoints.push(tailStartOverride);
+  // Teleport crossings contribute two waypoints each: exit side (where the tail
+  // arrives coming from the far end) then entry side (where it re-emerges),
+  // with the bridge crossing treated as an instant jump (0 grid-cell distance).
+  // segKeepCounts[i] = how many fromGears to show while the tail is in segment i.
+  const waypoints     = [];
+  const segKeepCounts = [];
+  if (tailStartOverride) {
+    waypoints.push(tailStartOverride);
+    segKeepCounts.push(fromGears.length);
+  }
   for (let i = fromGears.length - 1; i >= targetLength; i--) {
-    if (!fromGears[i].isTeleport) waypoints.push(fromGears[i]);
+    const g = fromGears[i];
+    if (g.isTeleport) {
+      waypoints.push({ x: g.exitX, y: g.exitY });          // tail reaches exit side
+      segKeepCounts.push(i + 1);                            // T still shown
+      waypoints.push({ x: g.x, y: g.y, _tpJump: true });  // instant jump to entry
+      segKeepCounts.push(i);                                // T dropped
+    } else {
+      waypoints.push(g);
+      segKeepCounts.push(i);
+    }
   }
   waypoints.push(tailEndOverride ?? (targetLength > 0 ? fromGears[targetLength - 1] : playerPos));
+  segKeepCounts.push(targetLength);
 
   // Pixel coords and cumulative grid-cell distances along the waypoint path.
+  // _tpJump waypoints use 0 distance so the bridge crossing is instantaneous.
   const wPx = waypoints.map(w => getCellPixel(w.x, w.y, level));
   const cumDist = [0];
   for (let i = 1; i < waypoints.length; i++) {
-    const d = Math.max(
+    const d = waypoints[i]._tpJump ? 0 : (Math.max(
       Math.abs(waypoints[i].x - waypoints[i - 1].x),
       Math.abs(waypoints[i].y - waypoints[i - 1].y),
-    ) || 1;
+    ) || 1);
     cumDist.push(cumDist[i - 1] + d);
   }
   const totalDist    = cumDist[cumDist.length - 1];
@@ -293,10 +310,8 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
     const p1 = wPx[seg], p2 = wPx[seg + 1];
     const tailPx = { x: p1.x + (p2.x - p1.x) * segFrac, y: p1.y + (p2.y - p1.y) * segFrac };
 
-    // Gears to render: exclude the gear currently being retracted (the tail's departure point)
-    // so the chain path doesn't fold back on itself. Once the tail fully reaches the next
-    // waypoint, that gear also gets excluded in the following segment.
-    const keepCount = fromGears.length - seg - (tailStartOverride ? 0 : 1); // excludes the current tail gear
+    // Gears to render: exclude gears the tail has already passed.
+    const keepCount = segKeepCounts[seg];
     const gearsForRender = fromGears.slice(0, keepCount);
     drawChainWithPixelTail(gearsForRender, tailPx, gearsLeft, totalGears, level);
 
