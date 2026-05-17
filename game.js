@@ -529,7 +529,7 @@ export function getCurrentLevel() {
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
   const solverStart = { ...state.playerPos };
-  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal, state.gearsLeft, state.prevDir);
+  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, state.level.effectiveChainLength, state.level.effectiveCogs, { dx: 0, dy: 1 });
   if (!moves) {
     _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', [], solverStart);
     return;
@@ -577,15 +577,15 @@ export async function runBatchPlaythrough() {
       if (levelNum === 1) {
         level = SAMPLE_LEVELS[0];
       } else {
-        const recipe = getRecipe(levelIdx, sinceKeyDoor);
+        const recipe = getRecipe(levelIdx, sinceKeyDoor, makeRng(seed));
         level = generateFallback(seed, id, recipe);
-        sinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+        sinceKeyDoor = recipe.useKeyDoor ? 0 : sinceKeyDoor + 1;
         seed += recipe.candidates;
         id++; levelIdx++;
       }
 
       total++;
-      _batchViolations = { chainExceeded: false, gearsExhausted: false, chainWasDepleted: false };
+      _batchViolations = { chainExceeded: false, gearsExhausted: false, chainWasDepleted: false, teleportUsed: false };
 
       const prevCount = _levelLoadCount;
       loadLevel(level);
@@ -595,7 +595,7 @@ export async function runBatchPlaythrough() {
 
       const solverStart       = { ...state.playerPos };
       const initialWorldState = state.worldState;
-      const moves = solve(level, solverStart, state.worldState, state.toggleMap, state.chainLengthTotal, state.gearsLeft, state.prevDir);
+      const moves = solve(level, solverStart, state.worldState, state.toggleMap, level.effectiveChainLength, level.effectiveCogs, { dx: 0, dy: 1 });
 
       let outcome;
       if (!moves) {
@@ -611,7 +611,7 @@ export async function runBatchPlaythrough() {
       if (outcome === 'stopped') break;
 
       if (outcome === 'won') {
-        const { chainExceeded, gearsExhausted, chainWasDepleted } = _batchViolations;
+        const { chainExceeded, gearsExhausted, chainWasDepleted, teleportUsed } = _batchViolations;
         const chainFinallyDepleted = chainWasDepleted ||
           (state.chainLengthTotal > 0 && _chainLengthUsed() >= state.chainLengthTotal);
         const chainTooShort = chainExceeded;
@@ -628,11 +628,17 @@ export async function runBatchPlaythrough() {
 
         if (issues.length) {
           failures++;
+          const hasTeleporter = level.teleporterMap?.size > 0;
           console.group(`%cLevel ${levelNum} — completed but generator miscalculated: ${issues.join(', ')}`, 'color:#e80; font-weight:bold');
           console.log(`Issues: ${issues.join(', ')}`);
           console.log(`Chain: limit ${state.chainLengthTotal}, used at win ${_chainLengthUsed()}, ever depleted: ${chainFinallyDepleted}`);
           console.log(`Gears: budget ${state.totalGears}, remaining at win ${state.gearsLeft}`);
+          console.log(`Teleporter: ${hasTeleporter ? `yes — path ${teleportUsed ? 'USED' : 'did not use'} one` : 'none'}`);
           console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
+          if (moves) {
+            const arrows = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
+            console.log(`Planned moves (${moves.length}):`, moves.map(m => arrows[`${m.dx},${m.dy}`] ?? '?').join(' '));
+          }
           console.log('Level JSON:', JSON.stringify({ id: level.id, seed: level.seed, width: level.width, height: level.height, start: level.start, goal: level.goal, effectiveChainLength: level.effectiveChainLength, effectiveCogs: level.effectiveCogs }));
           console.groupEnd();
         } else {
@@ -1262,6 +1268,7 @@ function _executeMove(dx, dy) {
   const moveTarget = (chainWouldExceed && !_batchBypassConstraints)
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
+  if (moveTarget.teleportCrossing && _batchViolations) _batchViolations.teleportUsed = true;
 
   if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
     playBlocked();
