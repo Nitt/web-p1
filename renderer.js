@@ -1010,7 +1010,8 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
   const phaseShift = linkStartDist - Math.floor(linkStartDist / pitch) * pitch;
   const startD = pitch - phaseShift;
   const safeStartD = (startD < 0 || startD >= pitch) ? 0 : startD;
-  const baseIdx    = Math.floor((linkStartDist + safeStartD) / pitch) % 2;
+  //const baseIdx    = Math.floor((linkStartDist + safeStartD) / pitch) % 2;
+  const baseIdx = Math.floor(linkStartDist / pitch) % 2;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
   const ringPath =
