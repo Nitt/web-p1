@@ -529,7 +529,7 @@ export function getCurrentLevel() {
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
   const solverStart = { ...state.playerPos };
-  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, state.level.effectiveChainLength, state.level.effectiveCogs, { dx: 0, dy: 1 });
+  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, Math.max(0, state.level.effectiveChainLength - _chainLengthUsed()), state.level.effectiveCogs, { dx: 0, dy: 1 });
   if (!moves) {
     _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', [], solverStart);
     return;
@@ -595,7 +595,7 @@ export async function runBatchPlaythrough() {
 
       const solverStart       = { ...state.playerPos };
       const initialWorldState = state.worldState;
-      const moves = solve(level, solverStart, state.worldState, state.toggleMap, level.effectiveChainLength, level.effectiveCogs, { dx: 0, dy: 1 });
+      const moves = solve(level, solverStart, state.worldState, state.toggleMap, Math.max(0, level.effectiveChainLength - _chainLengthUsed()), level.effectiveCogs, { dx: 0, dy: 1 });
 
       let outcome;
       if (!moves) {

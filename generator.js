@@ -498,7 +498,16 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     let initWS2 = 0;
     if (initSlide.crumble?.toggleIdx      !== undefined) initWS2 |= (1 << initSlide.crumble.toggleIdx);
     if (initSlide.keyCollected?.toggleIdx !== undefined) initWS2 |= (1 << initSlide.keyCollected.toggleIdx);
-    if (!solve(level, landPos, initWS2, toggleMap, level.effectiveChainLength, level.effectiveCogs, { dx: 0, dy: 1 })) continue;
+    const initChainLen2 = (() => {
+      let len = Math.abs(landPos.x - level.start.x) + Math.abs(landPos.y - level.start.y);
+      if (initSlide.teleportCrossing) {
+        const tc = initSlide.teleportCrossing;
+        len = Math.abs(tc.entryX - level.start.x) + Math.abs(tc.entryY - level.start.y)
+            + Math.abs(landPos.x - tc.exitX) + Math.abs(landPos.y - tc.exitY);
+      }
+      return len;
+    })();
+    if (!solve(level, landPos, initWS2, toggleMap, Math.max(0, level.effectiveChainLength - initChainLen2), level.effectiveCogs, { dx: 0, dy: 1 })) continue;
 
     if (score < bestScore) {
       bestScore = score;
@@ -739,8 +748,18 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
   const GENEROUS_GEARS = 20;
   const INIT_PREV_DIR  = { dx: 0, dy: 1 };
 
+  // Chain already consumed by the initial boat→landPos slide (before any solver move).
+  const initChainLen = (() => {
+    if (initResult.teleportCrossing) {
+      const tc = initResult.teleportCrossing;
+      return Math.abs(tc.entryX - start.x) + Math.abs(tc.entryY - start.y)
+           + Math.abs(landPos.x - tc.exitX) + Math.abs(landPos.y - tc.exitY);
+    }
+    return Math.abs(landPos.x - start.x) + Math.abs(landPos.y - start.y);
+  })();
+
   function runSim(solverBudget) {
-    const moves = solve(level, landPos, initWS, toggleMap, solverBudget, GENEROUS_GEARS, INIT_PREV_DIR);
+    const moves = solve(level, landPos, initWS, toggleMap, Math.max(0, solverBudget - initChainLen), GENEROUS_GEARS, INIT_PREV_DIR);
     if (!moves) return null;
 
     let pos   = { ...landPos };
@@ -876,9 +895,9 @@ function _simulatePath(cells, width, height, start, goal, doorRequirements, tele
     return { effectiveChainLength: maxChainLen, effectiveCogs: gearsUsed };
   }
 
-  // Single pass with generous budgets: the gear-aware solver finds the globally optimal
-  // path (minimum chain, minimum gears within that).  The game's solver, given the exact
-  // budgets produced by this replay, will find the same path — no multi-pass needed.
+  // The solver never caps individual slides — it prunes branches that exceed the
+  // budget.  So the path it finds with GENEROUS is the globally optimal path, and
+  // the game solver given exactly that budget will find the same path.
   return runSim(GENEROUS);
 }
 

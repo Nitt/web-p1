@@ -118,11 +118,13 @@ export function solve(level, startPos, worldState, toggleMap, chainLengthTotal,
       return path;
     }
 
-    // Chain budget remaining — mirrors _executeMove's chainAvail calculation.
-    const chainAvail = Math.max(0, chainLimit - cost);
-
     for (const { dx, dy } of DIRS) {
-      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, chainAvail);
+      // Always slide to the natural stop (wall/sticky/one-way).  Budget enforcement
+      // is done by pruning below, not by capping individual slides.  Capping would
+      // make the solver plan paths with mid-slide stops that the game never produces,
+      // causing the generator and live solver to explore different state spaces and
+      // find different paths.
+      const r = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws, null, chainLimit);
 
       let nws = ws;
       if (r.crumble?.toggleIdx      !== undefined) nws |= (1 << r.crumble.toggleIdx);
@@ -136,14 +138,15 @@ export function solve(level, startPos, worldState, toggleMap, chainLengthTotal,
           + Math.abs(r.x - r.teleportCrossing.exitX) + Math.abs(r.y - r.teleportCrossing.exitY)
         : Math.abs(r.x - x) + Math.abs(r.y - y);
 
+      const newCost = cost + slideLen;
+      if (newCost > chainLimit) continue; // prune: exceeds chain budget
+
       // A direction change from prevDir costs one gear (placed at departure position).
       // Teleport crossings travel in the same direction — never a bend by themselves.
       const newDirIdx    = _dirIdx(dx, dy);
       const isBend       = prevDir !== NO_DIR && newDirIdx !== prevDir;
       const newGearsUsed = isBend ? gearsUsed + 1 : gearsUsed;
       if (newGearsUsed > gearsMax) continue; // gear budget exhausted — prune this branch
-
-      const newCost = cost + slideLen;
       const nk      = _key(r.x, r.y, nws, newDirIdx, newGearsUsed);
 
       if (newCost < (dist.get(nk) ?? Infinity)) {
