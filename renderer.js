@@ -967,27 +967,6 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
     }
   }
 
-  function samplePositionOnly(d) {
-    d = Math.max(0, Math.min(d, totalLen));
-
-    for (let i = 0; i < segs.length; i++) {
-      const s = segs[i];
-
-      if (d <= s.cumLen + s.len + 0.001 || i === segs.length - 1) {
-        const t = s.len > 0 ? (d - s.cumLen) / s.len : 0;
-
-        return {
-          x: s.x0 + s.dx * t,
-          y: s.y0 + s.dy * t,
-        };
-      }
-    }
-
-    // fallback (should never hit)
-    const last = segs[segs.length - 1];
-    return { x: last.x0 + last.dx, y: last.y0 + last.dy };
-  }
-
   function colorStopAt(d) {
     const cellDist = (d + linkStartDist) / cellSize;
     const BLEND = 1.0; // cells to cross-fade over at each stop boundary
@@ -1031,7 +1010,7 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
   const phaseShift = linkStartDist - Math.floor(linkStartDist / pitch) * pitch;
   const startD = pitch - phaseShift;
   const safeStartD = (startD < 0 || startD >= pitch) ? 0 : startD;
-  const baseIdx    = Math.floor((linkStartDist + startD) / pitch) % 2;
+  const baseIdx    = Math.floor((linkStartDist + safeStartD) / pitch) % 2;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
   const ringPath =
@@ -1040,7 +1019,7 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
 
   const linkTransforms = [];
 
-  const count = Math.ceil((totalLen - safeStartD) / pitch) + 1;
+  const count = Math.floor((totalLen - safeStartD) / pitch) + 1;
 
   for (let i = 0; i < count; i++) {
     const d = safeStartD + i * pitch;
