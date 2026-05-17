@@ -932,6 +932,29 @@ function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
     const x2 = fi2 % width, y2 = Math.floor(fi2 / width);
     if (Math.abs(x1 - x2) + Math.abs(y1 - y2) < 4) continue;
     if (!_isTeleporterPairValid(outCells, width, height, x1, y1, x2, y2)) continue;
+
+    // Every in-bounds orthogonal neighbor must be empty or untouched — any carved
+    // non-empty cell (wall, door, etc.) risks stopping the player on the teleporter.
+    const DIRS4 = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+    const allNeighborsOpen = (x, y) => DIRS4.every(({ dx, dy }) => {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= width || ny < 0 || ny >= height) return true;
+      const nfi = ny * width + nx;
+      return !carvedMask[nfi] || outCells[nfi] === 0;
+    });
+    if (!allNeighborsOpen(x1, y1) || !allNeighborsOpen(x2, y2)) continue;
+
+    // Carve any untouched neighbors of both teleporters to empty so the player
+    // always has a clear cell to slide into/out of.
+    for (const [tx, ty] of [[x1, y1], [x2, y2]]) {
+      for (const { dx, dy } of DIRS4) {
+        const nx = tx + dx, ny = ty + dy;
+        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+        const nfi = ny * width + nx;
+        if (!carvedMask[nfi]) { outCells[nfi] = 0; carvedMask[nfi] = true; }
+      }
+    }
+
     outCells[fi1] = 10; // CellType.TELEPORTER
     outCells[fi2] = 10;
     const map = new Map([[fi1, fi2], [fi2, fi1]]);
