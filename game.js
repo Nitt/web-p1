@@ -1296,7 +1296,7 @@ function _executeMove(dx, dy) {
       // subsequent gears were placed after it.  If newer gears exist, the player has
       // moved on from that crossing and this is a new forward traversal through the
       // partner teleporter, so a new crossing must be added instead of removing the old one.
-      const retracedIdx = state.gears.findIndex(
+      const retracedIdx = state.gears.findLastIndex(
         g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
       );
       if (retracedIdx >= 0 && retracedIdx === state.gears.length - 1) {
