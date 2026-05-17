@@ -947,23 +947,51 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
   // Sample a point + tangent angle at distance d along the path
   function sample(d) {
     d = Math.max(0, Math.min(d, totalLen));
+
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
-      if (d <= s.cumLen + s.len + 0.001 || i === segs.length - 1) {
+
+      if (d <= s.cumLen + s.len || i === segs.length - 1) {
+
         const t = s.len > 0 ? (d - s.cumLen) / s.len : 0;
+
+        const x = s.x0 + s.dx * t;
+        const y = s.y0 + s.dy * t;
+
         return {
-          x:        s.x0 + s.dx * t,
-          y:        s.y0 + s.dy * t,
-          angleDeg: Math.atan2(s.dy, s.dx) * 180 / Math.PI,
+          x,
+          y,
+          angleDeg: Math.atan2(s.dy, s.dx) * 180 / Math.PI
         };
       }
     }
   }
 
+  function samplePositionOnly(d) {
+    d = Math.max(0, Math.min(d, totalLen));
+
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+
+      if (d <= s.cumLen + s.len + 0.001 || i === segs.length - 1) {
+        const t = s.len > 0 ? (d - s.cumLen) / s.len : 0;
+
+        return {
+          x: s.x0 + s.dx * t,
+          y: s.y0 + s.dy * t,
+        };
+      }
+    }
+
+    // fallback (should never hit)
+    const last = segs[segs.length - 1];
+    return { x: last.x0 + last.dx, y: last.y0 + last.dy };
+  }
+
   function colorStopAt(d) {
-    //const cellDist = _chainLengthTotal - d / cellSize;
-    const cellDist = d / cellSize;
-    let prevUpTo = 0;
+    const cellDist = (d + linkStartDist) / cellSize;
+    const BLEND = 1.0; // cells to cross-fade over at each stop boundary
+    let prevRgb = null, prevUpTo = 0;
     for (const stop of CHAIN_COLOR_STOPS) {
       if (cellDist < stop.upTo) {
         let rgb;
@@ -976,7 +1004,18 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
         } else {
           rgb = _parseColor(stop.color);
         }
+        // Blend smoothly from the previous stop's boundary color into this stop
+        if (prevRgb !== null && cellDist - prevUpTo < BLEND) {
+          rgb = _lerpRgb(prevRgb, rgb, (cellDist - prevUpTo) / BLEND);
+        }
         return _chainColors(rgb);
+      }
+      // Record this stop's color at its far boundary for use as the blend source
+      if (Array.isArray(stop.color)) {
+        const c1 = stop.color[1] != null ? stop.color[1] : stop.color[0];
+        prevRgb = _parseColor(c1);
+      } else {
+        prevRgb = _parseColor(stop.color);
       }
       prevUpTo = stop.upTo;
     }
@@ -989,8 +1028,9 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
   // pixel distance from the player to the start (d=0) of this segment, through
   // any intervening bridges.  Without it, earlier segments anchor to their own
   // start (e.g. a teleporter entry) and appear static while the player moves.
-  const phaseShift = linkStartDist % pitch;
-  const startD     = phaseShift > 0.001 ? (pitch - phaseShift) : 0;
+  const phaseShift = linkStartDist - Math.floor(linkStartDist / pitch) * pitch;
+  const startD = pitch - phaseShift;
+  const safeStartD = (startD < 0 || startD >= pitch) ? 0 : startD;
   const baseIdx    = Math.floor((linkStartDist + startD) / pitch) % 2;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
@@ -999,13 +1039,22 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
     `M ${irx},0 A ${irx},${iry},0,1,1,${-irx},0 A ${irx},${iry},0,1,1,${irx},0 Z`;
 
   const linkTransforms = [];
-  let linkIdx = 0;
-  for (let d = startD; d <= totalLen; d += pitch) {
+
+  const count = Math.ceil((totalLen - safeStartD) / pitch) + 1;
+
+  for (let i = 0; i < count; i++) {
+    const d = safeStartD + i * pitch;
+
     const pt = sample(d);
     if (!pt) break;
-    const parity = ((baseIdx + linkIdx) % 2 + 2) % 2;
-    linkTransforms.push({ transform: `translate(${pt.x},${pt.y}) rotate(${pt.angleDeg})`, parity, d });
-    linkIdx++;
+
+    const parity = ((baseIdx + i) % 2 + 2) % 2;
+
+    linkTransforms.push({
+      transform: `translate(${pt.x},${pt.y}) rotate(${pt.angleDeg})`,
+      parity,
+      d
+    });
   }
 
   function makeLinkEl(transform, isFaceOn, stop) {
