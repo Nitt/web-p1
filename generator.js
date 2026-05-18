@@ -49,7 +49,7 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -88,6 +88,36 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // (which maps to output EMPTY and would let the player slide across the top).
   for (let px = 1; px < pw - 1; px++) {
     if (px !== startX) cells[idx(px, startY)] = G.BLOCK;
+  }
+
+  // ── Forced entry-slide block (tutorial / mechanic introduction) ──
+  // Place a specific block type at a chosen distance in the entry column
+  // before the BFS carver runs, so it is treated as its native type.
+  // All cells between the second tunnel cell and the block are forced to
+  // EMPTY so the player always slides through them and reaches the block.
+  if (entrySlide) {
+    const type = typeof entrySlide === 'string' ? entrySlide : entrySlide.type;
+    let dist;
+    if (entrySlide.dist !== undefined) {
+      dist = entrySlide.dist;
+    } else if (entrySlide.minDist !== undefined) {
+      dist = entrySlide.minDist + Math.floor(rng() * (entrySlide.maxDist - entrySlide.minDist + 1));
+    } else {
+      dist = 3;
+    }
+    // dist is 1-indexed from the boat: dist=1 → grid y=0 (padded y=startY).
+    // Minimum 2 preserves the always-passthrough cell at startY.
+    dist = Math.max(2, Math.min(dist, height));
+    const ey = startY + (dist - 1);  // padded y-coordinate
+    if (ey < ph - 1) {
+      const typeToG = { sticky: G.STICKY, crumble: G.CRUMBLE, block: G.BLOCK };
+      const gType = typeToG[type];
+      if (gType !== undefined) {
+        // Force all intermediate entry-column cells to EMPTY so the player slides through.
+        for (let ey2 = startY + 2; ey2 < ey; ey2++) cells[idx(startX, ey2)] = G.EMPTY;
+        cells[idx(startX, ey)] = gType;
+      }
+    }
   }
 
   // ── State tracking ──
@@ -474,7 +504,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null } = {}) {
   let best           = null;  // best solver-validated candidate
   let bestFallback   = null;  // best unvalidated candidate (used only if no valid one found)
   let bestScore      = Infinity;
@@ -482,7 +512,7 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   const GENEROUS = (width + height) * 4;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 

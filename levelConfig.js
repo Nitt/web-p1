@@ -28,6 +28,16 @@
  * candidates      number
  *   How many random seeds to evaluate before picking the best one.
  *   Higher = better quality but more CPU work (done off-thread).
+ *
+ * entrySlide      { type, dist } | { type, minDist, maxDist } | null
+ *   null        — no forced block in the entry column (default).
+ *   { type, dist }             — place a block of `type` at exact `dist` from
+ *                                the boat (1-indexed; minimum 2).
+ *   { type, minDist, maxDist } — pick a random distance in [minDist, maxDist].
+ *   Supported types: 'sticky', 'crumble', 'block'.
+ *   All cells between the entry tunnel and the forced block are kept empty so
+ *   the player always reaches it on the initial auto-slide.
+ *   Useful for tutorial levels that must teach a specific mechanic on entry.
  */
 export const PROGRESSION = [
   {
@@ -144,5 +154,6 @@ export function getRecipe(levelIndex, levelsSinceKeyDoor, rng = null) {
     useTeleporter: stage.useTeleporter ?? false,
     difficultyTarget,
     candidates:    stage.candidates,
+    entrySlide:    stage.entrySlide ?? null,
   };
 }

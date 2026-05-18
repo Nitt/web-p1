@@ -28,6 +28,8 @@ let boatEl = null;
 let waterlineEl = null;
 let skyEl = null;
 let containerEl = null;
+let diveIndicatorEl = null;
+let moveHintEl = null;
 let _currentLevel = null;
 let _gearHeartsEl = null;
 let _chainBarFillEl = null;
@@ -223,6 +225,9 @@ export function buildGrid(container, level) {
   boatEl.setAttribute('viewBox', '0 0 100 60');
   _drawBoat();
   container.appendChild(boatEl);
+
+  // Clear any leftover dive indicator from the previous level.
+  if (diveIndicatorEl) { diveIndicatorEl.remove(); diveIndicatorEl = null; }
 
   // Initial positioning (deferred one frame so layout is complete)
   requestAnimationFrame(() => _updateBoatAndWaterline(level));
@@ -1148,6 +1153,7 @@ function _updateBoatAndWaterline(level) {
     skyEl.style.height  = skyH  + 'px';
     skyEl.style.background = 'linear-gradient(to bottom, #3a7abd 0%, #6aaee0 45%, #a8d4f0 80%, rgba(168,212,240,0.3) 100%)';
   }
+  if (diveIndicatorEl) _updateDiveIndicator(level);
 }
 
 function _drawBoat() {
@@ -1253,6 +1259,83 @@ function _placeOverlay(el, x, y, level) {
 
 let _goalFollowsPlayer = false;
 export function setGoalFollowsPlayer(v) { _goalFollowsPlayer = v; }
+
+// ─── dive indicator ────────────────────────────────────────────────────────────
+
+export function showDiveIndicator(level) {
+  if (diveIndicatorEl) { diveIndicatorEl.remove(); diveIndicatorEl = null; }
+  if (!containerEl) return;
+
+  diveIndicatorEl = document.createElement('div');
+  diveIndicatorEl.className = 'dive-indicator';
+
+  const arrow = document.createElement('div');
+  arrow.className = 'dive-arrow';
+  arrow.textContent = '▼';
+
+  const hint = document.createElement('div');
+  hint.className = 'dive-hint';
+  hint.textContent = 'Drag down or press ↓ to dive';
+
+  diveIndicatorEl.appendChild(arrow);
+  diveIndicatorEl.appendChild(hint);
+  containerEl.appendChild(diveIndicatorEl);
+
+  requestAnimationFrame(() => _updateDiveIndicator(level));
+}
+
+export function hideDiveIndicator() {
+  if (!diveIndicatorEl) return;
+  diveIndicatorEl.classList.add('hiding');
+  const el = diveIndicatorEl;
+  diveIndicatorEl = null;
+  setTimeout(() => el.remove(), 280);
+}
+
+export function showDiveHint() {
+  if (!diveIndicatorEl) return;
+  const hint = diveIndicatorEl.querySelector('.dive-hint');
+  if (hint) hint.classList.add('visible');
+}
+
+function _updateDiveIndicator(level) {
+  if (!diveIndicatorEl || !gridEl || !containerEl) return;
+  const gridRect      = gridEl.getBoundingClientRect();
+  const containerRect = containerEl.getBoundingClientRect();
+  const cellW = gridRect.width  / level.width;
+  const cellH = gridRect.height / level.height;
+  const gLeft = gridRect.left - containerRect.left;
+  const gTop  = gridRect.top  - containerRect.top;
+  // Center on the first grid cell in the entry column (row 0, directly below the boat).
+  diveIndicatorEl.style.left     = (gLeft + (level.start.x + 0.5) * cellW) + 'px';
+  diveIndicatorEl.style.top      = (gTop + cellH * 1.5) + 'px';
+  diveIndicatorEl.style.fontSize = Math.round(cellW * 0.72) + 'px';
+}
+
+// ─── move hint (after-dive inactivity nudge) ───────────────────────────────────
+
+export function showMoveHint() {
+  if (moveHintEl || !containerEl || !gridEl) return;
+  const gridRect      = gridEl.getBoundingClientRect();
+  const containerRect = containerEl.getBoundingClientRect();
+  const cx = gridRect.left - containerRect.left + gridRect.width  * 0.5;
+  const cy = gridRect.top  - containerRect.top  + gridRect.height * 0.68;
+  moveHintEl = document.createElement('div');
+  moveHintEl.className = 'move-hint';
+  moveHintEl.textContent = 'Drag in any direction or press an arrow key to move';
+  moveHintEl.style.left = cx + 'px';
+  moveHintEl.style.top  = cy + 'px';
+  containerEl.appendChild(moveHintEl);
+  requestAnimationFrame(() => { if (moveHintEl) moveHintEl.classList.add('visible'); });
+}
+
+export function hideMoveHint() {
+  if (!moveHintEl) return;
+  moveHintEl.classList.add('hiding');
+  const el = moveHintEl;
+  moveHintEl = null;
+  setTimeout(() => el.remove(), 320);
+}
 
 function _setOverlayPixel(el, cx, cy) {
   if (el === playerEl) {

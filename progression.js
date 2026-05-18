@@ -47,6 +47,7 @@ export function pregenNext(seed, id, recipe) {
     useKeyDoor:       recipe.useKeyDoor,
     useTeleporter:    recipe.useTeleporter,
     difficultyTarget: recipe.difficultyTarget,
+    entrySlide:       recipe.entrySlide ?? null,
   });
 }
 

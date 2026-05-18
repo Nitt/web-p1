@@ -15,10 +15,10 @@ const DIRS = [
  * @param {HTMLElement} dpadEl       - container holding the four d-pad buttons
  * @param {(dx:number, dy:number) => void} onMove
  */
-export function initInput(swipeTarget, dpadEl, onMove) {
+export function initInput(swipeTarget, dpadEl, onMove, onNoInput = null) {
   _initKeyboard(onMove);
-  _initSwipe(swipeTarget, onMove);
-  _initMouseDrag(onMove);
+  _initSwipe(swipeTarget, onMove, onNoInput);
+  _initMouseDrag(onMove, onNoInput);
   _initDpad(dpadEl, onMove);
 }
 
@@ -58,7 +58,7 @@ function _directionFromDelta(dx, dy) {
 
 // ─── touch swipe ─────────────────────────────────────────────────────────────
 
-function _initSwipe(el, onMove) {
+function _initSwipe(el, onMove, onNoInput) {
   let startX = 0;
   let startY = 0;
 
@@ -72,12 +72,13 @@ function _initSwipe(el, onMove) {
     const t = e.changedTouches[0];
     const dir = _directionFromDelta(t.clientX - startX, t.clientY - startY);
     if (dir) onMove(dir.dx, dir.dy);
+    else if (onNoInput) onNoInput();
   }, { passive: true });
 }
 
 // ─── mouse drag ──────────────────────────────────────────────────────────────
 
-function _initMouseDrag(onMove) {
+function _initMouseDrag(onMove, onNoInput) {
   let startX = 0;
   let startY = 0;
   let dragging = false;
@@ -93,6 +94,7 @@ function _initMouseDrag(onMove) {
     dragging = false;
     const dir = _directionFromDelta(e.clientX - startX, e.clientY - startY);
     if (dir) onMove(dir.dx, dir.dy);
+    else if (onNoInput) onNoInput();
   });
 
   // Cancel drag if mouse leaves the window

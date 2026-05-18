@@ -1,7 +1,7 @@
 import { slidePlayer, buildToggleMap, buildDeadEndMap, canReachGoalWithBudget, CellType, onewayAllows } from './puzzle.js';
 import { solve } from './solver.js';
 import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -20,6 +20,13 @@ let _deadEndTimer = null;
 
 // Set to true while auto-play is running; cleared on cancel or level load.
 let _autoPlaying = false;
+// Set to true when autoPlay() is called while the player is still in the boat;
+// cleared once the dive animation completes and autoPlay() re-fires.
+let _pendingAutoPlay = false;
+// Tracks whether the dive hint was triggered for this level.
+let _diveHintShown = false;
+// Inactivity timer that shows the move hint after the player dives without further input.
+let _moveHintTimer = null;
 
 // Incremented every time loadLevel() is called — lets batch playthrough await the next level.
 let _levelLoadCount = 0;
@@ -73,6 +80,8 @@ const state = {
   levelsSinceKeyDoor:   0,      // levels elapsed since last key/door level appeared
   // One-way double-press backtrack.
   pendingOnewayBreak:   null,   // { dx, dy, owx, owy } — set after first blocked-by-oneway press
+  // True while the player is in the boat waiting to dive; cleared on first downward move.
+  waitingForDive:       false,
 };
 
 // ─── teleporter test level (?tp in URL) ──────────────────────────────────────
@@ -130,7 +139,9 @@ export function init() {
     if (e.key === '`') skipLevel();
   });
 
-  initInput(gridContainer, dpadEl, handleMove);
+  initInput(gridContainer, dpadEl, handleMove, () => {
+    if (state.waitingForDive) { _diveHintShown = true; showDiveHint(); }
+  });
 
   new ResizeObserver(() => {
     if (state.level && !state.isMoving) {
@@ -204,8 +215,12 @@ function loadLevel(level) {
   const nextRecipe = getRecipe(state.nextId, state.levelsSinceKeyDoor);
   pregenNext(state.nextSeed, state.nextId, nextRecipe);
 
-  // Auto-slide the diver down from the surface into the water.
-  _executeMove(0, 1);
+  // Show the dive indicator and wait for the player to manually dive in.
+  state.waitingForDive = true;
+  _diveHintShown = false;
+  if (_moveHintTimer) { clearTimeout(_moveHintTimer); _moveHintTimer = null; }
+  hideMoveHint();
+  showDiveIndicator(level);
 }
 
 function _nextLevel() {
@@ -233,6 +248,23 @@ function _nextLevel() {
 // ─── move dispatcher ──────────────────────────────────────────────────────────
 function handleMove(dx, dy) {
   if (state.won) return;
+
+  // Cancel the post-dive inactivity timer and dismiss the move hint on any input.
+  if (_moveHintTimer) { clearTimeout(_moveHintTimer); _moveHintTimer = null; }
+  hideMoveHint();
+
+  if (state.waitingForDive) {
+    if (dy === 1) {
+      // Player is diving in — clear the waiting state and proceed normally.
+      state.waitingForDive = false;
+      hideDiveIndicator();
+    } else {
+      // Any non-down input while in the boat: show a hint and eat the input.
+      _diveHintShown = true;
+      showDiveHint();
+      return;
+    }
+  }
 
   if (state.isMoving) {
     // Buffer this input; overwrite any earlier queued move.
@@ -555,9 +587,33 @@ export function getCurrentLevel() {
   return state.level;
 }
 
+// Force the dive immediately (used by auto-play and batch test to skip the waiting state).
+function _forceDive() {
+  if (!state.waitingForDive) return;
+  state.waitingForDive = false;
+  hideDiveIndicator();
+  _executeMove(0, 1);
+}
+
 /** Start auto-playing a solution to the current level. */
 export function autoPlay() {
   if (_autoPlaying || state.won) return;
+
+  // If the player is still in the boat, force the dive first, then retry after animation.
+  if (state.waitingForDive) {
+    if (_pendingAutoPlay) return;
+    _pendingAutoPlay = true;
+    _forceDive();
+    function _waitAndRetry() {
+      if (!_pendingAutoPlay) return; // was cancelled via stopAutoPlay
+      if (state.isMoving) { setTimeout(_waitAndRetry, 50); return; }
+      _pendingAutoPlay = false;
+      autoPlay();
+    }
+    setTimeout(_waitAndRetry, 50);
+    return;
+  }
+
   const solverStart = { ...state.playerPos };
   const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, Math.max(0, state.level.effectiveChainLength - _chainLengthUsed()), state.level.effectiveCogs, { dx: 0, dy: 1 });
   if (!moves) {
@@ -579,6 +635,7 @@ export function autoPlay() {
 /** Cancel an in-progress auto-play. */
 export function stopAutoPlay() {
   _autoPlaying = false;
+  _pendingAutoPlay = false;
 }
 
 /**
@@ -620,6 +677,15 @@ export async function runBatchPlaythrough() {
       const prevCount = _levelLoadCount;
       loadLevel(level);
       await _waitForNewLevel(prevCount);
+
+      // Force the initial dive; _waitForNewLevel resolves before it happens now.
+      if (state.waitingForDive) {
+        _forceDive();
+        await new Promise(resolve => {
+          function check() { if (!state.isMoving) { resolve(); return; } setTimeout(check, 20); }
+          setTimeout(check, 20);
+        });
+      }
 
       if (_batchStopped) break;
 
@@ -1340,11 +1406,17 @@ function _executeMove(dx, dy) {
     },
   } : null;
 
+  const _comingFromBoat = state.playerPos.y < 0;
+
   animatePlayer(state.playerPos, moveTarget, state.level, () => {
     if (moveToken !== _moveToken) return;
     state.playerPos = { x: moveTarget.x, y: moveTarget.y };
     state.isMoving  = false;
     playLand();
     _onPlayerLanded(moveTarget, dx, dy, ctx);
+    // If the player just dived AND needed the hint, schedule an inactivity nudge.
+    if (_comingFromBoat && _diveHintShown && !_batchFast) {
+      _moveHintTimer = setTimeout(showMoveHint, 3500);
+    }
   }, teleportInfo);
 }

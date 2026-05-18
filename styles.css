@@ -435,6 +435,69 @@ body.chain-debug .player {
 /* Boat needs overflow:visible to render above the container edge */
 .boat-svg { overflow: visible; }
 
+/* ─── dive indicator ──────────────────────────────────────────────────────── */
+
+.dive-indicator {
+  position: absolute;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  transition: opacity 0.25s ease;
+}
+
+.dive-indicator.hiding { opacity: 0; }
+
+.dive-arrow {
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
+  line-height: 1;
+  animation: dive-bounce 1s ease-in-out infinite;
+}
+
+.dive-hint {
+  margin-top: 0.25em;
+  font-size: 0.55em;
+  font-family: inherit;
+  color: rgba(255, 255, 255, 0.92);
+  text-align: center;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 0.18em 0.55em;
+  border-radius: 5px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.dive-hint.visible { opacity: 1; }
+
+@keyframes dive-bounce {
+  0%, 100% { transform: translateY(0);       opacity: 0.55; }
+  50%       { transform: translateY(0.38em); opacity: 1;    }
+}
+
+/* ─── move hint (shown after dive if player is idle) ─────────────────────── */
+
+.move-hint {
+  position: absolute;
+  pointer-events: none;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.48);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 0.78rem;
+  padding: 0.35em 0.85em;
+  border-radius: 7px;
+  white-space: nowrap;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.move-hint.visible { opacity: 1; }
+.move-hint.hiding  { opacity: 0; }
+
 /* ─── d-pad ──────────────────────────────────────────────────────────────── */
 
 #dpad {
