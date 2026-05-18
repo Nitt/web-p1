@@ -796,7 +796,7 @@ function _redrawChain(px, py) {
     if (seg.length < 2) continue;
     const lerpT      = si === segments.length - 1 ? gearLerpT : 1;
     const chainPoints = _buildChainPath([...seg].reverse(), COG_R, lerpT);
-    _drawChainLinks(chainPoints, NS, scale, cellSize, segOffsets[si]);
+    _drawChainLinks(chainPoints, NS, scale, cellSize, segOffsets[si], si === segments.length);
   }
 
   // ── Draw teleporter bridges ────────────────────────────────────────────────
@@ -922,7 +922,7 @@ function _drawTeleporterPortal(cx, cy, NS, scale) {
  * the next perpendicular) to mimic the look of a real linked chain.
  * When _chainSpinning is true the links scroll at CHAIN_LINK_SPEED px/ms.
  */
-function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0) {
+function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0, isLastSeg = false) {
   if (points.length < 2) return;
 
   const orx  = CHAIN_LINK_OUTER_RX * scale;
@@ -1009,8 +1009,11 @@ function _drawChainLinks(points, NS, scale = 1, cellSize = 1, linkStartDist = 0)
   // start (e.g. a teleporter entry) and appear static while the player moves.
   const phaseShift = linkStartDist - Math.floor(linkStartDist / pitch) * pitch;
   const startD = pitch - phaseShift;
-  const safeStartD = (startD < 0 || startD >= pitch) ? 0 : startD;
-  //const baseIdx    = Math.floor((linkStartDist + safeStartD) / pitch) % 2;
+  // For the last segment (player end) clamp startD=pitch → 0 so the first link sits right at
+  // the player.  For earlier segments (fixed, teleporter-entry side) do NOT clamp: keeping
+  // startD=pitch avoids a full-pitch position jump on the first frame of movement after a
+  // teleport crossing, when linkStartDist transitions from exactly 0 to a tiny positive value.
+  const safeStartD = startD < 0 ? 0 : (isLastSeg && startD >= pitch) ? 0 : startD;
   const baseIdx = Math.floor(linkStartDist / pitch) % 2;
 
   // Face-on link: hollow oval ring with inner hole (fill-rule evenodd)
