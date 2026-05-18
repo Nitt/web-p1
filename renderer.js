@@ -52,6 +52,7 @@ let _playerInTeleport = false;
 // During a retrace flash (second half), holds grid coords of a visual-only bridge that
 // keeps the teleporter visually connected until the player finishes fading in at the exit.
 let _flashRetraceBridge = null;
+let _jerkAnchorPx = null;  // extra chain point held fixed during jerk, cleared when jerk ends
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
@@ -418,9 +419,10 @@ function _animateChainJerk(endPx, { dx, dy }, level, token) {
   const cellSize = gridEl.getBoundingClientRect().width / level.width;
   const A        = cellSize * 0.35;
   const startTime = performance.now();
+  _jerkAnchorPx = endPx;
 
   function frame(now) {
-    if (token !== _playerAnimToken) { return; }
+    if (token !== _playerAnimToken) { _jerkAnchorPx = null; return; }
     const t      = Math.min((now - startTime) / JERK_MS, 1);
     const offset = A * Math.exp(-5 * t) * Math.sin(Math.PI * 2 * 1.2 * t);
     _setOverlayPixel(playerEl, endPx.x + dx * offset, endPx.y + dy * offset);
@@ -428,6 +430,7 @@ function _animateChainJerk(endPx, { dx, dy }, level, token) {
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
+      _jerkAnchorPx = null;
       _setOverlayPixel(playerEl, endPx.x, endPx.y);
       if (_chainState) _redrawChain(endPx.x, endPx.y);
     }
@@ -791,7 +794,11 @@ function _redrawChain(px, py) {
   }
 
   // Append player pixel to the last segment — unless mid-flash (player invisible at entry).
-  if (!_playerInTeleport) curSeg.push({ x: px, y: py });
+  // During a jerk, insert the anchor (stop position) so only the short jerk segment moves.
+  if (!_playerInTeleport) {
+    if (_jerkAnchorPx) curSeg.push({ x: _jerkAnchorPx.x, y: _jerkAnchorPx.y });
+    curSeg.push({ x: px, y: py });
+  }
   segments.push(curSeg);
 
   // During a retrace flash, keep a visual bridge from entry→exit so the chain
@@ -929,8 +936,12 @@ function _redrawChain(px, py) {
       }
     }
     // Last segment: use pixel distance for mid-move smoothness.
-    const anchorPx = lastSeg.length >= 2 ? lastSeg[lastSeg.length - 2] : lastSeg[0];
-    if (!_playerInTeleport) used += Math.hypot(px - anchorPx.x, py - anchorPx.y) / cellSize;
+    // During a jerk, _jerkAnchorPx sits between the real last-gear and the offset player,
+    // so index back one extra step and use the stop position as the endpoint.
+    const barEndPx   = _jerkAnchorPx ?? { x: px, y: py };
+    const anchorIdx  = _jerkAnchorPx ? lastSeg.length - 3 : lastSeg.length - 2;
+    const anchorPx   = anchorIdx >= 0 ? lastSeg[anchorIdx] : lastSeg[0];
+    if (!_playerInTeleport) used += Math.hypot(barEndPx.x - anchorPx.x, barEndPx.y - anchorPx.y) / cellSize;
     const remaining = Math.max(0, 1 - used / _chainLengthTotal);
     _chainBarFillEl.style.width = `${remaining * 100}%`;
   }
