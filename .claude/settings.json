@@ -16,7 +16,8 @@
       "Read(//usr/bin/**)",
       "Bash(npx --yes acorn --ecma2020 --module /Users/emil/Documents/GitHub/web-p1/generator.js)",
       "Bash(ls /usr/local/lib/node_modules 2>/dev/null; ls ~/.nvm/versions 2>/dev/null; ls /opt/homebrew/bin/node 2>/dev/null)",
-      "Read(//Users/emil/.nvm/**)"
+      "Read(//Users/emil/.nvm/**)",
+      "Bash(awk '/^function _executeMove/,/^\\\\}/' /Users/emil/Documents/GitHub/web-p1/game.js)"
     ]
   }
 }

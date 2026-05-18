@@ -1,7 +1,7 @@
 import { slidePlayer, buildToggleMap, buildDeadEndMap, canReachGoalWithBudget, CellType, onewayAllows } from './puzzle.js';
 import { solve } from './solver.js';
 import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -1025,6 +1025,12 @@ function _flushQueuedMove() {
   }
 }
 
+function _playBlockedWithJerk(dx, dy) {
+  playBlocked();
+  _scheduleDeadEndCheck();
+  if (!_batchFast) animateChainJerkInPlace(state.playerPos, { dx, dy }, state.level);
+}
+
 function _tryOnewayBacktrack(target, dx, dy, didMove) {
   if (!target.blockedByOneway || didMove) return false;
   const { x: owx, y: owy } = target.blockedByOneway;
@@ -1361,8 +1367,7 @@ function _executeMove(dx, dy) {
 
   if (!didMove && !hasCrumble) {
     state.pendingOnewayBreak = null;
-    playBlocked();
-    _scheduleDeadEndCheck();
+    _playBlockedWithJerk(dx, dy);
     return;
   }
   state.pendingOnewayBreak = null;
@@ -1403,13 +1408,12 @@ function _executeMove(dx, dy) {
   if (moveTarget.teleportCrossing && _batchViolations) _batchViolations.teleportUsed = true;
 
   if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
-    playBlocked();
-    _scheduleDeadEndCheck();
+    _playBlockedWithJerk(dx, dy);
     return;
   }
 
   const ctx = _buildDepartureCtx(moveTarget, dx, dy);
-  if (ctx === null) return;
+  if (ctx === null) { _playBlockedWithJerk(dx, dy); return; }
 
   state.isMoving = true;
   playSlide();
@@ -1454,5 +1458,5 @@ function _executeMove(dx, dy) {
     if (_comingFromBoat && _diveHintShown && !_batchFast) {
       _moveHintTimer = setTimeout(showMoveHint, 3500);
     }
-  }, teleportInfo, isChainCapped && !tc ? { dx, dy } : null);
+  }, teleportInfo, !tc ? { dx, dy } : null);
 }

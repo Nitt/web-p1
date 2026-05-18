@@ -251,9 +251,9 @@ export function placePlayer(pos, level) {
  *   When non-null, the move crosses a teleporter.  The animation plays in three phases:
  *   slide to entry → flash out/in (calling onTeleportCrossing at the midpoint) → slide to to.
  */
-export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
+export function animatePlayer(from, to, level, onDone, teleportInfo = null, jerkDir = null) {
   if (!teleportInfo) {
-    _animateSlide(from, to, level, true, onDone);
+    _animateSlide(from, to, level, true, onDone, jerkDir);
     return;
   }
 
@@ -372,7 +372,8 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null) {
 }
 
 // Internal single-phase slide used by animatePlayer (non-teleport) and win/backtrack animations.
-function _animateSlide(from, to, level, manageTailSpin, onDone) {
+// jerkDir: optional {dx,dy} — if set, plays a chain-snap bounce at the end before calling onDone.
+function _animateSlide(from, to, level, manageTailSpin, onDone, jerkDir = null) {
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
   if (steps === 0) { onDone(); return; }
 
@@ -395,10 +396,48 @@ function _animateSlide(from, to, level, manageTailSpin, onDone) {
       requestAnimationFrame(frame);
     } else {
       if (manageTailSpin) _tailGearSpins = true;
-      onDone();
+      if (jerkDir) {
+        // Capture token before onDone — onDone clears isMoving and may flush a queued
+        // move, which bumps _playerAnimToken and automatically cancels the jerk.
+        const jerkToken = _playerAnimToken;
+        onDone();
+        _animateChainJerk(_cellPixel(to.x, to.y, level), jerkDir, level, jerkToken);
+      } else {
+        onDone();
+      }
     }
   }
   requestAnimationFrame(frame);
+}
+
+// Fire-and-forget bounce: player lurches forward then springs back, chain follows.
+// token is passed explicitly so the caller controls when the jerk is cancelled.
+// A new animatePlayer call bumps _playerAnimToken; the next frame sees the mismatch and exits.
+function _animateChainJerk(endPx, { dx, dy }, level, token) {
+  const JERK_MS  = 260 * _speedMult;
+  const cellSize = gridEl.getBoundingClientRect().width / level.width;
+  const A        = cellSize * 0.35;
+  const startTime = performance.now();
+
+  function frame(now) {
+    if (token !== _playerAnimToken) { return; }
+    const t      = Math.min((now - startTime) / JERK_MS, 1);
+    const offset = A * Math.exp(-5 * t) * Math.sin(Math.PI * 2 * 1.2 * t);
+    _setOverlayPixel(playerEl, endPx.x + dx * offset, endPx.y + dy * offset);
+    if (_chainState) _redrawChain(endPx.x + dx * offset, endPx.y + dy * offset);
+    if (t < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      _setOverlayPixel(playerEl, endPx.x, endPx.y);
+      if (_chainState) _redrawChain(endPx.x, endPx.y);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+/** Fire-and-forget in-place jerk at `pos` in direction `dir`. No isMoving guard needed. */
+export function animateChainJerkInPlace(pos, dir, level) {
+  _animateChainJerk(_cellPixel(pos.x, pos.y, level), dir, level, _playerAnimToken);
 }
 
 /**
