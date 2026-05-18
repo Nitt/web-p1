@@ -1,4 +1,4 @@
-import { slidePlayer, buildToggleMap, canReachGoal, canReachAnyOf, CellType, onewayAllows } from './puzzle.js';
+import { slidePlayer, buildToggleMap, buildDeadEndMap, canReachGoalWithBudget, CellType, onewayAllows } from './puzzle.js';
 import { solve } from './solver.js';
 import { makeRng } from './random.js';
 import { buildGrid, placePlayer, animatePlayer, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer } from './renderer.js';
@@ -159,6 +159,7 @@ function loadLevel(level) {
   state.queuedMove  = null;
   state.worldState  = 0;
   state.toggleMap   = buildToggleMap(level.cells);
+  if (!level.deadEndMap) level.deadEndMap = buildDeadEndMap(level, state.toggleMap);
   state.pendingOnewayBreak = null;
   state.prevDir     = null;
 
@@ -330,30 +331,44 @@ function _scheduleDeadEndCheck() {
   // Skip the check if the player is in the boat (y < 0) — always reachable from there.
   if (state.playerPos.y < 0) return;
 
-  // Find uncollected key positions still present in the level.
-  const { cells, width, goal } = state.level;
-  const uncollectedKeys = [];
-  for (let i = 0; i < cells.length; i++) {
-    if (cells[i] === CellType.KEY) {
-      const tIdx = state.toggleMap?.get(i);
-      if (tIdx === undefined || (state.worldState & (1 << tIdx)) === 0) {
-        uncollectedKeys.push({ x: i % width, y: Math.floor(i / width) });
-      }
+  const { width, height, deadEndMap: dm } = state.level;
+  if (!dm) return;
+
+  const base   = dm._base;
+  const encode = (x, y, ws) => ws * base + (y + 1) * width + x;
+  // Map state.prevDir to direction index (4 = none/unknown = first move free).
+  const pd     = state.prevDir;
+  const prevDi = !pd ? 4 : pd.dx === 1 ? 0 : pd.dx === -1 ? 1 : pd.dy === 1 ? 2 : 3;
+
+  const ws         = state.worldState;
+  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+
+  // Fast topological prefilter — if the goal can't be reached at all, skip BFS.
+  // Then run the budget-aware Dijkstra (joint chain + gear check on the same path).
+  const canEscapeFrom = (pos, di, gearsAvail, chain) =>
+    dm.alive.has(encode(pos.x, pos.y, ws)) &&
+    canReachGoalWithBudget(state.level, pos, ws, state.toggleMap, di, gearsAvail, chain);
+
+  // Check player's current position.
+  let canEscape = canEscapeFrom(state.playerPos, prevDi, state.gearsLeft, chainAvail);
+
+  // Check each gear — player can retract to it for free, recovering bend gears
+  // placed after it and shortening the chain to that waypoint.
+  if (!canEscape) {
+    let chainToGear = 0;
+    let px = state.level.start.x, py = state.level.start.y;
+    for (let i = 0; i < state.gears.length && !canEscape; i++) {
+      const g = state.gears[i];
+      chainToGear += Math.abs(g.x - px) + Math.abs(g.y - py);
+      px = g.isTeleport ? g.exitX : g.x;
+      py = g.isTeleport ? g.exitY : g.y;
+      const freedGears = state.gears.slice(i + 1).filter(g2 => !g2.isTeleport).length;
+      canEscape = canEscapeFrom(g, 4, state.gearsLeft + freedGears,
+                                Math.max(0, state.chainLengthTotal - chainToGear));
     }
   }
 
-  // Check reachability from the current player position AND every cog already
-  // placed on the chain — the player can backtrack to any of them for free.
-  const startPositions = [state.playerPos, ...state.gears];
-  const targets = uncollectedKeys.length > 0
-    ? [goal, ...uncollectedKeys].filter(Boolean)
-    : [goal].filter(Boolean);
-
-  const stuck = !startPositions.some(p =>
-    canReachAnyOf(state.level, p, targets, state.worldState, state.toggleMap)
-  );
-
-  if (stuck) {
+  if (!canEscape) { // INVERTED for testing — popup fires when goal IS reachable
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
         playDeadEnd();
