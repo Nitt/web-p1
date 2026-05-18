@@ -70,5 +70,5 @@ export function getPendingRecipe() {
  * candidate count.  Used when the worker result is unavailable.
  */
 export function generateFallback(seed, id, recipe) {
-  return generateHardestLevel(9, 9, { seed, id, ...recipe, candidates: 20 });
+  return generateHardestLevel(9, 9, { seed, id, ...recipe });
 }

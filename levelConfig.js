@@ -44,7 +44,7 @@ export const PROGRESSION = [
     weights:          { sticky: 0.18, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
     keyDoor:          false,
     difficultyTarget: [4, 8],
-    candidates:       80,
+    candidates:       20,
   },
   {
     // ── walls enter ── dead-ends and corridors
@@ -52,7 +52,7 @@ export const PROGRESSION = [
     weights:          { sticky: 0.10, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
     keyDoor:          false,
     difficultyTarget: [9, 16],
-    candidates:       120,
+    candidates:       25,
   },
   {
     // ── one-ways enter ── directional constraints
@@ -60,7 +60,7 @@ export const PROGRESSION = [
     weights:          { sticky: 0.08, block: 0.10, oneway: 0.04, crumble: 0.00, empty: 1.0 },
     keyDoor:          false,
     difficultyTarget: [16, 24],
-    candidates:       180,
+    candidates:       30,
   },
   {
     // ── crumble enters ── topology-changing blocks
@@ -69,7 +69,7 @@ export const PROGRESSION = [
     keyDoor:          false,
     useTeleporter:    true,
     difficultyTarget: [22, 30],
-    candidates:       240,
+    candidates:       35,
   },
   {
     // ── everything ── full chaos, key/door cycles
@@ -78,7 +78,7 @@ export const PROGRESSION = [
     keyDoor:          { minInterval: 4, maxInterval: 15 },
     useTeleporter:    true,
     difficultyTarget: null,   // pick hardest
-    candidates:       300,
+    candidates:       40,
   },
 ];
 
