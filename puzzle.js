@@ -261,7 +261,10 @@ export function canReachGoalWithBudget(level, startPos, worldState, toggleMap, s
 
       for (const {dx, dy, di: nd} of DIRS) {
         const r   = slidePlayer(level, {x, y}, dx, dy, toggleMap, ws, null, chainAvail - c);
-        const len = Math.abs(r.x - x) + Math.abs(r.y - y);
+        const tc  = r.teleportCrossing;
+        const len = tc
+          ? Math.abs(tc.entryX - x) + Math.abs(tc.entryY - y) + Math.abs(r.x - tc.exitX) + Math.abs(r.y - tc.exitY)
+          : Math.abs(r.x - x) + Math.abs(r.y - y);
         const ng  = g + (di !== 4 && nd !== di ? 1 : 0); // bend costs 1 gear
         if (ng > G) continue;
 

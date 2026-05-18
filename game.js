@@ -377,12 +377,16 @@ function _scheduleDeadEndCheck() {
 
   // Fast topological prefilter — if the goal can't be reached at all, skip BFS.
   // Then run the budget-aware Dijkstra (joint chain + gear check on the same path).
-  const canEscapeFrom = (pos, di, gearsAvail, chain) =>
-    dm.alive.has(encode(pos.x, pos.y, ws)) &&
-    canReachGoalWithBudget(state.level, pos, ws, state.toggleMap, di, gearsAvail, chain);
+  const canEscapeFrom = (pos, di, gearsAvail, chain, label) => {
+    const alive = dm.alive.has(encode(pos.x, pos.y, ws));
+    if (!alive) { console.log(`  ${label}: PREFILTER dead (${pos.x},${pos.y}) ws=${ws}`); return false; }
+    const bfs = canReachGoalWithBudget(state.level, pos, ws, state.toggleMap, di, gearsAvail, chain);
+    if (!bfs) console.log(`  ${label}: BFS false (${pos.x},${pos.y}) di=${di} gears=${gearsAvail} chain=${chain}`);
+    return bfs;
+  };
 
   // Check player's current position.
-  let canEscape = canEscapeFrom(state.playerPos, prevDi, state.gearsLeft, chainAvail);
+  let canEscape = canEscapeFrom(state.playerPos, prevDi, state.gearsLeft, chainAvail, 'player');
 
   // Check each gear — player can retract to it for free, recovering bend gears
   // placed after it and shortening the chain to that waypoint.
@@ -396,11 +400,42 @@ function _scheduleDeadEndCheck() {
       py = g.isTeleport ? g.exitY : g.y;
       const freedGears = state.gears.slice(i + 1).filter(g2 => !g2.isTeleport).length;
       canEscape = canEscapeFrom(g, 4, state.gearsLeft + freedGears,
-                                Math.max(0, state.chainLengthTotal - chainToGear));
+                                Math.max(0, state.chainLengthTotal - chainToGear), `gear${i}`);
+    }
+
+    // After the gear loop, px/py is the outgoing position of the last gear (or the
+    // boat if there are no gears), and chainToGear is the chain consumed up to there.
+    // The player can also retract mid-segment to any stopping surface (e.g. a sticky
+    // cell) between that anchor and their current position — the gear-only loop misses
+    // these because they have no gear waypoint.  Slide backward from the player toward
+    // the anchor and check each intermediate stop.
+    if (!canEscape) {
+      const rdx = Math.sign(px - state.playerPos.x);
+      const rdy = Math.sign(py - state.playerPos.y);
+      if (rdx !== 0 || rdy !== 0) {
+        let cx = state.playerPos.x, cy = state.playerPos.y;
+        while (!canEscape) {
+          const r = slidePlayer(state.level, { x: cx, y: cy }, rdx, rdy, state.toggleMap, ws);
+          if (r.x === cx && r.y === cy) break; // blocked, no movement
+          // Stop before we reach or overshoot the anchor (it was already checked above).
+          if ((rdx < 0 && r.x <= px) || (rdx > 0 && r.x >= px) ||
+              (rdy < 0 && r.y <= py) || (rdy > 0 && r.y >= py)) break;
+          const chainHere = chainToGear + Math.abs(r.x - px) + Math.abs(r.y - py);
+          canEscape = canEscapeFrom(r, 4, state.gearsLeft,
+                                    Math.max(0, state.chainLengthTotal - chainHere));
+          cx = r.x; cy = r.y;
+        }
+      }
     }
   }
 
   if (!canEscape) { // INVERTED for testing — popup fires when goal IS reachable
+    console.group('%c[dead-end check fired]', 'color:red');
+    console.log('Player:', JSON.stringify(state.playerPos), '  prevDir:', JSON.stringify(state.prevDir));
+    console.log('worldState:', state.worldState.toString(2).padStart(8,'0'), '  chainAvail:', Math.max(0, state.chainLengthTotal - _chainLengthUsed()), '/', state.chainLengthTotal, '  gearsLeft:', state.gearsLeft, '/', state.totalGears);
+    console.log('Goal:', JSON.stringify(state.level.goal), '  toggleMap.size:', state.toggleMap?.size);
+    console.log('Gears:', JSON.stringify(state.gears));
+    console.groupEnd();
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
         playDeadEnd();
@@ -1361,7 +1396,8 @@ function _executeMove(dx, dy) {
     : Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
   if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
-  const moveTarget = (chainWouldExceed && !_batchBypassConstraints)
+  const isChainCapped = chainWouldExceed && !_batchBypassConstraints;
+  const moveTarget = isChainCapped
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
   if (moveTarget.teleportCrossing && _batchViolations) _batchViolations.teleportUsed = true;
@@ -1418,5 +1454,5 @@ function _executeMove(dx, dy) {
     if (_comingFromBoat && _diveHintShown && !_batchFast) {
       _moveHintTimer = setTimeout(showMoveHint, 3500);
     }
-  }, teleportInfo);
+  }, teleportInfo, isChainCapped && !tc ? { dx, dy } : null);
 }
