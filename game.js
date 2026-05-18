@@ -377,11 +377,15 @@ function _scheduleDeadEndCheck() {
 
   // Fast topological prefilter — if the goal can't be reached at all, skip BFS.
   // Then run the budget-aware Dijkstra (joint chain + gear check on the same path).
+  const checkLog = [];
   const canEscapeFrom = (pos, di, gearsAvail, chain, label) => {
     const alive = dm.alive.has(encode(pos.x, pos.y, ws));
-    if (!alive) { console.log(`  ${label}: PREFILTER dead (${pos.x},${pos.y}) ws=${ws}`); return false; }
+    if (!alive) {
+      checkLog.push(`  ${label}: PREFILTER dead  pos=(${pos.x},${pos.y}) ws=${ws}`);
+      return false;
+    }
     const bfs = canReachGoalWithBudget(state.level, pos, ws, state.toggleMap, di, gearsAvail, chain);
-    if (!bfs) console.log(`  ${label}: BFS false (${pos.x},${pos.y}) di=${di} gears=${gearsAvail} chain=${chain}`);
+    checkLog.push(`  ${label}: BFS=${bfs}  pos=(${pos.x},${pos.y}) di=${di} gears=${gearsAvail} chain=${chain}`);
     return bfs;
   };
 
@@ -395,12 +399,44 @@ function _scheduleDeadEndCheck() {
     let px = state.level.start.x, py = state.level.start.y;
     for (let i = 0; i < state.gears.length && !canEscape; i++) {
       const g = state.gears[i];
-      chainToGear += Math.abs(g.x - px) + Math.abs(g.y - py);
+      const prevPx = px, prevPy = py; // anchor before this gear
+      chainToGear += Math.abs(g.x - prevPx) + Math.abs(g.y - prevPy);
       px = g.isTeleport ? g.exitX : g.x;
       py = g.isTeleport ? g.exitY : g.y;
       const freedGears = state.gears.slice(i + 1).filter(g2 => !g2.isTeleport).length;
-      canEscape = canEscapeFrom(g, 4, state.gearsLeft + freedGears,
+      // +1: landing on this gear triggers the pending-cog pop, refunding gear[i] itself.
+      const cogPopBonus = g.isTeleport ? 0 : 1;
+      const gearsForGear = state.gearsLeft + freedGears + cogPopBonus;
+      checkLog.push(`  gear${i}: chainToGear=${chainToGear} freedGears=${freedGears} cogPop=${cogPopBonus}`);
+      canEscape = canEscapeFrom(g, 4, gearsForGear,
                                 Math.max(0, state.chainLengthTotal - chainToGear), `gear${i}`);
+
+      // After retracting to gear[i], the player can continue retracting toward the
+      // previous anchor (prevPx, prevPy).  Each step backward SHORTENS the physical
+      // chain (unlike forward slides), giving more chainAvail than the gear-position
+      // BFS can model.  Check every sticky stop along that backward path.
+      if (!canEscape && !g.isTeleport) {
+        const rdxB = Math.sign(prevPx - g.x);
+        const rdyB = Math.sign(prevPy - g.y);
+        if (rdxB !== 0 || rdyB !== 0) {
+          let bx = g.x, by = g.y;
+          // Chain consumed from boat through all gears before this one.
+          const chainToPrevAnchor = chainToGear - Math.abs(g.x - prevPx) - Math.abs(g.y - prevPy);
+          while (!canEscape) {
+            const rb = slidePlayer(state.level, { x: bx, y: by }, rdxB, rdyB, state.toggleMap, ws);
+            if (rb.y < 0) { canEscape = true; break; } // reached boat — chain resets, always escapable
+            if (rb.x === bx && rb.y === by) break;
+            // Stop before reaching or overshooting the previous anchor.
+            if ((rdxB < 0 && rb.x <= prevPx) || (rdxB > 0 && rb.x >= prevPx) ||
+                (rdyB < 0 && rb.y <= prevPy) || (rdyB > 0 && rb.y >= prevPy)) break;
+            // Physical chain at rb = chain through gears[0..i-1] + dist(prevAnchor, rb).
+            const physChain = chainToPrevAnchor + Math.abs(rb.x - prevPx) + Math.abs(rb.y - prevPy);
+            canEscape = canEscapeFrom(rb, 4, gearsForGear,
+                                      Math.max(0, state.chainLengthTotal - physChain), `gear${i}back`);
+            bx = rb.x; by = rb.y;
+          }
+        }
+      }
     }
 
     // After the gear loop, px/py is the outgoing position of the last gear (or the
@@ -422,19 +458,39 @@ function _scheduleDeadEndCheck() {
               (rdy < 0 && r.y <= py) || (rdy > 0 && r.y >= py)) break;
           const chainHere = chainToGear + Math.abs(r.x - px) + Math.abs(r.y - py);
           canEscape = canEscapeFrom(r, 4, state.gearsLeft,
-                                    Math.max(0, state.chainLengthTotal - chainHere));
+                                    Math.max(0, state.chainLengthTotal - chainHere), `midseg(${r.x},${r.y})`);
           cx = r.x; cy = r.y;
         }
       }
     }
   }
 
-  if (!canEscape) { // INVERTED for testing — popup fires when goal IS reachable
+  if (!canEscape) {
+    // Build ASCII grid for the log.
+    const { cells, width: w, height: h, goal, start } = state.level;
+    const CT = { 0:'.', 1:'#', 2:'S', 3:'←', 4:'→', 5:'↑', 6:'↓', 7:'c', 8:'K', 9:'D' };
+    const gearSet = new Set(state.gears.map(g => g.y * w + g.x));
+    let grid = '';
+    for (let y = 0; y < h; y++) {
+      let row = '';
+      for (let x = 0; x < w; x++) {
+        const flat = y * w + x;
+        if (x === state.playerPos.x && y === state.playerPos.y) row += 'P';
+        else if (goal && x === goal.x && y === goal.y)          row += 'G';
+        else if (x === start.x && y === 0)                      row += '^';
+        else if (gearSet.has(flat))                             row += '*';
+        else row += (CT[cells[flat]] ?? '?');
+      }
+      grid += row + '\n';
+    }
+
     console.group('%c[dead-end check fired]', 'color:red');
-    console.log('Player:', JSON.stringify(state.playerPos), '  prevDir:', JSON.stringify(state.prevDir));
-    console.log('worldState:', state.worldState.toString(2).padStart(8,'0'), '  chainAvail:', Math.max(0, state.chainLengthTotal - _chainLengthUsed()), '/', state.chainLengthTotal, '  gearsLeft:', state.gearsLeft, '/', state.totalGears);
+    console.log('Boat:', JSON.stringify(state.level.start), '  Player:', JSON.stringify(state.playerPos), '  prevDir:', JSON.stringify(state.prevDir));
+    console.log('worldState:', state.worldState.toString(2).padStart(8,'0'), '  chainAvail:', chainAvail, '/', state.chainLengthTotal, '  gearsLeft:', state.gearsLeft, '/', state.totalGears);
     console.log('Goal:', JSON.stringify(state.level.goal), '  toggleMap.size:', state.toggleMap?.size);
     console.log('Gears:', JSON.stringify(state.gears));
+    console.log('Checks:\n' + checkLog.join('\n'));
+    console.log('Grid (* = gear):\n' + grid);
     console.groupEnd();
     _deadEndTimer = setTimeout(() => {
       if (!state.won) {
