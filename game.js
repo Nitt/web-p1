@@ -1287,6 +1287,20 @@ function _handleWin() {
   state.won = true;
   playWin();
   state.queuedMove = null;
+
+  if (!_batchHook) {
+    const level        = state.level;
+    const chainUsed    = _chainLengthUsed();
+    const gearsUsed    = state.totalGears - state.gearsLeft;
+    const chainCalc    = level?.effectiveChainLength ?? 0;
+    const gearsCalc    = level?.effectiveCogs        ?? 0;
+    const issues = [
+      (chainCalc > 0 && chainUsed < chainCalc) && `chain under-used (used ${chainUsed}, budgeted ${chainCalc})`,
+      (gearsCalc > 0 && gearsUsed < gearsCalc) && `gears under-used (used ${gearsUsed}, budgeted ${gearsCalc})`,
+    ].filter(Boolean);
+    if (issues.length) console.warn(`[Win] Generator over-budgeted — ${issues.join('; ')}`);
+  }
+
   if (_batchFast) {
     // Skip retract animation during batch testing
     if (_batchHook) { const h = _batchHook; _batchHook = null; h.onWin(); }
