@@ -113,13 +113,6 @@ export function playWin() {
   });
 }
 
-/** Dead-end detected — low descending sigh. */
-export function playDeadEnd() {
-  const t = now();
-  osc('sine', 220, 0.20, t, 0.40, 90);
-  osc('sine', 165, 0.12, t + 0.10, 0.35, 70);
-}
-
 // Browsers suspend AudioContext on tab hide and don't always auto-resume.
 // Resume as soon as the tab becomes visible again so sounds keep working.
 document.addEventListener('visibilitychange', () => {

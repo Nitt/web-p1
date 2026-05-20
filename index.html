@@ -16,7 +16,6 @@
 <h1 id="level-label">Level 1</h1>
       <div class="header-actions">
         <button class="btn-ghost" id="skip-btn" aria-label="Skip level" hidden>Skip</button>
-        <button class="btn-ghost" id="autoplay-btn" aria-label="Auto-play solution">Auto-play</button>
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
         <input id="level-jump-input" type="number" min="1" step="1" placeholder="#">
         <button class="btn-ghost" id="level-jump-btn" aria-label="Jump to level">Go</button>
@@ -29,6 +28,7 @@
       <div class="chain-bar-track">
         <div id="chain-bar-fill" class="chain-bar-fill"></div>
       </div>
+      <span id="chain-label" class="chain-label"></span>
     </div>
 
     <div id="grid-container"></div>
@@ -53,17 +53,10 @@
     <span class="win-hint">Tap anywhere to continue</span>
   </div>
 
-  <!-- ── Dead-end overlay ─────────────────────────────────────────────── -->
-  <div id="dead-end-banner" hidden>
-    <p>No way out!</p>
-    <span class="win-hint">Tap anywhere to restart</span>
-  </div>
-
   <div id="debug-btns" hidden>
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
-    <button id="batch-test-btn" class="btn-ghost">test ∞</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.25" max="8" step="0.25" value="1">
@@ -80,7 +73,6 @@
         <label>h <input id="gen-debug-h" type="number" value="9" min="3" max="20"></label>
         <button id="gen-debug-run">Generate</button>
         <button id="gen-debug-universes">universes</button>
-        <label id="gen-debug-path-filter-wrap" hidden><input type="checkbox" id="gen-debug-path-filter"> path only</label>
         <button id="gen-debug-close">✕</button>
       </div>
     </div>
@@ -114,7 +106,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, autoPlay, runBatchPlaythrough, stopBatchPlaythrough, jumpToLevel } from './game.js';
+    import { init, skipLevel, jumpToLevel } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -125,23 +117,6 @@
 
     document.getElementById('skip-btn')
       .addEventListener('click', () => skipLevel());
-
-    document.getElementById('autoplay-btn')
-      .addEventListener('click', () => autoPlay());
-
-    const batchBtn = document.getElementById('batch-test-btn');
-    batchBtn.addEventListener('click', () => {
-      if (batchBtn.dataset.running === '1') {
-        stopBatchPlaythrough();
-      } else {
-        batchBtn.dataset.running = '1';
-        batchBtn.textContent = 'stop test';
-        runBatchPlaythrough().then(() => {
-          batchBtn.dataset.running = '0';
-          batchBtn.textContent = 'test ∞';
-        });
-      }
-    });
 
     const levelJumpInput = document.getElementById('level-jump-input');
     document.getElementById('level-jump-btn').addEventListener('click', () => {
@@ -167,8 +142,6 @@
   <script type="module">
     import { generateLevel, computeStepAnalysis } from './generator.js';
     import { getCurrentLevel } from './game.js';
-    import { solve } from './solver.js';
-    import { buildToggleMap, slidePlayer } from './puzzle.js';
 
     const panel   = document.getElementById('gen-debug-panel');
     const canvas  = document.getElementById('gen-debug-canvas');
@@ -192,12 +165,6 @@
     document.getElementById('gen-debug-universes').addEventListener('click', () => {
       _universeMode = !_universeMode;
       document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
-      document.getElementById('gen-debug-path-filter-wrap').hidden = !_universeMode;
-      _syncSlider(true);
-      renderStep(+slider.value);
-    });
-
-    document.getElementById('gen-debug-path-filter').addEventListener('change', () => {
       _syncSlider(true);
       renderStep(+slider.value);
     });
@@ -205,6 +172,7 @@
     let _steps            = [];
     let _depths           = null;   // Int16Array from final generateLevel result
     let _difficulties     = null;   // Float32Array
+    let _chainLengths     = null;   // Int16Array — min chain length to each cell
     let _levelW           = 0;
     let _levelH           = 0;
     let _levelStart       = null;
@@ -213,27 +181,10 @@
     let _finalCells            = null;   // Uint8Array output cells (CellType values)
     let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
     let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
-    let _pathCellOrder      = null;   // [{px,py,ws}] padded-grid cells in path order
-    let _pathCellReveal     = null;   // Map<key → stepIndex> when each cell first appears
-    let _pathUniverses      = null;   // Set<number> of worldState bitmasks the optimal path uses
-    let _pathRelevantSteps  = null;   // sorted step-index array used by the path-filter slider
     let _teleporterMap      = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
 
-    // True when the "path only" slider mode is active (universe mode + checkbox + data all present).
-    function _pathFilterSliderActive() {
-      return _universeMode &&
-             document.getElementById('gen-debug-path-filter').checked &&
-             !!_pathRelevantSteps;
-    }
-
-    // Sync slider.max (and optionally value) to the current filter mode.
-    // jumpToEnd=true resets the slider to the final step (used on mode change).
     function _syncSlider(jumpToEnd = false) {
-      if (_pathFilterSliderActive()) {
-        slider.max = _pathRelevantSteps.length - 1;
-      } else {
-        slider.max = Math.max(0, _steps.length - 1);
-      }
+      slider.max = Math.max(0, _steps.length - 1);
       if (jumpToEnd) slider.value = +slider.max;
     }
 
@@ -245,6 +196,7 @@
       const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, _steps });
       _depths           = result.depths;
       _difficulties     = result.difficulties;
+      _chainLengths     = result.chainLengths;
       _levelW           = w;
       _levelH           = h;
       _levelStart       = result.start;
@@ -253,135 +205,6 @@
       _teleporterMap        = result.teleporterMap ?? null;
       _universeDepths       = result.universeDepths;
       _universeChainLengths = result.universeChainLengths;
-
-      // Compute optimal path, then map each path cell to the step that first carves it
-      _pathCellOrder = null;
-      _pathCellReveal = null;
-      if (result.start && result.goal && _steps.length > 0) {
-        const toggleMap  = buildToggleMap(result.cells);
-        const chainLimit = result.effectiveChainLength > 0 ? result.effectiveChainLength : (w + h);
-        const maxGears   = result.effectiveCogs ?? 20;
-
-        // Perform the initial auto-slide (boat → grid) to get the real start position and worldState,
-        // mirroring exactly what the game does before calling the solver.
-        const initSlide = slidePlayer(result, result.start, 0, 1, toggleMap, 0, null, chainLimit);
-        const landPos   = { x: initSlide.x, y: initSlide.y };
-        let initWS = 0;
-        if (initSlide.crumble?.toggleIdx      !== undefined) initWS |= (1 << initSlide.crumble.toggleIdx);
-        if (initSlide.keyCollected?.toggleIdx !== undefined) initWS |= (1 << initSlide.keyCollected.toggleIdx);
-
-        // Solve from the landed position — same parameters as the game's auto-solver.
-        const moves = solve(result, landPos, initWS, toggleMap, chainLimit, maxGears, { dx: 0, dy: 1 });
-        if (moves) {
-          // Build waypoints: boat (y=-1) → [teleport segments if initial slide crossed one] → landing
-          //                  → each subsequent slide endpoint.
-          // Teleport crossings split a move into three segments:
-          //   prev→entry (normal), entry→exit (jump, marked), exit→final (normal).
-          // segmentWS[i] = worldState active while travelling segment i→i+1.
-          const waypoints = [{ x: result.start.x, y: -1 }];
-          const segmentWS = [];
-          if (initSlide.teleportCrossing) {
-            const tc = initSlide.teleportCrossing;
-            waypoints.push({ x: tc.entryX, y: tc.entryY }); segmentWS.push(0);
-            waypoints.push({ x: tc.exitX,  y: tc.exitY, isTeleportJump: true }); segmentWS.push(0);
-          }
-          waypoints.push({ ...landPos });
-          segmentWS.push(0); // boat → landing always in ws=0
-
-          let pos = { ...landPos }, ws = initWS, totalCells = 0;
-          for (const { dx, dy } of moves) {
-            const wsBefore = ws;
-            const chainAvail = Math.max(0, chainLimit - totalCells);
-            const r = slidePlayer(result, pos, dx, dy, toggleMap, ws, null, chainAvail);
-            if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
-            if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
-            // Physical chain extension — teleporter moves route through entry and exit.
-            totalCells += r.teleportCrossing
-              ? Math.abs(r.teleportCrossing.entryX - pos.x) + Math.abs(r.teleportCrossing.entryY - pos.y)
-                + Math.abs(r.x - r.teleportCrossing.exitX) + Math.abs(r.y - r.teleportCrossing.exitY)
-              : Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
-            if (r.teleportCrossing) {
-              const tc = r.teleportCrossing;
-              waypoints.push({ x: tc.entryX, y: tc.entryY });          segmentWS.push(wsBefore);
-              waypoints.push({ x: tc.exitX,  y: tc.exitY, isTeleportJump: true }); segmentWS.push(wsBefore);
-            }
-            pos = { x: r.x, y: r.y };
-            waypoints.push({ ...pos });
-            segmentWS.push(wsBefore); // ws active during this slide (before toggle fires)
-          }
-
-          // Expand waypoints into individual cells (padded coords) + travel direction + universe.
-          // Teleport-jump segments add only the exit cell — no cells in between are traced.
-          const seen = new Set(), order = [];
-          for (let wi = 0; wi < waypoints.length - 1; wi++) {
-            const a = waypoints[wi], b = waypoints[wi + 1];
-            const segWS = segmentWS[wi];
-            if (b.isTeleportJump) {
-              const px = b.x + 1, py = b.y + 1;
-              const key = `${px},${py},${segWS},0,0`;
-              if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx: 0, sdy: 0, ws: segWS }); }
-              continue;
-            }
-            const sdx = Math.sign(b.x - a.x), sdy = Math.sign(b.y - a.y);
-            if (sdx === 0 && sdy === 0) continue;
-            // Skip the starting cell when coming from a teleport-jump waypoint — that cell
-            // was already added to order by the jump segment above (with sdx=0,sdy=0).
-            let cx = a.isTeleportJump ? a.x + sdx : a.x;
-            let cy = a.isTeleportJump ? a.y + sdy : a.y;
-            while (true) {
-              const px = cx + 1, py = cy + 1; // inner → padded (y=-1 → py=0 = boat row)
-              const key = `${px},${py},${segWS},${sdx},${sdy}`;
-              if (!seen.has(key)) { seen.add(key); order.push({ px, py, sdx, sdy, ws: segWS }); }
-              if (cx === b.x && cy === b.y) break;
-              cx += sdx; cy += sdy;
-            }
-          }
-
-          // For each path cell find the first step that carves it in the path direction:
-          // step.toX/toY = the cell being carved, step.fromX/fromY = the carving source.
-          // Direction match: (toX-fromX, toY-fromY) === (sdx, sdy).
-          // Border/boat cells (py===0) are always carved from the start; reveal at 0.
-          const pw = _steps[0].pw, ph = _steps[0].ph;
-          const reveal = new Map();
-          for (const { px, py, sdx, sdy, ws } of order) {
-            const key = `${px},${py},${ws},${sdx},${sdy}`;
-            if (px === 0 || py === 0 || px === pw - 1 || py === ph - 1) {
-              reveal.set(key, 0); // border/boat cells visible immediately
-              continue;
-            }
-            let found = -1;
-            for (let si = 0; si < _steps.length; si++) {
-              const { toX, toY, fromX, fromY } = _steps[si];
-              if (toX === px && toY === py && fromX >= 0 && fromY >= 0 &&
-                  toX - fromX === sdx && toY - fromY === sdy) {
-                found = si; break;
-              }
-            }
-            // Fallback: first time cell is non-UNTOUCHED (no direction match found)
-            if (found < 0) {
-              found = _steps.length - 1;
-              for (let si = 0; si < _steps.length; si++) {
-                if (_steps[si].grid[py * pw + px] !== 0) { found = si; break; }
-              }
-            }
-            reveal.set(key, found);
-          }
-
-          _pathCellOrder  = order;
-          _pathCellReveal = reveal;
-          _pathUniverses  = new Set(order.map(c => c.ws));
-
-          // Build sorted list of step indices that reveal at least one path cell.
-          // Step 0 and the last step are always included so the slider covers the full range.
-          const revealSet = new Set([0, _steps.length - 1]);
-          for (const si of reveal.values()) {
-            if (si >= 0 && si < _steps.length) revealSet.add(si);
-          }
-          _pathRelevantSteps = Array.from(revealSet).sort((a, b) => a - b);
-        } else {
-          _pathRelevantSteps = null;
-        }
-      }
 
       _syncSlider(true);
       renderStep(+slider.value);
@@ -408,18 +231,13 @@
 
     function renderStep(sliderPos) {
       if (!_steps.length) return;
-      const useFilter = _pathFilterSliderActive();
-      const si   = useFilter ? (_pathRelevantSteps[sliderPos] ?? _steps.length - 1) : sliderPos;
-      const step = _steps[Math.min(si, _steps.length - 1)];
+      const step = _steps[Math.min(sliderPos, _steps.length - 1)];
       label.textContent   = step.label;
-      const total = useFilter ? _pathRelevantSteps.length : _steps.length;
-      counter.textContent = `${sliderPos + 1} / ${total}`;
+      counter.textContent = `${sliderPos + 1} / ${_steps.length}`;
       if (_universeMode) {
-        drawUniverses(step, si);
+        drawUniverses(step, sliderPos);
       } else {
-        // Use final depth/difficulty values so numbers stay stable as the slider advances.
-        // The per-step recomputation caused values to jump as partial grids opened new paths.
-        drawStep(step, _depths, _difficulties, si);
+        drawStep(step, _depths, _difficulties, _chainLengths, sliderPos);
       }
     }
 
@@ -435,7 +253,7 @@
       '#4a80b0',    // 7 DOOR
     ];
 
-    function drawStep(step, depths, difficulties, stepIdx) {
+    function drawStep(step, depths, difficulties, chainLengths, stepIdx) {
       const { grid, pw, ph, fromX, fromY, toX, toY } = step;
 
       // Size canvas to fit the panel, keeping cells square
@@ -462,6 +280,7 @@
             const fi = iy * _levelW + ix;
             const d  = depths[fi];
             const df = difficulties?.[fi];
+            const cl = chainLengths?.[fi];
             const fontSize = Math.max(5, Math.floor(size * 0.22));
             ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
 
@@ -474,6 +293,10 @@
               const txt = df % 1 === 0 ? df : df.toFixed(1);
               const tw  = ctx.measureText(txt).width;
               ctx.fillText(txt, cx * size + size - tw - 2, cy * size + size - 3);
+            }
+            if (cl !== undefined && cl >= 0) {
+              ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#30a090';
+              ctx.fillText(cl, cx * size + 2, cy * size + size - 3);
             }
           }
 
@@ -595,57 +418,6 @@
         ctx.strokeRect(toX * size + 1, toY * size + 1, size - 3, size - 3);
       }
 
-      // Optimal path overlay — bright pink line, revealed cell-by-cell as the generator carves them
-      if (_pathCellOrder && _pathCellReveal && _pathCellOrder.length >= 1) {
-        const currentStep = stepIdx ?? parseInt(slider.value);
-        const half = (size - 1) / 2;
-        const toCx = (px) => px * size + half;
-        const toCy = (py) => py * size + half;
-
-        ctx.save();
-        ctx.lineJoin = 'round';
-        ctx.lineCap  = 'round';
-
-        // Glow + line: walk path in order, moveTo on first revealed cell of each run,
-        // lineTo for consecutive revealed cells, break on any unrevealed gap
-        const drawLine = (lw, alpha, blur) => {
-          ctx.lineWidth   = lw;
-          ctx.globalAlpha = alpha;
-          ctx.shadowBlur  = blur;
-          ctx.beginPath();
-          let inLine = false;
-          for (const { px, py, sdx, sdy, ws } of _pathCellOrder) {
-            if ((_pathCellReveal.get(`${px},${py},${ws},${sdx},${sdy}`) ?? Infinity) <= currentStep) {
-              const cx = toCx(px), cy = toCy(py);
-              if (!inLine) { ctx.moveTo(cx, cy); inLine = true; }
-              else          { ctx.lineTo(cx, cy); }
-            } else {
-              inLine = false;
-            }
-          }
-          ctx.stroke();
-        };
-
-        ctx.strokeStyle = '#ff2d9b';
-        ctx.shadowColor = '#ff2d9b';
-        drawLine(Math.max(3, size * 0.3), 0.55, Math.max(6, size * 0.55)); // glow
-        drawLine(Math.max(2, size * 0.18), 1,    0);                        // solid
-
-        // Dots at each revealed path cell
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
-        for (const { px, py, sdx, sdy, ws } of _pathCellOrder) {
-          if ((_pathCellReveal.get(`${px},${py},${ws},${sdx},${sdy}`) ?? Infinity) > currentStep) continue;
-          const cx = toCx(px), cy = toCy(py);
-          const r = Math.max(2, size * 0.16);
-          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fillStyle = '#ff2d9b'; ctx.fill();
-          ctx.beginPath(); ctx.arc(cx, cy, Math.max(0.8, r * 0.4), 0, Math.PI * 2);
-          ctx.fillStyle = 'white'; ctx.fill();
-        }
-
-        ctx.restore();
-      }
     }
     // ── Universe matrix view ──────────────────────────────────────────────────
     // Shows all 2^N worldState variants of the current generation step side by
@@ -679,45 +451,11 @@
         return ws;
       }
 
-      // Collect only the universes the carver has actually entered at this step,
-      // sorted by their bitmask (base universe "∅" always first).
       const knownVDs = step.allUniverseVDs ?? new Map();
-      const pathFilterOn = document.getElementById('gen-debug-path-filter').checked && _pathUniverses;
       const activeUniverses = [];
       for (const [key, vd] of knownVDs) {
-        const u = vdKeyToWS(key);
-        if (pathFilterOn && !_pathUniverses.has(u)) continue;
-        activeUniverses.push({ key, u, vd });
+        activeUniverses.push({ key, u: vdKeyToWS(key), vd });
       }
-
-      // Synthetic panels: the solver's path can visit worldState combinations that the
-      // generator's BFS never explicitly entered as a universe (e.g. the generator carved
-      // crumble B from the base universe, so universe 'A,B' was never created even though
-      // the solver goes A→B→goal).  Add empty-VD panels for any path WS missing above.
-      if (pathFilterOn) {
-        const coveredWS = new Set(activeUniverses.map(e => e.u));
-        // Build reverse map: toggleIdx → padded cell index (for key reconstruction).
-        const toggleToPadded = new Map();
-        for (let i = 0; i < _finalCells.length; i++) {
-          const ti = finalToggleMap.get(i);
-          if (ti !== undefined) {
-            const outX = i % w, outY = Math.floor(i / w);
-            toggleToPadded.set(ti, (outY + 1) * pw + (outX + 1));
-          }
-        }
-        for (const ws of _pathUniverses) {
-          if (coveredWS.has(ws)) continue;
-          const pads = [];
-          for (let ti = 0; ti < 31; ti++) {
-            if (!(ws & (1 << ti))) continue;
-            const pi = toggleToPadded.get(ti);
-            if (pi !== undefined) pads.push(pi);
-          }
-          pads.sort((a, b) => a - b);
-          activeUniverses.push({ key: pads.join(','), u: ws, vd: new Map() });
-        }
-      }
-
       activeUniverses.sort((a, b) => a.u - b.u);
 
       // Current-step active bitmask (which universe the carver is IN right now).

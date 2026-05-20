@@ -97,6 +97,16 @@ html, body {
   transition: width 0.12s ease-out, background 0.3s ease;
 }
 
+.chain-label {
+  font-size: clamp(8px, 1.6vmin, 11px);
+  font-family: monospace;
+  color: hsl(210, 60%, 60%);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 3.5ch;
+  text-align: right;
+}
+
 .btn-ghost {
   background: none;
   border: 1.5px solid var(--color-wall);
@@ -151,18 +161,21 @@ html, body {
 .cell-coord,
 .cell-depth,
 .cell-difficulty,
+.cell-chain,
 .cell-dir { display: none; }
 
 .cell[data-type="wall"] .cell-coord,
 .cell[data-type="wall"] .cell-depth,
-.cell[data-type="wall"] .cell-difficulty {
+.cell[data-type="wall"] .cell-difficulty,
+.cell[data-type="wall"] .cell-chain {
   color: rgba(255, 255, 255, 0.20);
 }
 
 /* ─── debug overlay ──────────────────────────────────────────────────────── */
 
 body.debug .cell-depth,
-body.debug .cell-difficulty {
+body.debug .cell-difficulty,
+body.debug .cell-chain {
   display: block;
   position: absolute;
   font-size: clamp(5px, 1.5vmin, 10px);
@@ -181,6 +194,12 @@ body.debug .cell-difficulty {
   bottom: 2px;
   right: 3px;
   color: #c04020;
+}
+
+body.debug .cell-chain {
+  bottom: 2px;
+  left: 3px;
+  color: #30a090;
 }
 
 body.debug .cell-dir {
@@ -303,7 +322,8 @@ body.chain-debug .player {
 }
 
 .cell[data-type="crumble"] .cell-depth,
-.cell[data-type="crumble"] .cell-difficulty {
+.cell[data-type="crumble"] .cell-difficulty,
+.cell[data-type="crumble"] .cell-chain {
   color: rgba(255, 255, 255, 0.30);
 }
 
@@ -334,7 +354,8 @@ body.chain-debug .player {
 }
 
 .cell[data-type="key"] .cell-depth,
-.cell[data-type="key"] .cell-difficulty {
+.cell[data-type="key"] .cell-difficulty,
+.cell[data-type="key"] .cell-chain {
   color: rgba(80, 40, 0, 0.45);
 }
 
@@ -360,7 +381,8 @@ body.chain-debug .player {
 }
 
 .cell[data-type="door"] .cell-depth,
-.cell[data-type="door"] .cell-difficulty {
+.cell[data-type="door"] .cell-difficulty,
+.cell[data-type="door"] .cell-chain {
   color: rgba(255, 200, 120, 0.40);
 }
 

@@ -1,57 +1,23 @@
-import { slidePlayer, buildToggleMap, buildDeadEndMap, canReachGoalWithBudget, CellType, onewayAllows } from './puzzle.js';
-import { solve } from './solver.js';
+import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
 import { makeRng } from './random.js';
 import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
-import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin, playDeadEnd } from './sounds.js';
+import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin } from './sounds.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
 let dpadEl           = null;
 let winBanner        = null;
-let deadEndBanner    = null;
 let levelLabel       = null;
 
-// Timer that fires the dead-end popup 1 second after landing in a dead end.
-let _deadEndTimer = null;
-
-// Set to true while auto-play is running; cleared on cancel or level load.
-let _autoPlaying = false;
-// Set to true when autoPlay() is called while the player is still in the boat;
-// cleared once the dive animation completes and autoPlay() re-fires.
-let _pendingAutoPlay = false;
 // Tracks whether the dive hint was triggered for this level.
 let _diveHintShown = false;
 // Inactivity timer that shows the move hint after the player dives without further input.
 let _moveHintTimer = null;
 
-// Incremented every time loadLevel() is called — lets batch playthrough await the next level.
-let _levelLoadCount = 0;
-
-// { onWin, onStuck } callbacks set during a batch playthrough.
-// Intercepted by _handleWin and _scheduleDeadEndCheck instead of showing banners.
-let _batchHook = null;
-
-// When true, chain-length and gear-count hard stops are bypassed so auto-play
-// can finish levels that the generator under-budgeted.  Violations are recorded
-// in _batchViolations and reported as failures even if the level completes.
-let _batchBypassConstraints = false;
-// { chainExceeded, gearsExhausted, chainWasDepleted } — set during play, read at win
-let _batchViolations = null;
-
-// True while runBatchPlaythrough is active.
-let _batchRunning = false;
-// True once stopBatchPlaythrough() is called — signals the loop to exit.
-let _batchStopped = false;
-// When true, skip win retract animation and use minimal move delays.
-let _batchFast = false;
-
-// Actual step-by-step execution log collected during auto-play.
-// Each entry: { idx, move, fromPos, toPos, chainBefore, chainAfter, gearsBefore, gearsAfter, wsAfter }
-let _execTrace = [];
 
 // How many ms before animation end an input is still considered "on time".
 // Inputs queued earlier than this window will be discarded.
@@ -128,7 +94,6 @@ export function init() {
   gridContainer  = document.getElementById('grid-container');
   dpadEl         = document.getElementById('dpad');
   winBanner      = document.getElementById('win-banner');
-  deadEndBanner  = document.getElementById('dead-end-banner');
   levelLabel     = document.getElementById('level-label');
 
   document.getElementById('restart-btn')
@@ -156,10 +121,6 @@ export function init() {
 
 // ─── level loading ────────────────────────────────────────────────────────────
 function loadLevel(level) {
-  _autoPlaying = false;
-  _batchHook   = null;
-  _execTrace   = [];
-  _levelLoadCount++;
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
   _retractToken++;
@@ -170,12 +131,9 @@ function loadLevel(level) {
   state.queuedMove  = null;
   state.worldState  = 0;
   state.toggleMap   = buildToggleMap(level.cells);
-  if (!level.deadEndMap) level.deadEndMap = buildDeadEndMap(level, state.toggleMap);
   state.pendingOnewayBreak = null;
   state.prevDir     = null;
 
-  // Gear budget: max of goal depth and any key depths so the player always has
-  // enough gears to collect every key in the level before reaching the goal.
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
@@ -203,9 +161,6 @@ function loadLevel(level) {
     }
   }
   winBanner.hidden     = true;
-  deadEndBanner.hidden = true;
-  clearTimeout(_deadEndTimer);
-  _deadEndTimer = null;
 
   buildGrid(gridContainer, level);
   placePlayer(state.playerPos, level);
@@ -359,153 +314,6 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
   requestAnimationFrame(frame);
 }
 
-function _scheduleDeadEndCheck() {
-  // Skip the check if the player is in the boat (y < 0) — always reachable from there.
-  if (state.playerPos.y < 0) return;
-
-  const { width, height, deadEndMap: dm } = state.level;
-  if (!dm) return;
-
-  const base   = dm._base;
-  const encode = (x, y, ws) => ws * base + (y + 1) * width + x;
-  // Map state.prevDir to direction index (4 = none/unknown = first move free).
-  const pd     = state.prevDir;
-  const prevDi = !pd ? 4 : pd.dx === 1 ? 0 : pd.dx === -1 ? 1 : pd.dy === 1 ? 2 : 3;
-
-  const ws         = state.worldState;
-  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
-
-  // Fast topological prefilter — if the goal can't be reached at all, skip BFS.
-  // Then run the budget-aware Dijkstra (joint chain + gear check on the same path).
-  const checkLog = [];
-  const canEscapeFrom = (pos, di, gearsAvail, chain, label) => {
-    const alive = dm.alive.has(encode(pos.x, pos.y, ws));
-    if (!alive) {
-      checkLog.push(`  ${label}: PREFILTER dead  pos=(${pos.x},${pos.y}) ws=${ws}`);
-      return false;
-    }
-    const bfs = canReachGoalWithBudget(state.level, pos, ws, state.toggleMap, di, gearsAvail, chain);
-    checkLog.push(`  ${label}: BFS=${bfs}  pos=(${pos.x},${pos.y}) di=${di} gears=${gearsAvail} chain=${chain}`);
-    return bfs;
-  };
-
-  // Check player's current position.
-  let canEscape = canEscapeFrom(state.playerPos, prevDi, state.gearsLeft, chainAvail, 'player');
-
-  // Check each gear — player can retract to it for free, recovering bend gears
-  // placed after it and shortening the chain to that waypoint.
-  if (!canEscape) {
-    let chainToGear = 0;
-    let px = state.level.start.x, py = state.level.start.y;
-    for (let i = 0; i < state.gears.length && !canEscape; i++) {
-      const g = state.gears[i];
-      const prevPx = px, prevPy = py; // anchor before this gear
-      chainToGear += Math.abs(g.x - prevPx) + Math.abs(g.y - prevPy);
-      px = g.isTeleport ? g.exitX : g.x;
-      py = g.isTeleport ? g.exitY : g.y;
-      const freedGears = state.gears.slice(i + 1).filter(g2 => !g2.isTeleport).length;
-      // +1: landing on this gear triggers the pending-cog pop, refunding gear[i] itself.
-      const cogPopBonus = g.isTeleport ? 0 : 1;
-      const gearsForGear = state.gearsLeft + freedGears + cogPopBonus;
-      checkLog.push(`  gear${i}: chainToGear=${chainToGear} freedGears=${freedGears} cogPop=${cogPopBonus}`);
-      canEscape = canEscapeFrom(g, 4, gearsForGear,
-                                Math.max(0, state.chainLengthTotal - chainToGear), `gear${i}`);
-
-      // After retracting to gear[i], the player can continue retracting toward the
-      // previous anchor (prevPx, prevPy).  Each step backward SHORTENS the physical
-      // chain (unlike forward slides), giving more chainAvail than the gear-position
-      // BFS can model.  Check every sticky stop along that backward path.
-      if (!canEscape && !g.isTeleport) {
-        const rdxB = Math.sign(prevPx - g.x);
-        const rdyB = Math.sign(prevPy - g.y);
-        if (rdxB !== 0 || rdyB !== 0) {
-          let bx = g.x, by = g.y;
-          // Chain consumed from boat through all gears before this one.
-          const chainToPrevAnchor = chainToGear - Math.abs(g.x - prevPx) - Math.abs(g.y - prevPy);
-          while (!canEscape) {
-            const rb = slidePlayer(state.level, { x: bx, y: by }, rdxB, rdyB, state.toggleMap, ws);
-            if (rb.y < 0) { canEscape = true; break; } // reached boat — chain resets, always escapable
-            if (rb.x === bx && rb.y === by) break;
-            // Stop before reaching or overshooting the previous anchor.
-            if ((rdxB < 0 && rb.x <= prevPx) || (rdxB > 0 && rb.x >= prevPx) ||
-                (rdyB < 0 && rb.y <= prevPy) || (rdyB > 0 && rb.y >= prevPy)) break;
-            // Physical chain at rb = chain through gears[0..i-1] + dist(prevAnchor, rb).
-            const physChain = chainToPrevAnchor + Math.abs(rb.x - prevPx) + Math.abs(rb.y - prevPy);
-            canEscape = canEscapeFrom(rb, 4, gearsForGear,
-                                      Math.max(0, state.chainLengthTotal - physChain), `gear${i}back`);
-            bx = rb.x; by = rb.y;
-          }
-        }
-      }
-    }
-
-    // After the gear loop, px/py is the outgoing position of the last gear (or the
-    // boat if there are no gears), and chainToGear is the chain consumed up to there.
-    // The player can also retract mid-segment to any stopping surface (e.g. a sticky
-    // cell) between that anchor and their current position — the gear-only loop misses
-    // these because they have no gear waypoint.  Slide backward from the player toward
-    // the anchor and check each intermediate stop.
-    if (!canEscape) {
-      const rdx = Math.sign(px - state.playerPos.x);
-      const rdy = Math.sign(py - state.playerPos.y);
-      if (rdx !== 0 || rdy !== 0) {
-        let cx = state.playerPos.x, cy = state.playerPos.y;
-        while (!canEscape) {
-          const r = slidePlayer(state.level, { x: cx, y: cy }, rdx, rdy, state.toggleMap, ws);
-          if (r.x === cx && r.y === cy) break; // blocked, no movement
-          // Stop before we reach or overshoot the anchor (it was already checked above).
-          if ((rdx < 0 && r.x <= px) || (rdx > 0 && r.x >= px) ||
-              (rdy < 0 && r.y <= py) || (rdy > 0 && r.y >= py)) break;
-          const chainHere = chainToGear + Math.abs(r.x - px) + Math.abs(r.y - py);
-          canEscape = canEscapeFrom(r, 4, state.gearsLeft,
-                                    Math.max(0, state.chainLengthTotal - chainHere), `midseg(${r.x},${r.y})`);
-          cx = r.x; cy = r.y;
-        }
-      }
-    }
-  }
-
-  if (!canEscape) {
-    // Build ASCII grid for the log.
-    const { cells, width: w, height: h, goal, start } = state.level;
-    const CT = { 0:'.', 1:'#', 2:'S', 3:'←', 4:'→', 5:'↑', 6:'↓', 7:'c', 8:'K', 9:'D' };
-    const gearSet = new Set(state.gears.map(g => g.y * w + g.x));
-    let grid = '';
-    for (let y = 0; y < h; y++) {
-      let row = '';
-      for (let x = 0; x < w; x++) {
-        const flat = y * w + x;
-        if (x === state.playerPos.x && y === state.playerPos.y) row += 'P';
-        else if (goal && x === goal.x && y === goal.y)          row += 'G';
-        else if (x === start.x && y === 0)                      row += '^';
-        else if (gearSet.has(flat))                             row += '*';
-        else row += (CT[cells[flat]] ?? '?');
-      }
-      grid += row + '\n';
-    }
-
-    console.group('%c[dead-end check fired]', 'color:red');
-    console.log('Boat:', JSON.stringify(state.level.start), '  Player:', JSON.stringify(state.playerPos), '  prevDir:', JSON.stringify(state.prevDir));
-    console.log('worldState:', state.worldState.toString(2).padStart(8,'0'), '  chainAvail:', chainAvail, '/', state.chainLengthTotal, '  gearsLeft:', state.gearsLeft, '/', state.totalGears);
-    console.log('Goal:', JSON.stringify(state.level.goal), '  toggleMap.size:', state.toggleMap?.size);
-    console.log('Gears:', JSON.stringify(state.gears));
-    console.log('Checks:\n' + checkLog.join('\n'));
-    console.log('Grid (* = gear):\n' + grid);
-    console.groupEnd();
-    _deadEndTimer = setTimeout(() => {
-      if (!state.won) {
-        playDeadEnd();
-        if (_batchHook) {
-          _autoPlaying = false;
-          const h = _batchHook; _batchHook = null; h.onStuck('dead-end');
-        } else {
-          _showBanner(deadEndBanner, () => loadLevel(state.level));
-        }
-      }
-    }, 1000);
-  }
-}
-
 // ─── backtrack helpers ───────────────────────────────────────────────────────
 
 // Returns true if the player is strictly between two consecutive chain points
@@ -611,7 +419,6 @@ function _executeBacktrack(gearIdx) {
         }
         drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
         setChainSpinning(false);
-        _scheduleDeadEndCheck();
         _flushQueuedMove();
       } else {
         step(waypointIdx + 1, toPos);
@@ -678,389 +485,6 @@ export function getCurrentLevel() {
   return state.level;
 }
 
-// Force the dive immediately (used by auto-play and batch test to skip the waiting state).
-function _forceDive() {
-  if (!state.waitingForDive) return;
-  state.waitingForDive = false;
-  hideDiveIndicator();
-  _executeMove(0, 1);
-}
-
-/** Start auto-playing a solution to the current level. */
-export function autoPlay() {
-  if (_autoPlaying || state.won) return;
-
-  // If the player is still in the boat, force the dive first, then retry after animation.
-  if (state.waitingForDive) {
-    if (_pendingAutoPlay) return;
-    _pendingAutoPlay = true;
-    _forceDive();
-    function _waitAndRetry() {
-      if (!_pendingAutoPlay) return; // was cancelled via stopAutoPlay
-      if (state.isMoving) { setTimeout(_waitAndRetry, 50); return; }
-      _pendingAutoPlay = false;
-      autoPlay();
-    }
-    setTimeout(_waitAndRetry, 50);
-    return;
-  }
-
-  const solverStart = { ...state.playerPos };
-  const moves = solve(state.level, solverStart, state.worldState, state.toggleMap, Math.max(0, state.level.effectiveChainLength - _chainLengthUsed()), state.level.effectiveCogs, { dx: 0, dy: 1 });
-  if (!moves) {
-    _logPlaythroughFailure(state.level, state.levelIndex, 'solver found no path', [], solverStart);
-    return;
-  }
-  const initialWorldState = state.worldState;
-  _autoPlaying = true;
-  _batchHook = {
-    onWin:   ()  => _showBanner(winBanner, _nextLevel),
-    onStuck: r   => {
-      _logPlaythroughFailure(state.level, state.levelIndex, r, moves, solverStart, initialWorldState);
-      if (r === 'dead-end') _showBanner(deadEndBanner, () => loadLevel(state.level));
-    },
-  };
-  _autoPlayNext(moves, 0);
-}
-
-/** Cancel an in-progress auto-play. */
-export function stopAutoPlay() {
-  _autoPlaying = false;
-  _pendingAutoPlay = false;
-}
-
-/**
- * Start an infinite batch playthrough that runs until stopBatchPlaythrough() is called.
- * Uses fast animation speed and skips the win retract animation.
- * Returns a promise that resolves when the batch ends.
- */
-export async function runBatchPlaythrough() {
-  if (_batchRunning) return;
-
-  _batchRunning         = true;
-  _batchStopped         = false;
-  _batchFast            = true;
-  _batchBypassConstraints = true;
-  setSpeedMultiplier(0.05); // 20× faster animations
-
-  let failures = 0, total = 0;
-  let seed = 300, id = 2, levelIdx = 2, sinceKeyDoor = 0, levelNum = 0;
-
-  console.group('Batch playthrough: ∞ (click stop to end)');
-
-  try {
-    while (!_batchStopped) {
-      levelNum++;
-      let level;
-      if (levelNum === 1) {
-        level = SAMPLE_LEVELS[0];
-      } else {
-        const recipe = getRecipe(levelIdx, sinceKeyDoor, makeRng(seed));
-        level = generateFallback(seed, id, recipe);
-        sinceKeyDoor = recipe.useKeyDoor ? 0 : sinceKeyDoor + 1;
-        seed += recipe.candidates;
-        id++; levelIdx++;
-      }
-
-      total++;
-      _batchViolations = { chainExceeded: false, gearsExhausted: false, chainWasDepleted: false, teleportUsed: false };
-
-      const prevCount = _levelLoadCount;
-      loadLevel(level);
-      await _waitForNewLevel(prevCount);
-
-      // Force the initial dive; _waitForNewLevel resolves before it happens now.
-      if (state.waitingForDive) {
-        _forceDive();
-        await new Promise(resolve => {
-          function check() { if (!state.isMoving) { resolve(); return; } setTimeout(check, 20); }
-          setTimeout(check, 20);
-        });
-      }
-
-      if (_batchStopped) break;
-
-      const solverStart       = { ...state.playerPos };
-      const initialWorldState = state.worldState;
-      const moves = solve(level, solverStart, state.worldState, state.toggleMap, Math.max(0, level.effectiveChainLength - _chainLengthUsed()), level.effectiveCogs, { dx: 0, dy: 1 });
-
-      let outcome;
-      if (!moves) {
-        outcome = 'solver found no path';
-      } else {
-        outcome = await new Promise(resolve => {
-          _batchHook = { onWin: () => resolve('won'), onStuck: r => resolve(r) };
-          _autoPlaying = true;
-          _autoPlayNext(moves, 0);
-        });
-      }
-
-      if (outcome === 'stopped') break;
-
-      if (outcome === 'won') {
-        const { chainExceeded, gearsExhausted, chainWasDepleted, teleportUsed } = _batchViolations;
-        const chainFinallyDepleted = chainWasDepleted ||
-          (state.chainLengthTotal > 0 && _chainLengthUsed() >= state.chainLengthTotal);
-        const chainTooShort = chainExceeded;
-        const chainTooLong  = !chainExceeded && !chainFinallyDepleted && state.chainLengthTotal > 0;
-        const gearsTooFew   = gearsExhausted;
-        const gearsTooMany  = !gearsExhausted && state.gearsLeft > 0;
-
-        const issues = [
-          chainTooShort && 'chain too short (bypassed)',
-          chainTooLong  && 'chain too long (never depleted)',
-          gearsTooFew   && 'gears too few (bypassed)',
-          gearsTooMany  && 'gears too many (underused)',
-        ].filter(Boolean);
-
-        if (issues.length) {
-          failures++;
-          const hasTeleporter = level.teleporterMap?.size > 0;
-          console.group(`%cLevel ${levelNum} — completed but generator miscalculated: ${issues.join(', ')}`, 'color:#e80; font-weight:bold');
-          console.log(`Issues: ${issues.join(', ')}`);
-          console.log(`Chain: limit ${state.chainLengthTotal}, used at win ${_chainLengthUsed()}, ever depleted: ${chainFinallyDepleted}`);
-          console.log(`Gears: budget ${state.totalGears}, remaining at win ${state.gearsLeft}`);
-          console.log(`Teleporter: ${hasTeleporter ? `yes — path ${teleportUsed ? 'USED' : 'did not use'} one` : 'none'}`);
-          console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
-          if (moves) {
-            const arrows = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
-            console.log(`Planned moves (${moves.length}):`, moves.map(m => arrows[`${m.dx},${m.dy}`] ?? '?').join(' '));
-          }
-          console.log('Level JSON:', JSON.stringify({ id: level.id, seed: level.seed, width: level.width, height: level.height, start: level.start, goal: level.goal, effectiveChainLength: level.effectiveChainLength, effectiveCogs: level.effectiveCogs }));
-          console.groupEnd();
-        } else {
-          console.log(`Level ${levelNum}: ✓`);
-        }
-      } else {
-        failures++;
-        _logPlaythroughFailure(level, levelNum, outcome, moves, solverStart, initialWorldState);
-      }
-    }
-  } finally {
-    _batchRunning         = false;
-    _batchFast            = false;
-    _batchStopped         = false;
-    _batchBypassConstraints = false;
-    _batchViolations      = null;
-    setSpeedMultiplier(1);
-  }
-
-  if (failures === 0) {
-    console.log(`Stopped after ${total} levels — all passed ✓`);
-  } else {
-    console.warn(`Stopped after ${total} levels — ${failures}/${total} failed`);
-  }
-  console.groupEnd();
-}
-
-/** Stop an in-progress runBatchPlaythrough. */
-export function stopBatchPlaythrough() {
-  if (!_batchRunning) return;
-  _batchStopped = true;
-  _autoPlaying  = false;
-  if (_batchHook) { const h = _batchHook; _batchHook = null; h.onStuck('stopped'); }
-}
-
-/** Poll until a new level has loaded and its initial slide animation is done. */
-function _waitForNewLevel(prevCount) {
-  return new Promise(resolve => {
-    function check() {
-      if (_levelLoadCount !== prevCount && !state.isMoving) { resolve(); return; }
-      setTimeout(check, 50);
-    }
-    setTimeout(check, 50);
-  });
-}
-
-function _logPlaythroughFailure(level, displayNum, reason, plannedMoves, solverStart, initialWorldState = 0) {
-  const goalDepth  = level.depths
-    ? level.depths[level.goal.y * level.width + level.goal.x] : 0;
-  const gearBudget = (level.effectiveCogs ?? goalDepth) > 0
-    ? (level.effectiveCogs ?? goalDepth) : 1;
-  const ARROW = { '1,0': '→', '-1,0': '←', '0,1': '↓', '0,-1': '↑' };
-
-  console.group(`%cLevel ${displayNum} — ${reason}`, 'color:#e05; font-weight:bold');
-  console.log(`%cFailure reason: ${reason}`, 'color:#e05; font-weight:bold');
-  console.log(
-    '%c[AI] Paste this entire console group into Claude and ask it to read CLAUDE.md first.\n' +
-    'Quick field guide:\n' +
-    '  • "Boat entry" = level.start (y=-1), always above the grid — NOT where planned moves begin.\n' +
-    '  • "Solver started at" = where the player landed after the automatic slide-in from the boat. ALL planned moves begin here.\n' +
-    '  • "Player stopped at" = where the player is when this failure was detected (after all planned moves executed, or when dead-end fired).\n' +
-    '  • "Chain length (actual)" = Manhattan distance of the live chain: boat → each gear waypoint → player. NOT total cells traveled.\n' +
-    '  • "Gear waypoints" = the bend positions in the chain at failure time, in order from boat to player.',
-    'color:#888;font-style:italic'
-  );
-  console.log('Seed:', level.seed, '  Size:', `${level.width}×${level.height}`);
-  console.log('Boat entry (y=-1):', level.start, '  Goal:', level.goal);
-  if (solverStart) console.log('Solver started at:', solverStart, ' ← planned moves begin here');
-  console.log('Chain limit:', state.chainLengthTotal, '  Gear budget:', gearBudget);
-  console.log('Player stopped at:', { ...state.playerPos },
-              '  World state:', state.worldState.toString(2).padStart(8, '0'));
-  console.log('Chain length (actual, boat→waypoints→player):', _chainLengthUsed(), '/', state.chainLengthTotal,
-              '  Gears left:', state.gearsLeft, '/', state.totalGears);
-  console.log('Gear waypoints at failure:', state.gears.length ? JSON.stringify(state.gears) : '(none)');
-
-  // Toggle map — list every toggle-bearing cell so Claude doesn't have to scan the cells array.
-  // Format: "toggle N: TYPE at (x,y) [ACTIVE]"
-  const TNAME = { [CellType.CRUMBLE]: 'CRUMBLE', [CellType.KEY]: 'KEY' };
-  const tmLines = [];
-  if (state.toggleMap?.size) {
-    for (const [fi, ti] of [...state.toggleMap.entries()].sort((a, b) => a[1] - b[1])) {
-      const tx = fi % level.width, ty = Math.floor(fi / level.width);
-      const active = (state.worldState & (1 << ti)) !== 0;
-      tmLines.push(`  toggle ${ti}: ${TNAME[level.cells[fi]] ?? 'UNKNOWN'} at (${tx},${ty})${active ? ' [ACTIVE]' : ''}`);
-    }
-  }
-  if (level.doorRequirements?.size) {
-    for (const [dfi, req] of level.doorRequirements.entries()) {
-      const dx2 = dfi % level.width, dy2 = Math.floor(dfi / level.width);
-      const open = (state.worldState & (1 << req)) !== 0;
-      tmLines.push(`  door at (${dx2},${dy2}) requires toggle ${req}${open ? ' [OPEN]' : ' [LOCKED]'}`);
-    }
-  }
-  if (tmLines.length) console.log('Toggle map + doors:\n' + tmLines.join('\n'));
-
-  if (plannedMoves?.length) {
-    console.log('Planned moves (' + plannedMoves.length + '):',
-      plannedMoves.map(m => ARROW[`${m.dx},${m.dy}`] ?? `(${m.dx},${m.dy})`).join(' '));
-  }
-
-  // Re-simulate the solver's planned path from scratch to show expected vs actual.
-  // chainAvail uses solver's formula (limit − total cells traveled), NOT _chainLengthUsed().
-  if (plannedMoves?.length && solverStart) {
-    const chainLimit = state.chainLengthTotal > 0 ? state.chainLengthTotal : (level.width + level.height);
-    let tx = solverStart.x, ty = solverStart.y;
-    let tws = initialWorldState;
-    let traveled = 0;
-    const freshTmap = buildToggleMap(level.cells);
-    const traceLines = [`  (solver starts at (${tx},${ty}) worldState:${tws.toString(2).padStart(8,'0')} chainLimit:${chainLimit})`];
-    for (let i = 0; i < plannedMoves.length; i++) {
-      const { dx, dy } = plannedMoves[i];
-      const avail = Math.max(0, chainLimit - traveled);
-      const r = slidePlayer(level, { x: tx, y: ty }, dx, dy, freshTmap, tws, null, avail);
-      let nws = tws;
-      if (r.crumble?.toggleIdx      !== undefined) nws |= (1 << r.crumble.toggleIdx);
-      if (r.keyCollected?.toggleIdx !== undefined) nws |= (1 << r.keyCollected.toggleIdx);
-      const cells = Math.abs(r.x - tx) + Math.abs(r.y - ty);
-      traveled += cells;
-      const arrow = ARROW[`${dx},${dy}`] ?? `(${dx},${dy})`;
-      const notes = [];
-      if (r.crumble)      notes.push(`crumble@(${r.crumble.x},${r.crumble.y}) breaks`);
-      if (r.keyCollected) notes.push(`key collected@(${r.keyCollected.x},${r.keyCollected.y})`);
-      if (cells === 0)    notes.push('zero-move');
-      traceLines.push(
-        `  ${i+1}. ${arrow}: (${tx},${ty})→(${r.x},${r.y})  cells:${cells}  traveled:${traveled}/${chainLimit}  avail_was:${avail}  ws:${nws.toString(2).padStart(8,'0')}` +
-        (notes.length ? `  [${notes.join(', ')}]` : '')
-      );
-      tx = r.x; ty = r.y; tws = nws;
-    }
-    traceLines.push(`  (solver expected goal at (${level.goal.x},${level.goal.y}))`);
-    console.log('Solver path re-simulation (chainAvail = limit − total traveled, NOT actual chain length):\n' + traceLines.join('\n'));
-  }
-
-  // Actual execution trace — what the game really did, step by step.
-  // chain = _chainLengthUsed() = Manhattan distance boat→waypoints→player (NOT total traveled).
-  // Compare with solver re-simulation above to find the divergence point.
-  if (_execTrace.length) {
-    const execLines = [`  (chain = actual Manhattan distance of live chain, NOT total cells traveled)`];
-    for (const e of _execTrace) {
-      const arrow = ARROW[`${e.move.dx},${e.move.dy}`] ?? `(${e.move.dx},${e.move.dy})`;
-      const toStr    = e.toPos    !== null ? `(${e.toPos.x},${e.toPos.y})` : '(pending)';
-      const chainStr = e.chainAfter !== null
-        ? `chain:${e.chainBefore}→${e.chainAfter}/${state.chainLengthTotal}`
-        : `chain:${e.chainBefore}/?`;
-      const gearsStr = e.gearsAfter !== null
-        ? `gears:${e.gearsBefore}→${e.gearsAfter}`
-        : `gears:${e.gearsBefore}→?`;
-      const wsStr = e.wsAfter !== null ? e.wsAfter.toString(2).padStart(8, '0') : '????????';
-      execLines.push(`  ${e.idx}. ${arrow}: (${e.fromPos.x},${e.fromPos.y})→${toStr}  ${chainStr}  ${gearsStr}  ws:${wsStr}`);
-    }
-    console.log('Actual execution trace (real game state after each move):\n' + execLines.join('\n'));
-  }
-
-  console.log('Grid:\n' + _renderGrid(level));
-  console.log('Level JSON:\n' + JSON.stringify({
-    id: level.id, seed: level.seed,
-    width: level.width, height: level.height,
-    start: level.start, goal: level.goal,
-    effectiveChainLength: level.effectiveChainLength,
-    effectiveCogs:        level.effectiveCogs,
-    goalDifficulty:       level.goalDifficulty,
-    cells:                Array.from(level.cells),
-    doorRequirements:     level.doorRequirements
-      ? Array.from(level.doorRequirements.entries()).map(([fi, req]) => {
-          const x = fi % level.width, y = Math.floor(fi / level.width);
-          return { door: { x, y, flatIdx: fi }, requiresToggle: req };
-        }) : [],
-  }, null, 2));
-  console.groupEnd();
-}
-
-/** Render a level's grid as a readable ASCII string with x/y coordinate labels. */
-function _renderGrid(level) {
-  const SYM  = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D', 'T'];
-  const { width, height, cells, start, goal } = level;
-  const lines = [];
-  // Column header: x=0,1,2,...
-  const colHeader = '     ' + Array.from({ length: width }, (_, x) => String(x).padStart(2)).join('');
-  lines.push(colHeader);
-  lines.push('     ' + '--'.repeat(width));
-  for (let y = 0; y < height; y++) {
-    let row = `y=${String(y).padEnd(2)} `;
-    for (let x = 0; x < width; x++) {
-      if (x === goal.x  && y === goal.y)                 { row += 'G '; continue; }
-      if (x === start.x && y === 0 && start.y < 0)       { row += '^ '; continue; }
-      row += (SYM[cells[y * width + x]] ?? '?') + ' ';
-    }
-    lines.push(row.trimEnd());
-  }
-  return lines.join('\n');
-}
-
-function _autoPlayNext(moves, idx) {
-  if (state.won || !_autoPlaying) { _autoPlaying = false; return; }
-  if (state.isMoving) { setTimeout(() => _autoPlayNext(moves, idx), _batchFast ? 10 : 50); return; }
-
-  // Animation settled — fill in the "after" side of the previous move's trace entry.
-  if (idx > 0 && _execTrace.length >= idx) {
-    const entry = _execTrace[idx - 1];
-    if (entry && entry.toPos === null) {
-      entry.toPos      = { ...state.playerPos };
-      entry.chainAfter = _chainLengthUsed();
-      entry.gearsAfter = state.gearsLeft;
-      entry.wsAfter    = state.worldState;
-    }
-  }
-
-  if (idx >= moves.length) {
-    // All moves dispatched and last animation settled — no win means divergence.
-    _autoPlaying = false;
-    if (_batchHook) {
-      const h = _batchHook; _batchHook = null;
-      h.onStuck('solver path exhausted without reaching goal (chain mismatch?)');
-    }
-    return;
-  }
-
-  // Capture pre-state for this move (post-state filled on next settled tick above).
-  _execTrace.push({
-    idx:         idx + 1,
-    move:        moves[idx],
-    fromPos:     { ...state.playerPos },
-    chainBefore: _chainLengthUsed(),
-    gearsBefore: state.gearsLeft,
-    wsBefore:    state.worldState,
-    toPos:       null,
-    chainAfter:  null,
-    gearsAfter:  null,
-    wsAfter:     null,
-  });
-
-  handleMove(moves[idx].dx, moves[idx].dy);
-  setTimeout(() => _autoPlayNext(moves, idx + 1), _batchFast ? 0 : 50);
-}
-
 function _showBanner(bannerEl, onDismiss) {
   bannerEl.hidden = false;
   function dismiss() {
@@ -1083,8 +507,7 @@ function _flushQueuedMove() {
 
 function _playBlockedWithJerk(dx, dy) {
   playBlocked();
-  _scheduleDeadEndCheck();
-  if (!_batchFast) animateChainJerkInPlace(state.playerPos, { dx, dy }, state.level);
+  animateChainJerkInPlace(state.playerPos, { dx, dy }, state.level);
 }
 
 function _tryOnewayBacktrack(target, dx, dy, didMove) {
@@ -1151,16 +574,13 @@ function _buildDepartureCtx(target, dx, dy) {
   const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && bendGearCount === 1;
 
   if (willUseGear && state.gearsLeft === 0) {
-    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
-    else { _scheduleDeadEndCheck(); return null; }
+    return null;
   }
   if (isBoatEntry && isBend && !isAtLastCog && bendGearCount >= 2 && state.gearsLeft === 0) {
-    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
-    else { _scheduleDeadEndCheck(); return null; }
+    return null;
   }
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) {
-    if (_batchBypassConstraints) { _batchViolations.gearsExhausted = true; }
-    else { _scheduleDeadEndCheck(); return null; }
+    return null;
   }
 
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
@@ -1288,29 +708,19 @@ function _handleWin() {
   playWin();
   state.queuedMove = null;
 
-  if (!_batchHook) {
-    const level        = state.level;
-    const chainUsed    = _chainLengthUsed();
-    const gearsUsed    = state.totalGears - state.gearsLeft;
-    const chainCalc    = level?.effectiveChainLength ?? 0;
-    const gearsCalc    = level?.effectiveCogs        ?? 0;
-    const issues = [
-      (chainCalc > 0 && chainUsed < chainCalc) && `chain under-used (used ${chainUsed}, budgeted ${chainCalc})`,
-      (gearsCalc > 0 && gearsUsed < gearsCalc) && `gears under-used (used ${gearsUsed}, budgeted ${gearsCalc})`,
-    ].filter(Boolean);
-    if (issues.length) console.warn(`[Win] Generator over-budgeted — ${issues.join('; ')}`);
-  }
+  const gearsUsed   = state.totalGears - state.gearsLeft;
+  const chainUsed   = _chainLengthUsed();
+  const gearOptimal  = state.gearsLeft === 0;
+  const chainOptimal = chainUsed === state.chainLengthTotal;
+  console.log(
+    `Level ${state.level.id} — ` +
+    `gears: ${gearsUsed}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.gearsLeft} left)`}  |  ` +
+    `chain: ${chainUsed}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - chainUsed} left)`}`
+  );
 
-  if (_batchFast) {
-    // Skip retract animation during batch testing
-    if (_batchHook) { const h = _batchHook; _batchHook = null; h.onWin(); }
-    else { _showBanner(winBanner, _nextLevel); }
-  } else {
-    _animateWinRetract(() => {
-      if (_batchHook) { const h = _batchHook; _batchHook = null; h.onWin(); }
-      else { _showBanner(winBanner, _nextLevel); }
-    });
-  }
+  _animateWinRetract(() => {
+    _showBanner(winBanner, _nextLevel);
+  });
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {
@@ -1371,7 +781,6 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       state.isMoving = false;
       setChainSpinning(false);
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-      _scheduleDeadEndCheck();
       _flushQueuedMove();
     }, null, state.playerPos, true, FAST_RETRACT_MS_PER_CELL);
   }
@@ -1386,7 +795,6 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   if (!needsRetractAnim) {
     setChainSpinning(false);
     drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
-    _scheduleDeadEndCheck();
     _flushQueuedMove();
   }
 }
@@ -1421,9 +829,6 @@ function _chainLengthUsed() {
 
 function _executeMove(dx, dy) {
   _retractToken++;
-  clearTimeout(_deadEndTimer);
-  _deadEndTimer = null;
-  deadEndBanner.hidden = true;
 
   const gearSet = new Set(state.gears.filter(g => !g.isTeleport).map(g => g.y * state.level.width + g.x));
 
@@ -1460,9 +865,6 @@ function _executeMove(dx, dy) {
   // Landing on an existing gear, the boat, or retracing the last segment is a backtrack —
   // chain shortens, so no cap.  Only cap genuine forward moves into new territory.
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
-  if (_batchBypassConstraints && _batchViolations && state.chainLengthTotal > 0 && chainAvail === 0) {
-    _batchViolations.chainWasDepleted = true;
-  }
   // For teleporter moves the physical chain extension is dist(playerPos→entry) + dist(exit→target),
   // not the straight Manhattan from playerPos to target (which can over- or under-estimate).
   const slideLen = target.teleportCrossing
@@ -1470,12 +872,9 @@ function _executeMove(dx, dy) {
     + Math.abs(target.x - target.teleportCrossing.exitX) + Math.abs(target.y - target.teleportCrossing.exitY)
     : Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
-  if (chainWouldExceed && _batchBypassConstraints) _batchViolations.chainExceeded = true;
-  const isChainCapped = chainWouldExceed && !_batchBypassConstraints;
-  const moveTarget = isChainCapped
+  const moveTarget = chainWouldExceed
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
-  if (moveTarget.teleportCrossing && _batchViolations) _batchViolations.teleportUsed = true;
 
   if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
     _playBlockedWithJerk(dx, dy);
@@ -1525,7 +924,7 @@ function _executeMove(dx, dy) {
     playLand();
     _onPlayerLanded(moveTarget, dx, dy, ctx);
     // If the player just dived AND needed the hint, schedule an inactivity nudge.
-    if (_comingFromBoat && _diveHintShown && !_batchFast) {
+    if (_comingFromBoat && _diveHintShown) {
       _moveHintTimer = setTimeout(showMoveHint, 3500);
     }
   }, teleportInfo, !tc ? { dx, dy } : null);

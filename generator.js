@@ -1,6 +1,5 @@
 import { makeRng } from './random.js';
 import { slidePlayer, buildToggleMap } from './puzzle.js';
-import { solve } from './solver.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
 const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7 };
@@ -49,7 +48,7 @@ export const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity, playerChainLength = Infinity } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -456,10 +455,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     teleporterMap = _placeTeleporters(outCells, width, height, carvedMask, start, rng);
   }
 
-  const { goal, depths, difficulties, chainLengths, toggleCount, universeDepths, universeChainLengths } = _findGoal(outCells, width, height, start, doorRequirements, carvedMask, teleporterMap);
+  const { goal, depths, difficulties, chainLengths, chainOnGearLengths, gearsOnChainDepths,
+          p4BestAtPos, toggleCount, universeDepths, universeChainLengths } =
+    _findGoal(outCells, width, height, start, doorRequirements, carvedMask, teleporterMap, playerGears, playerChainLength);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
-  const goalDepth = depths[goal.y * width + goal.x];
+  const goalFlat  = goal.y * width + goal.x;
+  const goalDepth = depths[goalFlat];
   const keyDepths = [];
   for (let i = 0; i < outCells.length; i++) {
     if (outCells[i] === 8) {
@@ -467,22 +469,45 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  // Simulate the solver's actual path to get accurate chain and gear metrics.
-  // The BFS-based estimates diverge from the game because the game's solver starts
-  // from the landed position (after the initial auto-slide) with a fresh cost counter,
-  // so it doesn't account for chain already consumed by the initial slide.
-  const simMetrics = _simulatePath(outCells, width, height, start, goal, doorRequirements, teleporterMap);
+  const goalChainLength = chainLengths[goalFlat];
 
-  // Fall back to BFS estimates only if the solver found no path (shouldn't happen).
-  const goalChainLength = chainLengths[goal.y * width + goal.x];
-  const effectiveChainLength = simMetrics?.effectiveChainLength ?? keyDepths.reduce(
-    (max, k) => Math.max(max, chainLengths[k.y * width + k.x] >= 0 ? chainLengths[k.y * width + k.x] : 0),
-    goalChainLength >= 0 ? goalChainLength : 0
+  // ── Companion pair selection ──────────────────────────────────────────────
+  // Pass 1 gives the min-gear path; Pass 3 gives the min-chain path.
+  // Both are real paths but may use different amounts of the other resource.
+  // Pair A = (min_gears, chain_on_that_path); Pair B = (gears_on_min_chain_path, min_chain).
+  // Taking max over goal + all required keys ensures every needed cell is reachable.
+  const _maxOver = (baseVal, arr) => keyDepths.reduce(
+    (m, k) => { const v = arr[k.y * width + k.x]; return Math.max(m, v >= 0 ? v : 0); },
+    baseVal >= 0 ? baseVal : 0
   );
-  const effectiveCogs = simMetrics?.effectiveCogs ?? keyDepths.reduce(
-    (max, k) => Math.max(max, k.depth >= 0 ? k.depth : 0),
-    goalDepth >= 0 ? goalDepth : 0
-  );
+  const pairA_gears = _maxOver(goalDepth,                    depths);
+  const pairA_chain = _maxOver(chainOnGearLengths[goalFlat], chainOnGearLengths);
+  const pairB_gears = _maxOver(gearsOnChainDepths[goalFlat], gearsOnChainDepths);
+  const pairB_chain = _maxOver(goalChainLength,              chainLengths);
+
+  // Each pair is a valid (gears, chain) budget — it corresponds to a real path.
+  // Pair C comes from Pass 4 and is guaranteed valid when Pass 4 ran (both values ≤ player stats).
+  // Filter A/B by player stats (Infinity = no constraint), then pick the tightest valid pair.
+  const pg = playerGears;
+  const pc = playerChainLength;
+
+  const p4Goal   = p4BestAtPos?.get(goalFlat);  // null when !hasBudgets
+  const pairC    = p4Goal ? { g: p4Goal.g, c: p4Goal.chain } : null;
+
+  const candidates = [
+    (pairA_gears <= pg && pairA_chain <= pc) ? { g: pairA_gears, c: pairA_chain } : null,
+    (pairB_gears <= pg && pairB_chain <= pc) ? { g: pairB_gears, c: pairB_chain } : null,
+    pairC,
+  ].filter(Boolean);
+
+  let effectiveCogs, effectiveChainLength;
+  if (candidates.length > 0) {
+    const best = candidates.reduce((a, b) => (a.g + a.c <= b.g + b.c ? a : b));
+    effectiveCogs = best.g; effectiveChainLength = best.c;
+  } else {
+    // Only reachable when !hasBudgets — A and B are always valid with Infinity constraints.
+    effectiveCogs = pairA_gears; effectiveChainLength = pairB_chain;
+  }
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
@@ -504,50 +529,22 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null } = {}) {
-  let best           = null;  // best solver-validated candidate
-  let bestFallback   = null;  // best unvalidated candidate (used only if no valid one found)
-  let bestScore      = Infinity;
-  let bestFallbackScore = Infinity;
-  const GENEROUS = (width + height) * 4;
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity, playerChainLength = Infinity } = {}) {
+  let best      = null;
+  let bestScore = Infinity;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears, playerChainLength });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
-
-    // Track best overall as fallback in case no solver-validated candidate is found.
-    if (score < bestFallbackScore) { bestFallbackScore = score; bestFallback = level; }
-
-    // Validate: solver must find a path within the computed chain budget.
-    // Rejects levels where the solver's chain-length approximation diverges enough
-    // from the real physical chain to prevent it from finding the solution.
-    const toggleMap  = buildToggleMap(level.cells);
-    const initSlide  = slidePlayer(level, level.start, 0, 1, toggleMap, 0, null, GENEROUS);
-    const landPos    = { x: initSlide.x, y: initSlide.y };
-    let initWS2 = 0;
-    if (initSlide.crumble?.toggleIdx      !== undefined) initWS2 |= (1 << initSlide.crumble.toggleIdx);
-    if (initSlide.keyCollected?.toggleIdx !== undefined) initWS2 |= (1 << initSlide.keyCollected.toggleIdx);
-    const initChainLen2 = (() => {
-      let len = Math.abs(landPos.x - level.start.x) + Math.abs(landPos.y - level.start.y);
-      if (initSlide.teleportCrossing) {
-        const tc = initSlide.teleportCrossing;
-        len = Math.abs(tc.entryX - level.start.x) + Math.abs(tc.entryY - level.start.y)
-            + Math.abs(landPos.x - tc.exitX) + Math.abs(landPos.y - tc.exitY);
-      }
-      return len;
-    })();
-    if (!solve(level, landPos, initWS2, toggleMap, Math.max(0, level.effectiveChainLength - initChainLen2), level.effectiveCogs, { dx: 0, dy: 1 })) continue;
 
     if (score < bestScore) {
       bestScore = score;
       best      = level;
-      // Close enough to the target — no point evaluating more candidates.
       if (difficultyTarget !== null && bestScore < 0.5) break;
     }
   }
 
-  if (!best) best = bestFallback; // no solver-valid candidate found; use best available
   const label = difficultyTarget !== null
     ? `target=${difficultyTarget}  closest=${best.goalDifficulty.toFixed(2)}`
     : `goalDifficulty=${best.goalDifficulty.toFixed(2)}`;
@@ -746,190 +743,6 @@ export function computeStepAnalysis(step, width, height, start) {
   return { depths, difficulties };
 }
 
-// ── Simulation-based metric computation ──────────────────────────────────────
-// Replay the solver's path with full game gear mechanics to get accurate
-// effectiveChainLength (peak physical chain: boat→gears→player) and
-// effectiveCogs (net gears consumed).
-//
-// Two-pass approach to fix systematic under-budgeting:
-//   Pass 1 (generous): solve with GENEROUS budget → peak physical chain = ECL₁.
-//   Pass 2 (constrained): solve with ECL₁ as budget (matching what the game will use).
-//     The constrained solver often finds a different, more winding path requiring more
-//     direction changes (gears).  Its peak physical chain ECL₂ may also exceed ECL₁
-//     because the solver's cost is total-cells-traveled (starting at 0 from landPos)
-//     while the game's physical chain already includes the initial boat→landPos segment.
-//   Final: effectiveChainLength = max(ECL₁, ECL₂), effectiveCogs from constrained path.
-function _simulatePath(cells, width, height, start, goal, doorRequirements, teleporterMap = null) {
-  const level = { cells, width, height, goal, doorRequirements, start, teleporterMap };
-  const GENEROUS = (width + height) * 4;
-  const toggleMap = buildToggleMap(cells);
-
-  // Initial auto-slide: always DOWN from the boat (y=-1).
-  const initResult = slidePlayer(level, start, 0, 1, toggleMap, 0, null, GENEROUS);
-  const landPos    = { x: initResult.x, y: initResult.y };
-
-  // Carry forward any worldState changes from the initial slide (key collected, crumble hit).
-  let initWS = 0;
-  if (initResult.crumble?.toggleIdx      !== undefined) initWS |= (1 << initResult.crumble.toggleIdx);
-  if (initResult.keyCollected?.toggleIdx !== undefined) initWS |= (1 << initResult.keyCollected.toggleIdx);
-
-  // Run solver with solverBudget, replay moves tracking physical chain and gear usage.
-  // prevDir after the initial auto-slide is always DOWN (boat → grid is always dy=+1).
-  const GENEROUS_GEARS = 20;
-  const INIT_PREV_DIR  = { dx: 0, dy: 1 };
-
-  // Chain already consumed by the initial boat→landPos slide (before any solver move).
-  const initChainLen = (() => {
-    if (initResult.teleportCrossing) {
-      const tc = initResult.teleportCrossing;
-      return Math.abs(tc.entryX - start.x) + Math.abs(tc.entryY - start.y)
-           + Math.abs(landPos.x - tc.exitX) + Math.abs(landPos.y - tc.exitY);
-    }
-    return Math.abs(landPos.x - start.x) + Math.abs(landPos.y - start.y);
-  })();
-
-  function runSim(solverBudget) {
-    const moves = solve(level, landPos, initWS, toggleMap, Math.max(0, solverBudget - initChainLen), GENEROUS_GEARS, INIT_PREV_DIR);
-    if (!moves) return null;
-
-    let pos   = { ...landPos };
-    let gears = [];
-    // If the initial auto-slide crossed a teleporter, seed gears with that crossing
-    // so chainLen() routes boat → teleport entry → teleport exit → landPos correctly.
-    // Without this, chainLen() uses a straight boat→landPos line which is wrong.
-    if (initResult.teleportCrossing) {
-      const tc = initResult.teleportCrossing;
-      gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY, exitX: tc.exitX, exitY: tc.exitY });
-    }
-    const chainLen = () => {
-      let len = 0;
-      let px = start.x, py = start.y;
-      for (const g of gears) {
-        len += Math.abs(g.x - px) + Math.abs(g.y - py);
-        px = g.isTeleport ? g.exitX : g.x;
-        py = g.isTeleport ? g.exitY : g.y;
-      }
-      len += Math.abs(pos.x - px) + Math.abs(pos.y - py);
-      return len;
-    };
-
-    let ws           = initWS;
-    let prevDx       = 0, prevDy = 1;
-    let prevDirNull  = false;
-    let gearsUsed    = 0;
-    let maxChainLen  = chainLen();
-    const gearOutPos = (g) => g.isTeleport ? { x: g.exitX, y: g.exitY } : { x: g.x, y: g.y };
-
-    for (const { dx, dy } of moves) {
-      const gearSet = new Set(gears.filter(g => !g.isTeleport).map(g => g.y * width + g.x));
-      const r = slidePlayer(level, pos, dx, dy, toggleMap, ws, gearSet, GENEROUS);
-
-      if (r.crumble?.toggleIdx      !== undefined) ws |= (1 << r.crumble.toggleIdx);
-      if (r.keyCollected?.toggleIdx !== undefined) ws |= (1 << r.keyCollected.toggleIdx);
-
-      const slideLen   = Math.abs(r.x - pos.x) + Math.abs(r.y - pos.y);
-      const didMove    = slideLen > 0;
-      const hasCrumble = r.crumble !== null;
-
-      if (!didMove && !hasCrumble) { prevDx = dx; prevDy = dy; continue; }
-
-      const isBoatEntry = r.y < 0;
-      const revisitIdx  = didMove ? gears.findIndex(g => !g.isTeleport && g.x === r.x && g.y === r.y) : -1;
-
-      // ── Replicate _buildDepartureCtx ─────────────────────────────────────────
-
-      if (!isBoatEntry && gears.length > 0) {
-        const last = gears[gears.length - 1];
-        if (last.x === pos.x && last.y === pos.y) {
-          const prev = gears.length > 1 ? gearOutPos(gears[gears.length - 2]) : start;
-          if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
-            gears.pop(); gearsUsed--;
-          }
-        }
-      }
-
-      const isBendRaw = !prevDirNull && (dx !== prevDx || dy !== prevDy);
-
-      let isRetractingTowardLastCog = false;
-      if (isBendRaw && !isBoatEntry && didMove) {
-        const anchor = gears.length > 0 ? gearOutPos(gears[gears.length - 1]) : start;
-        isRetractingTowardLastCog =
-          dx === Math.sign(anchor.x - pos.x) && dy === Math.sign(anchor.y - pos.y);
-      }
-
-      const isBend      = isBendRaw && !isRetractingTowardLastCog;
-      const isAtLastCog = gears.length > 0 &&
-        gears[gears.length - 1].x === pos.x && gears[gears.length - 1].y === pos.y;
-      const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog && didMove;
-
-      if (willUseGear) { gears.push({ x: pos.x, y: pos.y }); gearsUsed++; }
-
-      // ── Replicate _onPlayerLanded ─────────────────────────────────────────────
-
-      if (didMove) pos = { x: r.x, y: r.y };
-
-      if (isBoatEntry) {
-        gearsUsed -= gears.filter(g => !g.isTeleport).length; gears = [];
-        prevDirNull = true;
-      } else if (revisitIdx >= 0) {
-        const freed = gears.slice(revisitIdx + 1).filter(g => !g.isTeleport).length;
-        gearsUsed -= freed;
-        gears = gears.slice(0, revisitIdx + 1);
-      }
-
-      let npx = dx, npy = dy;
-      if (isBoatEntry) { npx = 0; npy = 0; }
-      else if (!isBoatEntry && isRetractingTowardLastCog && revisitIdx < 0 && didMove) {
-        const anchor = gears.length > 0 ? gears[gears.length - 1] : start;
-        npx = Math.sign(pos.x - anchor.x);
-        npy = Math.sign(pos.y - anchor.y);
-      } else if (!didMove && hasCrumble && isBend && !isAtLastCog) {
-        // Crumble-bounce bend: the game places a gear then immediately pops it
-        // (pending-cog-pop), resetting prevDir to the approach segment direction.
-        // Without this, the simulation leaves prevDir pointing at the crumble,
-        // causing the next real slide in that direction to be missed as a bend.
-        const anchor = gears.length > 0 ? gears[gears.length - 1] : start;
-        npx = Math.sign(pos.x - anchor.x);
-        npy = Math.sign(pos.y - anchor.y);
-      }
-
-      if (!isBoatEntry && gears.length > 0) {
-        const last = gears[gears.length - 1];
-        if (last.x === pos.x && last.y === pos.y) {
-          const prev = gears.length > 1 ? gearOutPos(gears[gears.length - 2]) : start;
-          gears.pop(); gearsUsed--;
-          npx = Math.sign(last.x - prev.x);
-          npy = Math.sign(last.y - prev.y);
-        }
-      }
-
-      if (!isBoatEntry) prevDirNull = false;
-      prevDx = npx; prevDy = npy;
-
-      if (r.teleportCrossing) {
-        const tc = r.teleportCrossing;
-        const retracedIdx = gears.findIndex(
-          g => g.isTeleport && g.exitX === tc.entryX && g.exitY === tc.entryY
-        );
-        if (retracedIdx >= 0 && retracedIdx === gears.length - 1) {
-          gears.splice(retracedIdx, 1);
-        } else {
-          gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY, exitX: tc.exitX, exitY: tc.exitY });
-        }
-      }
-
-      const cl = chainLen();
-      if (cl > maxChainLen) maxChainLen = cl;
-    }
-
-    return { effectiveChainLength: maxChainLen, effectiveCogs: gearsUsed };
-  }
-
-  // The solver never caps individual slides — it prunes branches that exceed the
-  // budget.  So the path it finds with GENEROUS is the globally optimal path, and
-  // the game solver given exactly that budget will find the same path.
-  return runSim(GENEROUS);
-}
 
 // Returns true if placing a teleporter pair at (x1,y1)↔(x2,y2) is safe:
 // for every direction D, if the cell behind T can be approached from -D, then
@@ -1012,7 +825,7 @@ function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
   return null;
 }
 
-function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null) {
+function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null, playerGears = Infinity, playerChainLength = Infinity) {
   const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   // ── Build toggle map ───────────────────────────────────────────────────────
@@ -1056,17 +869,20 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   // bestKeyForPos: posFlat  → stateKey at minimum depth (in-grid cells only)
   const parentOf      = new Map();
   const bestKeyForPos = new Map();
+  // Companion value for Pass 1: for each cell, the chain length used on the min-gear path.
+  const chainOnGearPath = new Map();
 
   const startKey = stateKey(start, 3, 0);
-  parentOf.set(startKey, { fromKey: null, landing: start });
+  parentOf.set(startKey, { fromKey: null, landing: start, chain: 0 });
 
   landingVisited.set(stateKey(start, 3, 0), 0);
   depths.set(posKey(start), 0);
+  chainOnGearPath.set(posKey(start), 0);
   _recUD(0, posKey(start), 0);
   _recUCL(0, posKey(start), 0);
   // 0-1 BFS: bfsCurr holds nodes at the current bend-depth, bfsNext at current+1.
   // 0-cost (same direction) → push to bfsCurr; 1-cost (bend) → push to bfsNext.
-  let bfsCurr = [{ pos: start, depth: 0, worldState: 0, di: 3 }];
+  let bfsCurr = [{ pos: start, depth: 0, worldState: 0, di: 3, chain: 0 }];
   let bfsNext = [];
   let currHead = 0;
 
@@ -1082,14 +898,15 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const ancPos   = entry.landing;
       const ancDi    = ((curKey % 5) + 5) % 5;
       const ancDepth = landingVisited.get(curKey);
+      const ancChain = entry.chain ?? 0;
       if (ancDepth === undefined) break;
       const freeKey = stateKey(ancPos, ancDi, newWorldState);
       if ((landingVisited.get(freeKey) ?? Infinity) > ancDepth) {
         landingVisited.set(freeKey, ancDepth);
-        parentOf.set(freeKey, { fromKey: curKey, landing: ancPos });
+        parentOf.set(freeKey, { fromKey: curKey, landing: ancPos, chain: ancChain });
         const pk = posKey(ancPos);
         if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
-        bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi });
+        bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi, chain: ancChain });
         if (ancPos.y >= 0) _recUD(newWorldState, pk, ancDepth);
       }
       curKey = entry.fromKey;
@@ -1100,7 +917,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if (currHead >= bfsCurr.length) {
       bfsCurr = bfsNext; bfsNext = []; currHead = 0;
     }
-    const { pos, depth, worldState, di } = bfsCurr[currHead++];
+    const { pos, depth, worldState, di, chain } = bfsCurr[currHead++];
 
     if ((landingVisited.get(stateKey(pos, di, worldState)) ?? depth) < depth) continue;
 
@@ -1120,26 +937,63 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const isBendMove = (i !== di) && !isReversal;
       const nd = depth + (isBendMove ? 1 : 0);
 
-      // Set depth for every cell reached on this slide.
-      for (const p of path) {
-        const k = posKey(p);
-        if (!depths.has(k) || depths.get(k) > nd) depths.set(k, nd);
+      // Set depth (and companion chain) for every cell reached on this slide.
+      // Chain decreases only when a reversal is physically blocked by a one-way tile;
+      // free reversals still add to chain to prevent infinite oscillation in the BFS.
+      const chainRetracts = isReversal && blockedByOneway;
+      for (let j = 0; j < path.length; j++) {
+        const k = posKey(path[j]);
+        const chainJ = chainRetracts ? chain - (j + 1) : chain + j + 1;
+        if (!depths.has(k) || depths.get(k) > nd) {
+          depths.set(k, nd);
+          chainOnGearPath.set(k, chainJ);
+        }
         _recUD(worldState, k, nd);
       }
 
       if (path.length > 0) {
         const landing    = path[path.length - 1];
+        const newChain   = chainRetracts ? chain - path.length : chain + path.length;
         const effectiveWS = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
         const lk = stateKey(landing, i, effectiveWS);
         if ((landingVisited.get(lk) ?? Infinity) > nd) {
           landingVisited.set(lk, nd);
-          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing });
+          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing, chain: newChain });
           const pf = posKey(landing);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
-          (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i });
+          (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i, chain: newChain });
         }
         // Key landing: record the landing cell in the universe AFTER key collection too.
         if (keyPos) _recUD(effectiveWS, posKey(landing), nd);
+
+        // Post-oneway exit node: when the slide passes through one or more one-way
+        // tiles, add an extra exploration node at the cell immediately after the last
+        // traversed one-way (with chain length at that intermediate position).  This
+        // avoids over-counting chain when the player later explores perpendicular
+        // directions from near the one-way rather than from the farther landing cell.
+        if (!chainRetracts && path.length > 1) {
+          let lastOWIdx = -1;
+          for (let j = 0; j < path.length - 1; j++) {
+            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
+          }
+          if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
+            const exitIdx   = lastOWIdx + 1;
+            const exitCell  = path[exitIdx];
+            const exitChain = chain + exitIdx + 1;
+            const exitPk    = posKey(exitCell);
+            const exitSK    = stateKey(exitCell, i, worldState);
+            if ((landingVisited.get(exitSK) ?? Infinity) > nd) {
+              landingVisited.set(exitSK, nd);
+              parentOf.set(exitSK, { fromKey: stateKey(pos, di, worldState), landing: exitCell, chain: exitChain });
+              if (!bestKeyForPos.has(exitPk)) bestKeyForPos.set(exitPk, exitSK);
+              if (!depths.has(exitPk) || depths.get(exitPk) > nd) depths.set(exitPk, nd);
+              if (!chainOnGearPath.has(exitPk) || chainOnGearPath.get(exitPk) > exitChain) chainOnGearPath.set(exitPk, exitChain);
+              _recUD(worldState, exitPk, nd);
+              _recUCL(worldState, exitPk, exitChain);
+              (isBendMove ? bfsNext : bfsCurr).push({ pos: exitCell, depth: nd, worldState, di: i, chain: exitChain });
+            }
+          }
+        }
       }
 
       if (crumblePos && crumblePos.toggleIdx !== undefined) {
@@ -1149,17 +1003,21 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         // Zero-move crumble bounce: the game's pending-cog-pop immediately refunds
         // the gear placed for any bend and resets prevDir to the approach direction (di).
         // So a zero-move bounce costs 0 gears and the effective direction stays di.
-        const crumbleNd = path.length === 0 ? depth : nd;
-        const crumbleDi = path.length === 0 ? di : i;
-        if (!depths.has(fk) || depths.get(fk) > crumbleNd) depths.set(fk, crumbleNd);
+        const crumbleNd    = path.length === 0 ? depth : nd;
+        const crumbleDi    = path.length === 0 ? di : i;
+        const crumbleChain = chainRetracts ? chain - path.length : chain + path.length;
+        if (!depths.has(fk) || depths.get(fk) > crumbleNd) {
+          depths.set(fk, crumbleNd);
+          chainOnGearPath.set(fk, crumbleChain);
+        }
         _recUD(newWorldState, fk, crumbleNd);
         const lk = stateKey(from, crumbleDi, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > crumbleNd) {
           landingVisited.set(lk, crumbleNd);
-          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from });
+          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from, chain: crumbleChain });
           const pf = posKey(from);
           if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
-          (crumbleDi !== di ? bfsNext : bfsCurr).push({ pos: from, depth: crumbleNd, worldState: newWorldState, di: crumbleDi });
+          (crumbleDi !== di ? bfsNext : bfsCurr).push({ pos: from, depth: crumbleNd, worldState: newWorldState, di: crumbleDi, chain: crumbleChain });
         }
 
         // "Free-backtrack" variant: the player can break the crumble and retract
@@ -1180,17 +1038,25 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       // of the segment (the parent BFS node).  This costs 0 extra gears and leaves the
       // player at the parent position with the same incoming direction as before, mirroring
       // how game.js sets prevDir after _executeBacktrack.
+      // The chain RETRACTS to the parent's shorter value — hence backChain < chain.
       if (isReversal && blockedByOneway && path.length === 0) {
-        const parentInfo = parentOf.get(stateKey(pos, di, worldState));
-        if (parentInfo && (parentInfo.landing.x !== pos.x || parentInfo.landing.y !== pos.y)) {
-          const backPos = parentInfo.landing;
-          const freeKey = stateKey(backPos, di, worldState);
-          if ((landingVisited.get(freeKey) ?? Infinity) > nd) {
-            landingVisited.set(freeKey, nd);
-            parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: backPos });
-            const pf = posKey(backPos);
-            if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, freeKey);
-            bfsCurr.push({ pos: backPos, depth: nd, worldState, di });
+        const myEntry = parentOf.get(stateKey(pos, di, worldState));
+        if (myEntry?.fromKey != null) {
+          const parentEntry = parentOf.get(myEntry.fromKey);
+          if (parentEntry) {
+            const backPos   = parentEntry.landing;
+            const backChain = parentEntry.chain ?? 0;
+            if (backPos.x !== pos.x || backPos.y !== pos.y) {
+              const freeKey = stateKey(backPos, di, worldState);
+              if ((landingVisited.get(freeKey) ?? Infinity) > nd) {
+                landingVisited.set(freeKey, nd);
+                parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: backPos, chain: backChain });
+                const pf = posKey(backPos);
+                if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, freeKey);
+                bfsCurr.push({ pos: backPos, depth: nd, worldState, di, chain: backChain });
+                if (backPos.y >= 0) _recUD(worldState, pf, nd);
+              }
+            }
           }
         }
       }
@@ -1259,6 +1125,24 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           diffLandingVis.set(lk, nd);
           heapPush({ pos: landing, diff: nd, worldState: effectiveWS, di: i });
         }
+
+        // Post-oneway exit node: extra exploration from cell after last traversed one-way.
+        if (path.length > 1) {
+          let lastOWIdx = -1;
+          for (let j = 0; j < path.length - 1; j++) {
+            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
+          }
+          if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
+            const exitCell = path[lastOWIdx + 1];
+            const exitPk   = posKey(exitCell);
+            if (!difficulties.has(exitPk) || difficulties.get(exitPk) > nd) difficulties.set(exitPk, nd);
+            const exitSK = stateKey(exitCell, i, worldState);
+            if ((diffLandingVis.get(exitSK) ?? Infinity) > nd) {
+              diffLandingVis.set(exitSK, nd);
+              heapPush({ pos: exitCell, diff: nd, worldState, di: i });
+            }
+          }
+        }
       }
 
       // Crumble break: transition to new worldState, no extra difficulty charge.
@@ -1278,11 +1162,14 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
   // ── Pass 3: Dijkstra for minimum chain length to reach each cell ──────
   // Cost per edge = path.length (cells traveled in this slide).
-  const clLenMap = new Map();
-  const clVisMap = new Map();
+  // Also tracks companion gear count (gearsOnChainPath) on each min-chain path.
+  const clLenMap      = new Map();
+  const clVisMap      = new Map();
+  const gearsOnChainPath = new Map();
   clLenMap.set(posKey(start), 0);
   clVisMap.set(stateKey(start, 4, 0), 0);
-  const clHeap = [{ pos: start, cl: 0, worldState: 0, di: 4 }];
+  gearsOnChainPath.set(posKey(start), 0);
+  const clHeap = [{ pos: start, cl: 0, worldState: 0, di: 4, gears: 0 }];
   function clPush(e) {
     clHeap.push(e); let i = clHeap.length - 1;
     while (i > 0) { const p = (i-1)>>1; if (clHeap[p].cl <= clHeap[i].cl) break; [clHeap[p],clHeap[i]]=[clHeap[i],clHeap[p]]; i=p; }
@@ -1296,44 +1183,84 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     return top;
   }
   while (clHeap.length > 0) {
-    const { pos, cl, worldState, di } = clPop();
+    const { pos, cl, worldState, di, gears } = clPop();
     if ((clVisMap.get(stateKey(pos, di, worldState)) ?? Infinity) < cl) continue;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
-      const { path, crumblePos, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, teleporterMap);
+      const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements, teleporterMap);
       if (path.length === 0 && !crumblePos) continue;
-      const nCl = cl + path.length;
-      for (const p of path) {
-        const k = posKey(p);
-        if (!clLenMap.has(k) || clLenMap.get(k) > nCl) clLenMap.set(k, nCl);
-        _recUCL(worldState, k, nCl);
+      const isReversal    = di < 4 && dx === -DIRS4[di].dx && dy === -DIRS4[di].dy;
+      const chainRetracts = isReversal && blockedByOneway;
+      const isBend        = (i !== di) && !isReversal;
+      const newGears      = gears + (isBend ? 1 : 0);
+      const nCl = chainRetracts ? cl - path.length : cl + path.length;
+      for (let j = 0; j < path.length; j++) {
+        const k = posKey(path[j]);
+        const clj = chainRetracts ? cl - (j + 1) : cl + j + 1;
+        if (!clLenMap.has(k) || clLenMap.get(k) > clj) {
+          clLenMap.set(k, clj);
+          gearsOnChainPath.set(k, newGears);
+        }
+        _recUCL(worldState, k, clj);
       }
       if (path.length > 0) {
         const landing = path[path.length - 1];
         const ews = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
         const lk = stateKey(landing, i, ews);
-        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: landing, cl: nCl, worldState: ews, di: i }); }
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: landing, cl: nCl, worldState: ews, di: i, gears: newGears }); }
         if (keyPos) _recUCL(ews, posKey(landing), nCl);
+
+        // Post-oneway exit node: extra exploration from cell after last traversed one-way,
+        // using chain length and gear count at that intermediate position.
+        if (!chainRetracts && path.length > 1) {
+          let lastOWIdx = -1;
+          for (let j = 0; j < path.length - 1; j++) {
+            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
+          }
+          if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
+            const exitIdx  = lastOWIdx + 1;
+            const exitCell = path[exitIdx];
+            const exitCl   = cl + exitIdx + 1;
+            const exitPk   = posKey(exitCell);
+            const exitSK   = stateKey(exitCell, i, worldState);
+            if ((clVisMap.get(exitSK) ?? Infinity) > exitCl) {
+              clVisMap.set(exitSK, exitCl);
+              if (!clLenMap.has(exitPk) || clLenMap.get(exitPk) > exitCl) {
+                clLenMap.set(exitPk, exitCl);
+                gearsOnChainPath.set(exitPk, newGears);
+              }
+              _recUCL(worldState, exitPk, exitCl);
+              clPush({ pos: exitCell, cl: exitCl, worldState, di: i, gears: newGears });
+            }
+          }
+        }
       }
       if (crumblePos && crumblePos.toggleIdx !== undefined) {
         const nws = worldState | (1 << crumblePos.toggleIdx);
         const from = path.length > 0 ? path[path.length - 1] : pos;
         const fk = posKey(from);
-        if (!clLenMap.has(fk) || clLenMap.get(fk) > nCl) clLenMap.set(fk, nCl);
+        if (!clLenMap.has(fk) || clLenMap.get(fk) > nCl) {
+          clLenMap.set(fk, nCl);
+          gearsOnChainPath.set(fk, newGears);
+        }
         _recUCL(nws, fk, nCl);
         const lk = stateKey(from, i, nws);
-        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: from, cl: nCl, worldState: nws, di: i }); }
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: from, cl: nCl, worldState: nws, di: i, gears: newGears }); }
       }
     }
   }
 
   // ── Build flat arrays: -1 = unreachable ──────────────────────────────────
-  const depthArray       = new Int16Array(width * height).fill(-1);
-  const difficultyArray  = new Float32Array(width * height).fill(-1);
-  const chainLengthArray = new Int16Array(width * height).fill(-1);
-  for (const [k, d] of depths)       depthArray[k]       = d;
-  for (const [k, d] of difficulties) difficultyArray[k]  = d;
-  for (const [k, v] of clLenMap)     chainLengthArray[k] = v;
+  const depthArray        = new Int16Array(width * height).fill(-1);
+  const difficultyArray   = new Float32Array(width * height).fill(-1);
+  const chainLengthArray  = new Int16Array(width * height).fill(-1);
+  const chainOnGearArray  = new Int16Array(width * height).fill(-1); // companion: chain on min-gear path
+  const gearsOnChainArray = new Int16Array(width * height).fill(-1); // companion: gears on min-chain path
+  for (const [k, d] of depths)           depthArray[k]        = d;
+  for (const [k, d] of difficulties)     difficultyArray[k]   = d;
+  for (const [k, v] of clLenMap)         chainLengthArray[k]  = v;
+  for (const [k, v] of chainOnGearPath)  chainOnGearArray[k]  = v;
+  for (const [k, v] of gearsOnChainPath) gearsOnChainArray[k] = v;
 
   // ── Per-universe arrays: one Int16Array per worldState ───────────────────
   // universeDepths[ws][flatIdx]       = min gear depth in universe ws, -1 = unreachable
@@ -1381,18 +1308,159 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if (hasCrossing) difficultyArray[k] += DIFFICULTY_WEIGHTS.CHAIN_CROSSING;
   }
 
+  // ── Pass 4: Joint reachability within (playerGears, playerChainLength) ──────
+  // Dijkstra on chainUsed; state = (pos, di, ws, gearsUsed).
+  // Enforces both constraints simultaneously so the goal is only placed at a cell
+  // the player can actually land on with their current stats combined.
+  const hasBudgets = playerGears !== Infinity || playerChainLength !== Infinity;
+  const jointReachable = new Set(); // flat posKeys the player can land on within both budgets
+  let jBestAtPos = null;            // populated by Pass 4 when hasBudgets; posFlat → { g, chain }
+
+  if (hasBudgets) {
+    const pg = playerGears;
+    const pc = playerChainLength;
+    const jKey = (p, di, ws, g) => ((ws * width * height + p.y * width + p.x) * 5 + di) * (pg + 1) + g;
+
+    const jVis    = new Map();
+    const jParent = new Map();
+    const jHeap   = [];
+    jBestAtPos = new Map(); // posFlat → { g, chain } with min chain (then min gears)
+
+    function jUpdateBest(pf, newG, newChain) {
+      const cur = jBestAtPos.get(pf);
+      if (!cur || newChain < cur.chain || (newChain === cur.chain && newG < cur.g)) {
+        jBestAtPos.set(pf, { g: newG, chain: newChain });
+      }
+    }
+
+    function jPush(e) {
+      jHeap.push(e); let i = jHeap.length - 1;
+      while (i > 0) { const p = (i-1)>>1; if (jHeap[p].chain <= jHeap[i].chain) break; [jHeap[p],jHeap[i]]=[jHeap[i],jHeap[p]]; i=p; }
+    }
+    function jPop() {
+      const top = jHeap[0], last = jHeap.pop();
+      if (jHeap.length > 0) {
+        jHeap[0] = last; let i = 0;
+        while (true) { let s=i,l=2*i+1,r=2*i+2; if(l<jHeap.length&&jHeap[l].chain<jHeap[s].chain)s=l; if(r<jHeap.length&&jHeap[r].chain<jHeap[s].chain)s=r; if(s===i)break; [jHeap[i],jHeap[s]]=[jHeap[s],jHeap[i]]; i=s; }
+      }
+      return top;
+    }
+    // Walk ancestor chain; re-enqueue each ancestor at its original (gearsUsed, chainUsed)
+    // but with newWS — models the player collecting a toggle and retracting to any prior waypoint.
+    function jFreeBacktrack(fromKey, newWS) {
+      let curKey = fromKey;
+      while (curKey !== null) {
+        const e = jParent.get(curKey);
+        if (!e) break;
+        const nk = jKey(e.pos, e.di, newWS, e.g);
+        if ((jVis.get(nk) ?? Infinity) > e.chain) {
+          jVis.set(nk, e.chain);
+          jParent.set(nk, { fromKey: curKey, pos: e.pos, di: e.di, ws: newWS, g: e.g, chain: e.chain });
+          jPush({ pos: e.pos, di: e.di, ws: newWS, g: e.g, chain: e.chain });
+          if (e.pos.y >= 0) { jointReachable.add(posKey(e.pos)); jUpdateBest(posKey(e.pos), e.g, e.chain); }
+        }
+        curKey = e.fromKey;
+      }
+    }
+
+    // di=3 = DOWN, matching the direction the player arrives from after the entry slide.
+    const initKey = jKey(start, 3, 0, 0);
+    jVis.set(initKey, 0);
+    jParent.set(initKey, { fromKey: null, pos: start, di: 3, ws: 0, g: 0, chain: 0 });
+    jointReachable.add(posKey(start));
+    if (start.y >= 0) jUpdateBest(posKey(start), 0, 0);
+    jPush({ pos: start, di: 3, ws: 0, g: 0, chain: 0 });
+
+    while (jHeap.length > 0) {
+      const { pos, di, ws, g, chain } = jPop();
+      const sk = jKey(pos, di, ws, g);
+      if ((jVis.get(sk) ?? Infinity) < chain) continue;
+
+      for (let i = 0; i < DIRS4.length; i++) {
+        const { dx, dy } = DIRS4[i];
+        const { path, crumblePos, keyPos, blockedByOneway } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, ws, doorRequirements, teleporterMap);
+
+        const isReversal = di < 4 && dx === -DIRS4[di].dx && dy === -DIRS4[di].dy;
+        const isBend     = (i !== di) && !isReversal;
+        const newG       = g + (isBend ? 1 : 0);
+        if (path.length === 0 && !crumblePos && !(isReversal && blockedByOneway)) continue;
+        if (newG > pg) continue;
+
+        // Chain capping: like the game, stop the player early when the budget runs out.
+        // One-way-blocked reversals retract the chain; they need no cap.
+        const chainRetracts = isReversal && blockedByOneway;
+        const avail      = pc - chain;
+        const cappedPath = chainRetracts ? path : (path.length <= avail ? path : path.slice(0, avail));
+
+        if (cappedPath.length > 0) {
+          const landing    = cappedPath[cappedPath.length - 1];
+          const newChain   = chainRetracts ? chain - cappedPath.length : chain + cappedPath.length;
+          const keyApplies = keyPos !== null && cappedPath.length === path.length;
+          const ews        = keyApplies ? (ws | (1 << keyPos.toggleIdx)) : ws;
+          const nk         = jKey(landing, i, ews, newG);
+          if ((jVis.get(nk) ?? Infinity) > newChain) {
+            jVis.set(nk, newChain);
+            jParent.set(nk, { fromKey: sk, pos: landing, di: i, ws: ews, g: newG, chain: newChain });
+            jPush({ pos: landing, di: i, ws: ews, g: newG, chain: newChain });
+          }
+          if (landing.y >= 0) { jointReachable.add(posKey(landing)); jUpdateBest(posKey(landing), newG, newChain); }
+          if (keyApplies && keyPos.toggleIdx !== undefined) jFreeBacktrack(sk, ews);
+        }
+
+        // Crumble bounce: only process if path wasn't capped before reaching the crumble stop.
+        if (crumblePos && crumblePos.toggleIdx !== undefined && cappedPath.length === path.length) {
+          const newWS       = ws | (1 << crumblePos.toggleIdx);
+          const from        = cappedPath.length > 0 ? cappedPath[cappedPath.length - 1] : pos;
+          const crumbleG    = cappedPath.length === 0 ? g : newG;
+          const crumbleDi   = cappedPath.length === 0 ? di : i;
+          const crumbleChain = chainRetracts ? chain - cappedPath.length : chain + cappedPath.length;
+          const nk = jKey(from, crumbleDi, newWS, crumbleG);
+          if ((jVis.get(nk) ?? Infinity) > crumbleChain) {
+            jVis.set(nk, crumbleChain);
+            jParent.set(nk, { fromKey: sk, pos: from, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain });
+            jPush({ pos: from, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain });
+          }
+          if (from.y >= 0) { jointReachable.add(posKey(from)); jUpdateBest(posKey(from), crumbleG, crumbleChain); }
+          jFreeBacktrack(sk, newWS);
+        }
+
+        // One-way backtrack: reversal blocked by one-way retracts the chain back to the
+        // parent landing with a shorter chain value — never costs gears.
+        if (isReversal && blockedByOneway && path.length === 0) {
+          const myEntry = jParent.get(sk);
+          if (myEntry?.fromKey != null) {
+            const parentEntry = jParent.get(myEntry.fromKey);
+            if (parentEntry && (parentEntry.pos.x !== pos.x || parentEntry.pos.y !== pos.y)) {
+              const backPos   = parentEntry.pos;
+              const backChain = parentEntry.chain;
+              const backG     = parentEntry.g;
+              const nk = jKey(backPos, di, ws, backG);
+              if ((jVis.get(nk) ?? Infinity) > backChain) {
+                jVis.set(nk, backChain);
+                jParent.set(nk, { fromKey: sk, pos: backPos, di, ws, g: backG, chain: backChain });
+                jPush({ pos: backPos, di, ws, g: backG, chain: backChain });
+                if (backPos.y >= 0) { jointReachable.add(posKey(backPos)); jUpdateBest(posKey(backPos), backG, backChain); }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Pick goal: non-wall cell with highest difficulty ──────────────────────
   // Exclude walls, crumbles (goal hidden under crumble = unreachable), keys, doors,
   // and one-ways (player slides through them — can never land on a one-way tile).
+  // When player budgets are active, only consider jointly reachable cells.
   let bestPos        = start;
   let bestDifficulty = 0;
   let bestManhattan  = 0;
   for (const [k, d] of difficulties) {
-    if (k < 0 || k >= width * height) continue;                        // skip off-grid keys (e.g. boat at y=-1)
-    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9 || cells[k] === 10) continue;  // skip walls, crumbles, keys, doors, teleporters
-    if (cells[k] >= 3 && cells[k] <= 6) continue;                          // skip one-ways (player slides through, never lands on them)
-    if (carvedMask && !carvedMask[k]) continue;                         // skip UNTOUCHED cells the carver never reached
-    if (!bestKeyForPos.has(k)) continue;                                // skip cells the player can never naturally stop on (only pass through)
+    if (k < 0 || k >= width * height) continue;
+    if (cells[k] === 1 || cells[k] === 7 || cells[k] === 8 || cells[k] === 9 || cells[k] === 10) continue;
+    if (cells[k] >= 3 && cells[k] <= 6) continue;
+    if (carvedMask && !carvedMask[k]) continue;
+    if (hasBudgets ? !jointReachable.has(k) : !bestKeyForPos.has(k)) continue;
     const x  = k % width;
     const y  = Math.floor(k / width);
     const nm = Math.abs(x - start.x) + Math.abs(y - start.y);
@@ -1404,6 +1472,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   }
 
   return { goal: bestPos, depths: depthArray, difficulties: difficultyArray, chainLengths: chainLengthArray,
+           chainOnGearLengths: chainOnGearArray, gearsOnChainDepths: gearsOnChainArray,
+           p4BestAtPos: jBestAtPos,
            toggleCount, universeDepths, universeChainLengths };
 }
 

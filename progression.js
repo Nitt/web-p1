@@ -38,16 +38,18 @@ export function pregenNext(seed, id, recipe) {
 
   _worker.postMessage({
     genId,
-    width:            9,
-    height:           9,
+    width:             9,
+    height:            9,
     seed,
     id,
-    candidates:       recipe.candidates,
-    weights:          recipe.weights,
-    useKeyDoor:       recipe.useKeyDoor,
-    useTeleporter:    recipe.useTeleporter,
-    difficultyTarget: recipe.difficultyTarget,
-    entrySlide:       recipe.entrySlide ?? null,
+    candidates:        recipe.candidates,
+    weights:           recipe.weights,
+    useKeyDoor:        recipe.useKeyDoor,
+    useTeleporter:     recipe.useTeleporter,
+    difficultyTarget:  recipe.difficultyTarget,
+    entrySlide:        recipe.entrySlide ?? null,
+    playerGears:       recipe.playerGears,
+    playerChainLength: recipe.playerChainLength,
   });
 }
 

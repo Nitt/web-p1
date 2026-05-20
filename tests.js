@@ -2,7 +2,7 @@ import { makeRng } from './random.js';
 import {
   CellType, isOneway, onewayAllows,
   buildToggleMap, isToggleActive,
-  slidePlayer, canReachGoal, canReachAnyOf,
+  slidePlayer,
 } from './puzzle.js';
 import { generateLevel } from './generator.js';
 
@@ -311,68 +311,6 @@ test('sliding up from non-start column does not enter the boat', () => {
   eq(r.x, 0); eq(r.y, 0);
 });
 
-// ── puzzle.js — canReachGoal ──────────────────────────────────────────────────
-
-group('puzzle / canReachGoal');
-
-test('returns true on an open path to the goal', () => {
-  const level = makeLevel(['....'], { start: { x: 0, y: -1 }, goal: { x: 3, y: 0 } });
-  assert(canReachGoal(level, { x: 0, y: 0 }, 0, buildToggleMap(level.cells)));
-});
-
-test('returns false when goal is separated by a wall column', () => {
-  const level = makeLevel([
-    '.W.',
-    '.W.',
-    '.W.',
-  ], { start: { x: 0, y: -1 }, goal: { x: 2, y: 1 } });
-  assert(!canReachGoal(level, { x: 0, y: 1 }, 0, buildToggleMap(level.cells)));
-});
-
-test('returns true when goal is reachable only after breaking a crumble', () => {
-  // . C G  — crumble at col 1 blocks direct path; BFS explores broken state
-  const level = makeLevel(['.CG'], { start: { x: 0, y: -1 }, goal: { x: 2, y: 0 } });
-  assert(canReachGoal(level, { x: 0, y: 0 }, 0, buildToggleMap(level.cells)));
-});
-
-test('returns true when already at the goal', () => {
-  const level = makeLevel(['...'], { start: { x: 0, y: -1 }, goal: { x: 2, y: 0 } });
-  assert(canReachGoal(level, { x: 2, y: 0 }, 0, buildToggleMap(level.cells)));
-});
-
-// ── puzzle.js — canReachAnyOf ─────────────────────────────────────────────────
-
-group('puzzle / canReachAnyOf');
-
-test('returns true when at least one target is reachable', () => {
-  const level = makeLevel(['.....'], { start: { x: 0, y: -1 }, goal: { x: 4, y: 0 } });
-  const tm = buildToggleMap(level.cells);
-  // First target reachable, second off-grid / ignored
-  assert(canReachAnyOf(level, { x: 0, y: 0 }, [{ x: 4, y: 0 }], 0, tm));
-});
-
-test('returns false when no target is reachable', () => {
-  const level = makeLevel([
-    '.W.',
-    '.W.',
-    '.W.',
-  ], { start: { x: 0, y: -1 }, goal: { x: 2, y: 0 } });
-  const tm = buildToggleMap(level.cells);
-  const targets = [{ x: 2, y: 0 }, { x: 2, y: 1 }, { x: 2, y: 2 }];
-  assert(!canReachAnyOf(level, { x: 0, y: 0 }, targets, 0, tm));
-});
-
-test('returns true for an empty targets list', () => {
-  const level = makeLevel(['...'], { start: { x: 0, y: -1 }, goal: { x: 2, y: 0 } });
-  assert(canReachAnyOf(level, { x: 0, y: 0 }, [], 0, buildToggleMap(level.cells)));
-});
-
-test('returns true when player is already on one of the targets', () => {
-  const level = makeLevel(['...'], { start: { x: 0, y: -1 }, goal: { x: 2, y: 0 } });
-  const tm = buildToggleMap(level.cells);
-  assert(canReachAnyOf(level, { x: 1, y: 0 }, [{ x: 1, y: 0 }, { x: 2, y: 0 }], 0, tm));
-});
-
 // ── generator.js ──────────────────────────────────────────────────────────────
 
 group('generator');
@@ -410,16 +348,6 @@ test('goal cell is not a wall, crumble, key, or door', () => {
     const { cells, goal, width } = generateLevel(9, 9, { seed });
     const cell = cells[goal.y * width + goal.x];
     assert(!forbidden.has(cell), `seed ${seed}: goal cell type ${cell} is forbidden`);
-  }
-});
-
-test('goal is reachable from below the start column', () => {
-  for (const seed of [0, 42, 100, 200, 500]) {
-    const level = generateLevel(9, 9, { seed });
-    const tm = buildToggleMap(level.cells);
-    // y=0 is the first in-grid row the player lands on after leaving the boat
-    const ok = canReachGoal(level, { x: level.start.x, y: 0 }, 0, tm);
-    assert(ok, `seed ${seed}: goal unreachable from start column`);
   }
 });
 

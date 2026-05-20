@@ -33,9 +33,13 @@ let moveHintEl = null;
 let _currentLevel = null;
 let _gearHeartsEl = null;
 let _chainBarFillEl = null;
+let _chainLabelEl = null;
 let _chainLengthTotal = 0;
 
-export function setChainLengthTotal(total) { _chainLengthTotal = total; }
+export function setChainLengthTotal(total) {
+  _chainLengthTotal = total;
+  if (_chainLabelEl) _chainLabelEl.textContent = `${total}/${total}`;
+}
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
@@ -121,6 +125,7 @@ export function buildGrid(container, level) {
   _currentLevel = level;
   _gearHeartsEl   = document.getElementById('gear-hearts');
   _chainBarFillEl = document.getElementById('chain-bar-fill');
+  _chainLabelEl   = document.getElementById('chain-label');
 
   gridEl = document.createElement('div');
   gridEl.className = 'grid';
@@ -166,6 +171,16 @@ export function buildGrid(container, level) {
           diff.className = 'cell-difficulty';
           diff.textContent = Number.isInteger(d) ? d : d.toFixed(1);
           cell.appendChild(diff);
+        }
+      }
+
+      if (level.chainLengths) {
+        const cl = level.chainLengths[y * level.width + x];
+        if (cl >= 0) {
+          const chainSpan = document.createElement('span');
+          chainSpan.className = 'cell-chain';
+          chainSpan.textContent = cl;
+          cell.appendChild(chainSpan);
         }
       }
 
@@ -944,6 +959,10 @@ function _redrawChain(px, py) {
     if (!_playerInTeleport) used += Math.hypot(barEndPx.x - anchorPx.x, barEndPx.y - anchorPx.y) / cellSize;
     const remaining = Math.max(0, 1 - used / _chainLengthTotal);
     _chainBarFillEl.style.width = `${remaining * 100}%`;
+    if (_chainLabelEl) {
+      const left = Math.round(remaining * _chainLengthTotal);
+      _chainLabelEl.textContent = `${left}/${_chainLengthTotal}`;
+    }
   }
 }
 

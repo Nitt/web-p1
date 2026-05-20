@@ -23,12 +23,14 @@ export const SAMPLE_LEVELS = (() => {
   const recipe = getRecipe(1, 0);
   return [
     generateHardestLevel(9, 9, {
-      seed:             0,
-      id:               1,
-      candidates:       recipe.candidates,
-      weights:          recipe.weights,
-      useKeyDoor:       false,
-      difficultyTarget: recipe.difficultyTarget,
+      seed:              0,
+      id:                1,
+      candidates:        recipe.candidates,
+      weights:           recipe.weights,
+      useKeyDoor:        false,
+      difficultyTarget:  recipe.difficultyTarget,
+      playerGears:       recipe.playerGears,
+      playerChainLength: recipe.playerChainLength,
     }),
   ];
 })();
