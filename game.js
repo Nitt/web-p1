@@ -526,8 +526,17 @@ function _tryOnewayBacktrack(target, dx, dy, didMove) {
 function _buildDepartureCtx(target, dx, dy) {
   const isBoatEntry = target.y < 0;
 
+  // Detect early so we can skip the straight-through pop — the chain will be
+  // fully retracted in _onPlayerLanded anyway, and popping a gear here causes
+  // wrong isBend/prevDir on the following move.
+  const isReturnToStart = !isBoatEntry && !!target.teleportCrossing
+    && target.x === state.playerPos.x && target.y === state.playerPos.y;
+
+  // Snapshot prevDir before any state mutation so _onPlayerLanded can restore it.
+  const savedPrevDir = state.prevDir;
+
   let isStraightThrough = false;
-  if (!isBoatEntry && state.gears.length > 0) {
+  if (!isBoatEntry && !isReturnToStart && state.gears.length > 0) {
     const last = state.gears[state.gears.length - 1];
     if (last.x === state.playerPos.x && last.y === state.playerPos.y) {
       // Use effective outgoing position for direction check so teleport crossings
@@ -589,7 +598,8 @@ function _buildDepartureCtx(target, dx, dy) {
                  || (isBoatEntry && _bendGears().length === 1);
 
   return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
-           revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract };
+           revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract,
+           isReturnToStart, savedPrevDir };
 }
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
@@ -724,10 +734,38 @@ function _handleWin() {
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {
-  const { isBoatEntry, isRetractingTowardLastCog, revisitIdx, isOneBack } = ctx;
+  const { isBoatEntry, isRetractingTowardLastCog, revisitIdx, isOneBack, isBend, isAtLastCog, isReturnToStart, savedPrevDir } = ctx;
 
   const gearsBeforeUpdate = state.gears.slice();
   let freedOnRevisit = -1;
+
+  if (isReturnToStart) {
+    // Teleporter routed the slide back to the starting cell.
+    // Remove the teleport crossing (added during animation) and the bend gear at
+    // playerPos (added by _applyPreAnimationChain for this move, if any), then
+    // animate the chain retracting back.
+    if (state.gears.length > 0 && state.gears[state.gears.length - 1].isTeleport) {
+      state.gears.pop();
+    }
+    if (isBend && !isAtLastCog && state.gears.length > 0) {
+      const last = state.gears[state.gears.length - 1];
+      if (!last.isTeleport && last.x === state.playerPos.x && last.y === state.playerPos.y) {
+        state.gears.pop();
+        state.gearsLeft++;
+      }
+    }
+    state.prevDir = savedPrevDir; // restore — this was a no-op move, next move should see unchanged prevDir
+    const retractTarget = state.gears.length;
+    state.isMoving = true;
+    _animateChainRetract(gearsBeforeUpdate, retractTarget, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+      state.isMoving = false;
+      setChainSpinning(false);
+      drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
+      _flushQueuedMove();
+    }, null, state.playerPos, true, FAST_RETRACT_MS_PER_CELL);
+    _applyCollectibles(target);
+    return;
+  }
 
   if (!isBoatEntry) {
     if (revisitIdx >= 0) {
@@ -831,6 +869,10 @@ function _executeMove(dx, dy) {
   _retractToken++;
 
   const gearSet = new Set(state.gears.filter(g => !g.isTeleport).map(g => g.y * state.level.width + g.x));
+  // Treat the player's current position as an implicit stop — a teleporter could
+  // route the slide back here, and the bend gear (placed later in _applyPreAnimationChain)
+  // won't be in gearSet yet.
+  gearSet.add(state.playerPos.y * state.level.width + state.playerPos.x);
 
   // Call without chain limit so backtrack detection sees the natural landing position.
   // Chain length is only enforced for forward moves (after all backtrack checks below).
@@ -840,7 +882,7 @@ function _executeMove(dx, dy) {
 
   if (_tryOnewayBacktrack(target, dx, dy, didMove)) return;
 
-  if (!didMove && !hasCrumble) {
+  if (!didMove && !hasCrumble && !target.teleportCrossing) {
     state.pendingOnewayBreak = null;
     _playBlockedWithJerk(dx, dy);
     return;
@@ -876,7 +918,7 @@ function _executeMove(dx, dy) {
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
-  if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null) {
+  if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null && !moveTarget.teleportCrossing) {
     _playBlockedWithJerk(dx, dy);
     return;
   }

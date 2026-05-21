@@ -118,8 +118,9 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   let crumble          = null;
   let keyCollected     = null;
   let blockedByOneway  = null;
-  let teleportCrossing = null;
-  let stepsTaken       = 0;
+  let teleportCrossing    = null;
+  let stepsTaken          = 0;
+  let skipTeleportEntry   = -1; // flat index of teleport entry to skip after teleporting
 
   while (true) {
     const nx = x + dx;
@@ -140,6 +141,18 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
+
+    // ── SKIP re-entry into the teleport entry we just exited ──────────────
+    // Prevents an infinite loop when exit is positioned so that continuing
+    // the slide in the same direction would immediately re-enter the entry.
+    if (flatIdx === skipTeleportEntry) {
+      skipTeleportEntry = -1;
+      x = nx; y = ny; stepsTaken++;
+      if (level.goal && x === level.goal.x && y === level.goal.y) break;
+      if (cell === CellType.STICKY) break;
+      if (gearSet && gearSet.has(flatIdx)) break;
+      continue;
+    }
 
     // ── WALL ──────────────────────────────────────────────────────────────
     if (cell === CellType.WALL) {
@@ -193,6 +206,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
         const exitX = exitFlat % width;
         const exitY = Math.floor(exitFlat / width);
         teleportCrossing = { entryX: x, entryY: y, exitX, exitY };
+        skipTeleportEntry = flatIdx; // skip re-entering this entry on the same slide
         x = exitX; y = exitY;
         // Check stop conditions at the exit cell
         if (level.goal && x === level.goal.x && y === level.goal.y) break;
