@@ -37,6 +37,7 @@ const state = {
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
   chainLengthTotal:     0,      // total chain length allowed for this level
+  peakGearsUsed:        0,      // highest (totalGears - gearsLeft) seen this level (recorded at key)
   peakChainUsed:        0,      // highest _chainLengthUsed() seen this level (recorded at key)
   prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
@@ -142,6 +143,7 @@ function loadLevel(level) {
   state.gears             = [];
   state.gearsLeft         = budget;
   state.totalGears        = budget;
+  state.peakGearsUsed     = 0;
   state.peakChainUsed     = 0;
   const chainBudget       = (level.effectiveChainLength ?? 0) > 0 ? level.effectiveChainLength : (level.width + level.height);
   state.chainLengthTotal  = chainBudget;
@@ -636,6 +638,7 @@ function _applyCollectibles(target) {
   }
   if (target.keyCollected) {
     const { x: kx, y: ky, toggleIdx } = target.keyCollected;
+    state.peakGearsUsed = Math.max(state.peakGearsUsed, state.totalGears - state.gearsLeft);
     state.peakChainUsed = Math.max(state.peakChainUsed, _chainLengthUsed());
     if (toggleIdx !== undefined) {
       state.worldState |= (1 << toggleIdx);
@@ -722,12 +725,13 @@ function _handleWin() {
 
   const gearsUsed    = state.totalGears - state.gearsLeft;
   const chainUsed    = _chainLengthUsed();
+  const peakGears    = Math.max(gearsUsed, state.peakGearsUsed);
   const peakChain    = Math.max(chainUsed, state.peakChainUsed);
-  const gearOptimal  = state.gearsLeft === 0;
+  const gearOptimal  = peakGears === state.totalGears;
   const chainOptimal = peakChain === state.chainLengthTotal;
   console.log(
     `Level ${state.level.id} — ` +
-    `gears: ${gearsUsed}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.gearsLeft} left)`}  |  ` +
+    `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}  |  ` +
     `chain: ${peakChain}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - peakChain} left)`}`
   );
 

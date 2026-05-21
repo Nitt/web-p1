@@ -617,18 +617,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const pc = playerChainLength;
 
   const p4Goal   = p4BestAtPos?.get(goalFlat);  // null when !hasBudgets
-  // Pair C's chain is the chain AT the goal moment. When the path retracts chain
-  // after collecting a key (via one-way or free-backtrack), p4Goal.chain can be
-  // less than the peak chain needed to reach the key. Apply the same max-over-keys
-  // correction used for Pairs A and B so the budget covers the full peak.
-  let pairCChain = p4Goal ? p4Goal.chain : 0;
-  if (p4Goal && p4BestAtPos) {
-    for (const kd of keyDepths) {
-      const p4k = p4BestAtPos.get(kd.y * width + kd.x);
-      if (p4k) pairCChain = Math.max(pairCChain, p4k.chain);
-    }
-  }
-  const pairC    = p4Goal ? { g: p4Goal.g, c: pairCChain } : null;
+  const pairC    = p4Goal ? { g: p4Goal.g, c: p4Goal.chain } : null;
 
   const candidates = [
     (pairA_gears <= pg && pairA_chain <= pc) ? { g: pairA_gears, c: pairA_chain } : null,
@@ -643,6 +632,16 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   } else {
     // Only reachable when !hasBudgets — A and B are always valid with Infinity constraints.
     effectiveCogs = pairA_gears; effectiveChainLength = pairB_chain;
+  }
+
+  // Guarantee the budget is always sufficient to physically reach every key cell.
+  // The tightest pair may use fewer gears/chain than the key requires (e.g. when the
+  // goal path retracts chain after the key, or when a low-gear path to the goal
+  // doesn't reflect the min gears needed just to reach the key).
+  for (const kd of keyDepths) {
+    const kFlat = kd.y * width + kd.x;
+    if (depths[kFlat]       >= 0) effectiveCogs         = Math.max(effectiveCogs,         depths[kFlat]);
+    if (chainLengths[kFlat] >= 0) effectiveChainLength  = Math.max(effectiveChainLength,  chainLengths[kFlat]);
   }
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export

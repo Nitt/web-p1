@@ -19,7 +19,10 @@
       "Read(//Users/emil/.nvm/**)",
       "Bash(awk '/^function _executeMove/,/^\\\\}/' /Users/emil/Documents/GitHub/web-p1/game.js)",
       "Bash(node --input-type=module --eval \"import\\('./generator.js'\\).then\\(\\(\\) => console.log\\('OK'\\)\\).catch\\(e => console.error\\(e.message\\)\\)\")",
-      "Bash(node --input-type=module --experimental-vm-modules)"
+      "Bash(node --input-type=module --experimental-vm-modules)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 3ee7d9a --stat)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 3ee7d9a -- index.html)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 55c3eef -- game.js)"
     ]
   }
 }
