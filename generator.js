@@ -689,6 +689,7 @@ function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, do
 
   return { path, cost, crumblePos, keyPos };
 }
+export { _slidePath as slidePath };
 
 function _onewayAllows(cellType, dx, dy) {
   // ONEWAY_LEFT=3, RIGHT=4, UP=5, DOWN=6

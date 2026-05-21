@@ -57,6 +57,7 @@
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
+    <button id="auto-solve-btn" class="btn-ghost">solve</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.25" max="8" step="0.25" value="1">
@@ -106,7 +107,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, jumpToLevel } from './game.js';
+    import { init, skipLevel, jumpToLevel, startAutoSolve, stopAutoSolve } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -134,6 +135,19 @@
       const m = parseFloat(e.target.value);
       setSpeedMultiplier(m);
       document.getElementById('speed-label').textContent = m + '×';
+    });
+
+    const autoSolveBtn = document.getElementById('auto-solve-btn');
+    autoSolveBtn.addEventListener('click', () => {
+      if (autoSolveBtn.classList.contains('active')) {
+        stopAutoSolve();
+      } else {
+        autoSolveBtn.classList.add('active');
+        startAutoSolve();
+      }
+    });
+    document.addEventListener('autosolve:stop', () => {
+      autoSolveBtn.classList.remove('active');
     });
 
     init();
