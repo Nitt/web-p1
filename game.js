@@ -1,5 +1,4 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
-import { solve } from './solver.js';
 import { makeRng } from './random.js';
 import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
@@ -38,6 +37,7 @@ const state = {
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
   chainLengthTotal:     0,      // total chain length allowed for this level
+  peakChainUsed:        0,      // highest _chainLengthUsed() seen this level (recorded at key)
   prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
   worldState:           0,
@@ -50,9 +50,6 @@ const state = {
   // True while the player is in the boat waiting to dive; cleared on first downward move.
   waitingForDive:       false,
 };
-
-// ─── auto-solver state ────────────────────────────────────────────────────────
-let _autoPlayMoves = null; // [{dx,dy}] remaining moves, or null when inactive
 
 // ─── teleporter test level (?tp in URL) ──────────────────────────────────────
 //
@@ -128,7 +125,6 @@ function loadLevel(level) {
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
   _retractToken++;
-  _stopAutoSolveInternal();
   state.level       = level;
   state.playerPos   = { ...level.start };
   state.isMoving    = false;
@@ -146,6 +142,7 @@ function loadLevel(level) {
   state.gears             = [];
   state.gearsLeft         = budget;
   state.totalGears        = budget;
+  state.peakChainUsed     = 0;
   const chainBudget       = (level.effectiveChainLength ?? 0) > 0 ? level.effectiveChainLength : (level.width + level.height);
   state.chainLengthTotal  = chainBudget;
   setChainLengthTotal(chainBudget);
@@ -212,8 +209,6 @@ function handleMove(dx, dy) {
   // Cancel the post-dive inactivity timer and dismiss the move hint on any input.
   if (_moveHintTimer) { clearTimeout(_moveHintTimer); _moveHintTimer = null; }
   hideMoveHint();
-  _stopAutoSolveInternal(); // any manual input cancels autoplay
-
   if (state.waitingForDive) {
     if (dy === 1) {
       // Player is diving in — clear the waiting state and proceed normally.
@@ -440,57 +435,6 @@ export function skipLevel() {
   _nextLevel();
 }
 
-export function stopAutoSolve() {
-  _autoPlayMoves = null;
-  document.dispatchEvent(new CustomEvent('autosolve:stop'));
-}
-
-function _stopAutoSolveInternal() {
-  _autoPlayMoves = null;
-  document.dispatchEvent(new CustomEvent('autosolve:stop'));
-}
-
-export function startAutoSolve() {
-  _autoPlayMoves = null;
-  if (state.won) return;
-
-  const prevDi = state.prevDir
-    ? [{ dx:1,dy:0 },{ dx:-1,dy:0 },{ dx:0,dy:1 },{ dx:0,dy:-1 }]
-        .findIndex(d => d.dx === state.prevDir.dx && d.dy === state.prevDir.dy)
-    : 4;
-
-  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
-
-  if (state.gears.length > 0) {
-    console.warn('[solver] called mid-level with existing gear waypoints — backtracking through existing gears is not modelled');
-  }
-
-  const result = solve(
-    state.level,
-    state.playerPos,
-    state.worldState,
-    state.gearsLeft,
-    chainAvail,
-    prevDi === -1 ? 4 : prevDi,
-  );
-
-  if (!result) {
-    console.warn('[solver] no path found from current position');
-    _stopAutoSolveInternal();
-    return;
-  }
-
-  console.log(`[solver] path found: ${result.moves.map(m => {
-    if (m.dx === 1)  return '→';
-    if (m.dx === -1) return '←';
-    if (m.dy === 1)  return '↓';
-    return '↑';
-  }).join(' ')}  (chain: ${result.chainUsed}, gears: ${result.gearsUsed})`);
-
-  _autoPlayMoves = result.moves;
-  _driveAutoPlay();
-}
-
 /**
  * Deterministically compute the seed and levelsSinceKeyDoor at level n by
  * simulating the full progression from level 2, using the level seed itself
@@ -558,30 +502,8 @@ function _flushQueuedMove() {
   const q = state.queuedMove;
   state.queuedMove = null;
   if (q && (performance.now() - q.queuedAt) <= QUEUE_WINDOW_MS) {
-    _stopAutoSolveInternal(); // manual input cancels autoplay
     _executeMove(q.dx, q.dy);
-    return;
   }
-  _driveAutoPlay();
-}
-
-function _driveAutoPlay() {
-  if (!_autoPlayMoves || _autoPlayMoves.length === 0) {
-    _stopAutoSolveInternal();
-    return;
-  }
-  const { dx, dy } = _autoPlayMoves.shift();
-  // Mirror the dive-gate logic from handleMove so autoplay works from the boat.
-  if (state.waitingForDive) {
-    if (dy === 1) {
-      state.waitingForDive = false;
-      hideDiveIndicator();
-    } else {
-      _stopAutoSolveInternal();
-      return;
-    }
-  }
-  _executeMove(dx, dy);
 }
 
 function _playBlockedWithJerk(dx, dy) {
@@ -714,6 +636,7 @@ function _applyCollectibles(target) {
   }
   if (target.keyCollected) {
     const { x: kx, y: ky, toggleIdx } = target.keyCollected;
+    state.peakChainUsed = Math.max(state.peakChainUsed, _chainLengthUsed());
     if (toggleIdx !== undefined) {
       state.worldState |= (1 << toggleIdx);
       if (state.level.doorRequirements) {
@@ -797,14 +720,15 @@ function _handleWin() {
   playWin();
   state.queuedMove = null;
 
-  const gearsUsed   = state.totalGears - state.gearsLeft;
-  const chainUsed   = _chainLengthUsed();
+  const gearsUsed    = state.totalGears - state.gearsLeft;
+  const chainUsed    = _chainLengthUsed();
+  const peakChain    = Math.max(chainUsed, state.peakChainUsed);
   const gearOptimal  = state.gearsLeft === 0;
-  const chainOptimal = chainUsed === state.chainLengthTotal;
+  const chainOptimal = peakChain === state.chainLengthTotal;
   console.log(
     `Level ${state.level.id} — ` +
     `gears: ${gearsUsed}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.gearsLeft} left)`}  |  ` +
-    `chain: ${chainUsed}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - chainUsed} left)`}`
+    `chain: ${peakChain}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - peakChain} left)`}`
   );
 
   _animateWinRetract(() => {

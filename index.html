@@ -57,7 +57,6 @@
     <button id="debug-btn" class="btn-ghost">dbg</button>
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
-    <button id="auto-solve-btn" class="btn-ghost">solve</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.25" max="8" step="0.25" value="1">
@@ -107,7 +106,7 @@
   </script>
 
   <script type="module">
-    import { init, skipLevel, jumpToLevel, startAutoSolve, stopAutoSolve } from './game.js';
+    import { init, skipLevel, jumpToLevel } from './game.js';
     import { setSpeedMultiplier } from './renderer.js';
 
     document.getElementById('debug-btn')
@@ -135,19 +134,6 @@
       const m = parseFloat(e.target.value);
       setSpeedMultiplier(m);
       document.getElementById('speed-label').textContent = m + '×';
-    });
-
-    const autoSolveBtn = document.getElementById('auto-solve-btn');
-    autoSolveBtn.addEventListener('click', () => {
-      if (autoSolveBtn.classList.contains('active')) {
-        stopAutoSolve();
-      } else {
-        autoSolveBtn.classList.add('active');
-        startAutoSolve();
-      }
-    });
-    document.addEventListener('autosolve:stop', () => {
-      autoSolveBtn.classList.remove('active');
     });
 
     init();
@@ -195,6 +181,8 @@
     let _finalCells            = null;   // Uint8Array output cells (CellType values)
     let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
     let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
+    let _pathCellOrder      = null;   // [{px,py,sdx,sdy,ws}] padded-grid cells in path order
+    let _pathCellReveal     = null;   // Map<key → stepIndex> when each cell first appears
     let _teleporterMap      = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
 
     function _syncSlider(jumpToEnd = false) {
@@ -219,6 +207,8 @@
       _teleporterMap        = result.teleporterMap ?? null;
       _universeDepths       = result.universeDepths;
       _universeChainLengths = result.universeChainLengths;
+      _pathCellOrder        = null;
+      _pathCellReveal       = null;
 
       _syncSlider(true);
       renderStep(+slider.value);
@@ -265,6 +255,7 @@
       '#7d5a40',    // 5 CRUMBLE
       '#d4a820',    // 6 KEY
       '#4a80b0',    // 7 DOOR
+      '#7b2fbe',    // 8 TELEPORTER
     ];
 
     function drawStep(step, depths, difficulties, chainLengths, stepIdx) {
@@ -318,104 +309,67 @@
           // in the currently-active universe.
           const _activeVD = step.allUniverseVDs?.get(step.currentUniverseKey ?? '');
           if (_activeVD && size >= 8 && cell !== 0 /* not UNTOUCHED */) {
-            const dirs = _activeVD.get(cy * pw + cx);
-            if (dirs && dirs.size > 0) {
+            const bits = _activeVD.get(cy * pw + cx);
+            if (bits) {
               const px = cx * size, py = cy * size;
               const half = (size - 1) / 2;
-              const aw = Math.max(2, size * 0.18); // half-width of arrow base
-              const margin = Math.max(1, size * 0.08); // gap from cell edge
+              const aw = Math.max(2, size * 0.18);
+              const margin = Math.max(1, size * 0.08);
               ctx.fillStyle = 'rgba(255, 230, 0, 0.85)';
-              for (const dir of dirs) {
-                ctx.beginPath();
-                if (dir === 'UP') {
-                  ctx.moveTo(px + half - aw, py + aw * 2 + margin);
-                  ctx.lineTo(px + half + aw, py + aw * 2 + margin);
-                  ctx.lineTo(px + half,       py + margin);
-                } else if (dir === 'DOWN') {
-                  ctx.moveTo(px + half - aw, py + size - 1 - aw * 2 - margin);
-                  ctx.lineTo(px + half + aw, py + size - 1 - aw * 2 - margin);
-                  ctx.lineTo(px + half,       py + size - 1 - margin);
-                } else if (dir === 'LEFT') {
-                  ctx.moveTo(px + aw * 2 + margin, py + half - aw);
-                  ctx.lineTo(px + aw * 2 + margin, py + half + aw);
-                  ctx.lineTo(px + margin,            py + half);
-                } else if (dir === 'RIGHT') {
-                  ctx.moveTo(px + size - 1 - aw * 2 - margin, py + half - aw);
-                  ctx.lineTo(px + size - 1 - aw * 2 - margin, py + half + aw);
-                  ctx.lineTo(px + size - 1 - margin,            py + half);
-                }
-                ctx.closePath();
-                ctx.fill();
-              }
+              // bit 0=LEFT,1=UP,2=RIGHT,3=DOWN
+              if (bits & 1) { ctx.beginPath(); ctx.moveTo(px + aw * 2 + margin, py + half - aw); ctx.lineTo(px + aw * 2 + margin, py + half + aw); ctx.lineTo(px + margin, py + half); ctx.closePath(); ctx.fill(); }
+              if (bits & 2) { ctx.beginPath(); ctx.moveTo(px + half - aw, py + aw * 2 + margin); ctx.lineTo(px + half + aw, py + aw * 2 + margin); ctx.lineTo(px + half, py + margin); ctx.closePath(); ctx.fill(); }
+              if (bits & 4) { ctx.beginPath(); ctx.moveTo(px + size - 1 - aw * 2 - margin, py + half - aw); ctx.lineTo(px + size - 1 - aw * 2 - margin, py + half + aw); ctx.lineTo(px + size - 1 - margin, py + half); ctx.closePath(); ctx.fill(); }
+              if (bits & 8) { ctx.beginPath(); ctx.moveTo(px + half - aw, py + size - 1 - aw * 2 - margin); ctx.lineTo(px + half + aw, py + size - 1 - aw * 2 - margin); ctx.lineTo(px + half, py + size - 1 - margin); ctx.closePath(); ctx.fill(); }
             }
           }
         }
       }
 
-      // Teleporter cells — placed as post-processing on outCells, not in the carving grid,
-      // so overlay them from _finalCells at every step so the layout is always visible.
-      if (_finalCells) {
+      // Teleporter decoration — cells are already drawn as CELL_COLORS[8] (purple)
+      // since G.TELEPORTER is now placed directly in the carving grid. Only the
+      // connector line and ring/label overlay need to be drawn here.
+      if (step.teleporterPairs) {
         const half = (size - 1) / 2;
-
-        // Dashed connector line between each pair
-        if (_teleporterMap) {
-          const drawn = new Set();
-          ctx.save();
-          ctx.strokeStyle = 'rgba(185, 100, 255, 0.55)';
-          ctx.lineWidth   = Math.max(1, size * 0.08);
-          ctx.setLineDash([Math.max(2, size * 0.2), Math.max(2, size * 0.2)]);
-          for (let fi = 0; fi < _finalCells.length; fi++) {
-            if (_finalCells[fi] !== 10) continue;
-            const partner = _teleporterMap.get(fi);
-            if (partner === undefined || drawn.has(fi)) continue;
-            drawn.add(fi); drawn.add(partner);
-            const ax = (fi % _levelW + 1) * size + half;
-            const ay = (Math.floor(fi / _levelW) + 1) * size + half;
-            const bx = (partner % _levelW + 1) * size + half;
-            const by = (Math.floor(partner / _levelW) + 1) * size + half;
-            ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-          }
-          ctx.setLineDash([]);
-          ctx.restore();
+        const drawn = new Set();
+        ctx.save();
+        ctx.strokeStyle = 'rgba(185, 100, 255, 0.55)';
+        ctx.lineWidth   = Math.max(1, size * 0.08);
+        ctx.setLineDash([Math.max(2, size * 0.2), Math.max(2, size * 0.2)]);
+        for (const [pni1, pni2] of step.teleporterPairs) {
+          if (drawn.has(pni1)) continue;
+          drawn.add(pni1); drawn.add(pni2);
+          const px1 = pni1 % pw, py1 = Math.floor(pni1 / pw);
+          const px2 = pni2 % pw, py2 = Math.floor(pni2 / pw);
+          ctx.beginPath();
+          ctx.moveTo(px1 * size + half, py1 * size + half);
+          ctx.lineTo(px2 * size + half, py2 * size + half);
+          ctx.stroke();
         }
-
-        // Fill + ring + label for each teleporter cell
-        for (let iy = 0; iy < _levelH; iy++) {
-          for (let ix = 0; ix < _levelW; ix++) {
-            if (_finalCells[iy * _levelW + ix] !== 10) continue;
-            const cx = (ix + 1) * size, cy = (iy + 1) * size;
-            const mx = cx + half, my = cy + half;
-
-            ctx.fillStyle = '#7b2fbe';
-            ctx.fillRect(cx, cy, size - 1, size - 1);
-
-            // Outer ring
-            const r1 = Math.max(1.5, half * 0.72);
-            ctx.strokeStyle = 'rgba(220, 170, 255, 0.9)';
-            ctx.lineWidth   = Math.max(1, size * 0.1);
-            ctx.beginPath(); ctx.arc(mx, my, r1, 0, Math.PI * 2); ctx.stroke();
-
-            // Inner ring (only if cells are large enough)
-            if (size >= 14) {
-              const r2 = Math.max(1, half * 0.38);
-              ctx.strokeStyle = 'rgba(220, 170, 255, 0.5)';
-              ctx.lineWidth   = Math.max(0.5, size * 0.06);
-              ctx.beginPath(); ctx.arc(mx, my, r2, 0, Math.PI * 2); ctx.stroke();
-            }
-
-            // 'T' label
-            if (size >= 10) {
-              const fontSize = Math.max(5, Math.floor(size * 0.28));
-              ctx.font          = `700 ${fontSize}px system-ui, sans-serif`;
-              ctx.textAlign     = 'center';
-              ctx.textBaseline  = 'middle';
-              ctx.fillStyle     = 'rgba(240, 210, 255, 0.95)';
-              ctx.fillText('T', mx, my);
-              ctx.textAlign    = 'left';
-              ctx.textBaseline = 'alphabetic';
-            }
+        ctx.setLineDash([]);
+        for (const pni of step.teleporterPairs.keys()) {
+          const px = pni % pw, py = Math.floor(pni / pw);
+          const mx = px * size + half, my = py * size + half;
+          const r1 = Math.max(1.5, half * 0.72);
+          ctx.strokeStyle = 'rgba(220, 170, 255, 0.9)';
+          ctx.lineWidth   = Math.max(1, size * 0.1);
+          ctx.beginPath(); ctx.arc(mx, my, r1, 0, Math.PI * 2); ctx.stroke();
+          if (size >= 14) {
+            const r2 = Math.max(1, half * 0.38);
+            ctx.strokeStyle = 'rgba(220, 170, 255, 0.5)';
+            ctx.lineWidth   = Math.max(0.5, size * 0.06);
+            ctx.beginPath(); ctx.arc(mx, my, r2, 0, Math.PI * 2); ctx.stroke();
+          }
+          if (size >= 10) {
+            const fontSize = Math.max(5, Math.floor(size * 0.28));
+            ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(240, 210, 255, 0.95)';
+            ctx.fillText('T', mx, my);
+            ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
           }
         }
+        ctx.restore();
       }
 
       // "from" highlight — blue outline
@@ -576,7 +530,7 @@
             for (let cx = 1; cx < pw - 1; cx++) {
               const cell = grid[cy * pw + cx];
               if (cell === 0 || cell === 3) continue;
-              if (!vd?.get(cy * pw + cx)?.size) continue; // not yet explored from here
+              if (!vd?.get(cy * pw + cx)) continue; // not yet explored from here
               const fi = (cy - 1) * w + (cx - 1);
               const d  = uDep?.[fi];
               const cl = uCL?.[fi];
@@ -620,7 +574,7 @@
           }
         }
 
-        // Direction arrows for this universe's VD
+        // Direction arrows for this universe's VD (bitmask: bit 0=LEFT,1=UP,2=RIGHT,3=DOWN)
         if (uW >= 8 && vd) {
           const half   = (uW - 1) / 2;
           const aw     = Math.max(0.5, uW * 0.09);
@@ -628,37 +582,63 @@
           for (let cy = 0; cy < ph; cy++) {
             for (let cx = 0; cx < pw; cx++) {
               if (grid[cy * pw + cx] === 0) continue;
-              const dirs = vd.get(cy * pw + cx);
-              if (!dirs || dirs.size === 0) continue;
+              const bits = vd.get(cy * pw + cx);
+              if (!bits) continue;
               const px = ox + cx * uW, py = oy + cy * uW;
-              for (const dir of dirs) {
-                ctx.beginPath();
-                if (dir === 'UP') {
-                  ctx.moveTo(px + half - aw, py + aw * 2 + margin);
-                  ctx.lineTo(px + half + aw, py + aw * 2 + margin);
-                  ctx.lineTo(px + half,       py + margin);
-                } else if (dir === 'DOWN') {
-                  ctx.moveTo(px + half - aw, py + uW - 1 - aw * 2 - margin);
-                  ctx.lineTo(px + half + aw, py + uW - 1 - aw * 2 - margin);
-                  ctx.lineTo(px + half,       py + uW - 1 - margin);
-                } else if (dir === 'LEFT') {
-                  ctx.moveTo(px + aw * 2 + margin, py + half - aw);
-                  ctx.lineTo(px + aw * 2 + margin, py + half + aw);
-                  ctx.lineTo(px + margin,            py + half);
-                } else if (dir === 'RIGHT') {
-                  ctx.moveTo(px + uW - 1 - aw * 2 - margin, py + half - aw);
-                  ctx.lineTo(px + uW - 1 - aw * 2 - margin, py + half + aw);
-                  ctx.lineTo(px + uW - 1 - margin,            py + half);
-                }
-                ctx.closePath();
-                ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
-                ctx.lineWidth   = Math.max(1, aw * 0.8);
-                ctx.stroke();
-                ctx.fillStyle = 'rgba(255, 230, 0, 0.95)';
-                ctx.fill();
-              }
+              ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+              ctx.lineWidth   = Math.max(1, aw * 0.8);
+              ctx.fillStyle   = 'rgba(255, 230, 0, 0.95)';
+              if (bits & 1) { ctx.beginPath(); ctx.moveTo(px + aw * 2 + margin, py + half - aw); ctx.lineTo(px + aw * 2 + margin, py + half + aw); ctx.lineTo(px + margin, py + half); ctx.closePath(); ctx.stroke(); ctx.fill(); }
+              if (bits & 2) { ctx.beginPath(); ctx.moveTo(px + half - aw, py + aw * 2 + margin); ctx.lineTo(px + half + aw, py + aw * 2 + margin); ctx.lineTo(px + half, py + margin); ctx.closePath(); ctx.stroke(); ctx.fill(); }
+              if (bits & 4) { ctx.beginPath(); ctx.moveTo(px + uW - 1 - aw * 2 - margin, py + half - aw); ctx.lineTo(px + uW - 1 - aw * 2 - margin, py + half + aw); ctx.lineTo(px + uW - 1 - margin, py + half); ctx.closePath(); ctx.stroke(); ctx.fill(); }
+              if (bits & 8) { ctx.beginPath(); ctx.moveTo(px + half - aw, py + uW - 1 - aw * 2 - margin); ctx.lineTo(px + half + aw, py + uW - 1 - aw * 2 - margin); ctx.lineTo(px + half, py + uW - 1 - margin); ctx.closePath(); ctx.stroke(); ctx.fill(); }
             }
           }
+        }
+
+        // Teleporter decoration — G.TELEPORTER cells are now in the carving grid
+        // (drawn as CELL_COLORS[8]). Only the connector line + ring/label need overlaying.
+        if (step.teleporterPairs) {
+          const half = (uW - 1) / 2;
+          const drawn = new Set();
+          ctx.save();
+          ctx.strokeStyle = 'rgba(185, 100, 255, 0.55)';
+          ctx.lineWidth   = Math.max(1, uW * 0.08);
+          ctx.setLineDash([Math.max(2, uW * 0.2), Math.max(2, uW * 0.2)]);
+          for (const [pni1, pni2] of step.teleporterPairs) {
+            if (drawn.has(pni1)) continue;
+            drawn.add(pni1); drawn.add(pni2);
+            const px1 = pni1 % pw, py1 = Math.floor(pni1 / pw);
+            const px2 = pni2 % pw, py2 = Math.floor(pni2 / pw);
+            ctx.beginPath();
+            ctx.moveTo(ox + px1 * uW + half, oy + py1 * uW + half);
+            ctx.lineTo(ox + px2 * uW + half, oy + py2 * uW + half);
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+          for (const pni of step.teleporterPairs.keys()) {
+            const px = pni % pw, py = Math.floor(pni / pw);
+            const mx = ox + px * uW + half, my = oy + py * uW + half;
+            const r1 = Math.max(1.5, half * 0.72);
+            ctx.strokeStyle = 'rgba(220, 170, 255, 0.9)';
+            ctx.lineWidth   = Math.max(1, uW * 0.1);
+            ctx.beginPath(); ctx.arc(mx, my, r1, 0, Math.PI * 2); ctx.stroke();
+            if (uW >= 14) {
+              const r2 = Math.max(1, half * 0.38);
+              ctx.strokeStyle = 'rgba(220, 170, 255, 0.5)';
+              ctx.lineWidth   = Math.max(0.5, uW * 0.06);
+              ctx.beginPath(); ctx.arc(mx, my, r2, 0, Math.PI * 2); ctx.stroke();
+            }
+            if (uW >= 10) {
+              const fontSize = Math.max(5, Math.floor(uW * 0.28));
+              ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
+              ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+              ctx.fillStyle = 'rgba(240, 210, 255, 0.95)';
+              ctx.fillText('T', mx, my);
+              ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+            }
+          }
+          ctx.restore();
         }
 
         // Pink path overlay — ghost shows ancestor-universe trajectory; solid line + dots

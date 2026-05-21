@@ -2,7 +2,7 @@ import { makeRng } from './random.js';
 import { slidePlayer, buildToggleMap } from './puzzle.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7, TELEPORTER: 8 };
 
 const DIRS = [
   { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
@@ -54,6 +54,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
   if (useKeyDoor && !('key' in weights)) weights = { ...weights, key: 0.05 };
   else if (!useKeyDoor && 'key' in weights) { weights = { ...weights }; delete weights.key; }
+  if (useTeleporter && !('teleporter' in weights)) weights = { ...weights, teleporter: 0.06 };
+  else if (!useTeleporter && 'teleporter' in weights) { weights = { ...weights }; delete weights.teleporter; }
   const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
 
   // Padded grid dimensions (1-cell BLOCK border on all sides)
@@ -128,6 +130,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   let currentUniverseKey = '';
   // onewayDir: cellIndex → dirIdx  (the direction index a ONEWAY cell allows)
   const onewayDir        = new Map();
+  const paddedTeleporterMap = new Map(); // padded flat idx ↔ padded flat idx
+  let   hasTeleporter    = false;
   const branchPosSet     = new Set();   // dedup key: `${universeKey}|${x},${y}`
   const branchQueue      = [];
   // Active-universe state — updated whenever a branch is dequeued.
@@ -201,7 +205,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     // Snapshot every universe's VD so the visualiser can show per-universe exploration.
     const allUniverseVDs = new Map();
     for (const [k, vd] of universeVDs) {
-      allUniverseVDs.set(k, new Map([...vd].map(([ci, bits]) => [ci, dirBitsToSet(bits)])));
+      allUniverseVDs.set(k, new Map(vd));
     }
     // Also surface universes that are queued but not yet dequeued — universeVDs
     // only gets an entry on dequeue, so without this new panels wouldn't appear
@@ -209,7 +213,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     for (const item of branchQueue) {
       const uKey = (item.activated ?? []).join(',');
       if (!allUniverseVDs.has(uKey)) {
-        allUniverseVDs.set(uKey, item.initialVD ? new Map([...item.initialVD].map(([ci, bits]) => [ci, dirBitsToSet(bits)])) : new Map());
+        allUniverseVDs.set(uKey, item.initialVD ? new Map(item.initialVD) : new Map());
       }
     }
     // Snapshot the frontier grouped by universe key.
@@ -222,7 +226,48 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       if (!target.has(uKey)) target.set(uKey, new Set());
       target.get(uKey).add(item.y * pw + item.x);
     }
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice() });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null });
+  }
+
+  // Find a valid teleporter exit: an already-carved G.EMPTY cell far enough from (entryPX,entryPY),
+  // with no BLOCK neighbors (so the player can approach/exit from any direction).
+  // All inner (non-border) orthogonal neighbors of (pX, pY) must be G.EMPTY or G.STICKY.
+  // Border neighbors (at the padded-grid edge) are always G.BLOCK — skip them.
+  function hasOnlyOpenNeighbors(pX, pY) {
+    for (const d of DIRS) {
+      const nx = pX + d.dx, ny = pY + d.dy;
+      if (nx < 1 || nx >= pw - 1 || ny < 1 || ny >= ph - 1) return false; // adjacent to border — reject
+      const c = cells[idx(nx, ny)];
+      if (c !== G.EMPTY && c !== G.STICKY && c !== G.UNTOUCHED) return false;
+    }
+    return true;
+  }
+
+  // Convert any UNTOUCHED neighbors of a teleporter cell to EMPTY so nothing else can be placed there.
+  function sealTeleporterNeighbors(pX, pY) {
+    for (const d of DIRS) {
+      const nx = pX + d.dx, ny = pY + d.dy;
+      if (nx < 1 || nx >= pw - 1 || ny < 1 || ny >= ph - 1) continue;
+      if (cells[idx(nx, ny)] === G.UNTOUCHED) cells[idx(nx, ny)] = G.EMPTY;
+    }
+  }
+
+  // Find a valid teleporter exit: an UNTOUCHED cell far enough from (entryPX, entryPY)
+  // whose inner neighbors are all G.EMPTY or G.STICKY.
+  function findTeleporterExit(entryPX, entryPY) {
+    const candidates = [];
+    for (let py2 = startY + 1; py2 < ph - 1; py2++) {
+      for (let px2 = 1; px2 < pw - 1; px2++) {
+        if (Math.abs(px2 - entryPX) + Math.abs(py2 - entryPY) < 4) continue;
+        const ni2 = idx(px2, py2);
+        if (cells[ni2] !== G.UNTOUCHED) continue;           // must be untouched
+        if (px2 === startX && py2 <= startY + 1) continue;  // keep entry tunnel clear
+        if (!hasOnlyOpenNeighbors(px2, py2)) continue;
+        candidates.push(ni2);
+      }
+    }
+    if (!candidates.length) return null;
+    return candidates[Math.floor(rng() * candidates.length)];
   }
 
   // True when at least two cells beyond (nx, ny) in dir are reachable — required
@@ -281,6 +326,34 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           const kuk = ka.join(',');
           const bpk = `${kuk}|${nx},${ny}`;
           if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); } }
+      } else {
+        cells[ni] = G.EMPTY;
+        rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
+        carve(dirIdx, nx, ny);
+      }
+    } else if (type === 'teleporter') {
+      if (useTeleporter && !hasTeleporter && hasOnlyOpenNeighbors(nx, ny)) {
+        const exitNi = findTeleporterExit(nx, ny);
+        if (exitNi !== null) {
+          const ex = exitNi % pw, ey = Math.floor(exitNi / pw);
+          cells[ni] = G.TELEPORTER;
+          cells[exitNi] = G.TELEPORTER;
+          paddedTeleporterMap.set(ni, exitNi);
+          paddedTeleporterMap.set(exitNi, ni);
+          hasTeleporter = true;
+          sealTeleporterNeighbors(nx, ny);
+          sealTeleporterNeighbors(ex, ey);
+          rec(x, y, nx, ny, `teleporter (${nx-1},${ny-1}) ↔ (${ex-1},${ey-1})`);
+          // Player slides through the entry and emerges at the exit.
+          // Mark the entry as visited so it's not re-entered from this direction,
+          // then continue carving from the exit in the same direction.
+          markVisited(ni, dirIdx);
+          if (!hasVisited(exitNi, dirIdx)) carve(dirIdx, ex, ey);
+        } else {
+          cells[ni] = G.EMPTY;
+          rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
+          carve(dirIdx, nx, ny);
+        }
       } else {
         cells[ni] = G.EMPTY;
         rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
@@ -366,6 +439,15 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         }
         break;
       }
+      case G.TELEPORTER: {
+        const exitNi = paddedTeleporterMap.get(ni);
+        if (exitNi !== undefined && !hasVisited(exitNi, dirIdx)) {
+          const ex = exitNi % pw, ey = Math.floor(exitNi / pw);
+          rec(x, y, nx, ny, `slide-teleporter (${nx-1},${ny-1}) → (${ex-1},${ey-1})`);
+          carve(dirIdx, ex, ey);
+        }
+        break;
+      }
     }
   }
 
@@ -411,11 +493,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
           break;
         }
-        case G.CRUMBLE: out = 7; break;   // CellType.CRUMBLE
-        case G.KEY:     out = 8; break;   // CellType.KEY
-        case G.DOOR:    out = 9; break;   // CellType.DOOR
-        case G.BLOCK:   out = 1; break;   // CellType.WALL
-        default:        out = 0; break;   // CellType.EMPTY  (UNTOUCHED — never carved)
+        case G.CRUMBLE:    out = 7;  break;   // CellType.CRUMBLE
+        case G.KEY:        out = 8;  break;   // CellType.KEY
+        case G.DOOR:       out = 9;  break;   // CellType.DOOR
+        case G.BLOCK:      out = 1;  break;   // CellType.WALL
+        case G.TELEPORTER: out = 10; break;   // CellType.TELEPORTER
+        default:           out = 0;  break;   // CellType.EMPTY  (UNTOUCHED — never carved)
       }
       outCells[y * width + x] = out;
     }
@@ -450,9 +533,51 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // Fallback: if useTeleporter but the BFS weight never fired (early or unlucky),
+  // place a teleporter pair now in `cells` and record a final step for it.
+  if (useTeleporter && !hasTeleporter) {
+    const candidates = [];
+    for (let py2 = startY + 1; py2 < ph - 1; py2++) {
+      for (let px2 = 1; px2 < pw - 1; px2++) {
+        if (px2 === startX && py2 <= startY + 1) continue;
+        const ni2 = idx(px2, py2);
+        if (cells[ni2] === G.UNTOUCHED && hasOnlyOpenNeighbors(px2, py2)) candidates.push(ni2);
+      }
+    }
+    for (let attempt = 0; attempt < 200 && candidates.length >= 2; attempt++) {
+      const i1 = Math.floor(rng() * candidates.length);
+      let   i2 = Math.floor(rng() * (candidates.length - 1));
+      if (i2 >= i1) i2++;
+      const ni1 = candidates[i1], ni2 = candidates[i2];
+      const px1 = ni1 % pw, py1 = Math.floor(ni1 / pw);
+      const px2 = ni2 % pw, py2 = Math.floor(ni2 / pw);
+      if (Math.abs(px1 - px2) + Math.abs(py1 - py2) < 4) continue;
+      cells[ni1] = G.TELEPORTER;
+      cells[ni2] = G.TELEPORTER;
+      outCells[(py1 - 1) * width + (px1 - 1)] = 10;
+      outCells[(py2 - 1) * width + (px2 - 1)] = 10;
+      sealTeleporterNeighbors(px1, py1);
+      sealTeleporterNeighbors(px2, py2);
+      paddedTeleporterMap.set(ni1, ni2);
+      paddedTeleporterMap.set(ni2, ni1);
+      hasTeleporter = true;
+      rec(-1, -1, px1, py1, `teleporter-fallback (${px1-1},${py1-1}) ↔ (${px2-1},${py2-1})`);
+      break;
+    }
+  }
+
+  // Build output teleporterMap from padded indices.
   let teleporterMap = null;
-  if (useTeleporter) {
-    teleporterMap = _placeTeleporters(outCells, width, height, carvedMask, start, rng);
+  if (paddedTeleporterMap.size > 0) {
+    teleporterMap = new Map();
+    for (const [pni1, pni2] of paddedTeleporterMap) {
+      const ox1 = (pni1 % pw) - 1, oy1 = Math.floor(pni1 / pw) - 1;
+      const ox2 = (pni2 % pw) - 1, oy2 = Math.floor(pni2 / pw) - 1;
+      if (ox1 >= 0 && ox1 < width && oy1 >= 0 && oy1 < height &&
+          ox2 >= 0 && ox2 < width && oy2 >= 0 && oy2 < height) {
+        teleporterMap.set(oy1 * width + ox1, oy2 * width + ox2);
+      }
+    }
   }
 
   const { goal, depths, difficulties, chainLengths, chainOnGearLengths, gearsOnChainDepths,
@@ -492,7 +617,18 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const pc = playerChainLength;
 
   const p4Goal   = p4BestAtPos?.get(goalFlat);  // null when !hasBudgets
-  const pairC    = p4Goal ? { g: p4Goal.g, c: p4Goal.chain } : null;
+  // Pair C's chain is the chain AT the goal moment. When the path retracts chain
+  // after collecting a key (via one-way or free-backtrack), p4Goal.chain can be
+  // less than the peak chain needed to reach the key. Apply the same max-over-keys
+  // correction used for Pairs A and B so the budget covers the full peak.
+  let pairCChain = p4Goal ? p4Goal.chain : 0;
+  if (p4Goal && p4BestAtPos) {
+    for (const kd of keyDepths) {
+      const p4k = p4BestAtPos.get(kd.y * width + kd.x);
+      if (p4k) pairCChain = Math.max(pairCChain, p4k.chain);
+    }
+  }
+  const pairC    = p4Goal ? { g: p4Goal.g, c: pairCChain } : null;
 
   const candidates = [
     (pairA_gears <= pg && pairA_chain <= pc) ? { g: pairA_gears, c: pairA_chain } : null,
@@ -518,7 +654,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor };
 }
 
 /**

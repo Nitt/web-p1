@@ -1,21 +1,19 @@
 import { slidePath } from './generator.js';
-import { buildToggleMap } from './puzzle.js';
+import { buildToggleMap, onewayAllows } from './puzzle.js';
 
-// Returns true if the cell at (pos.x+dx, pos.y+dy) is a one-way that blocks
-// movement in direction (dx,dy). Mirrors _onewayAllows in generator.js.
-function _adjacentBlockedByOneway(cells, width, height, pos, dx, dy) {
+// Returns the one-way cell type at (pos.x+dx, pos.y+dy), or 0 if none.
+function _adjacentOnewayCell(cells, width, height, pos, dx, dy) {
   const nx = pos.x + dx, ny = pos.y + dy;
-  if (nx < 0 || nx >= width || ny < 0 || ny >= height) return false;
+  if (nx < 0 || nx >= width || ny < 0 || ny >= height) return 0;
   const cell = cells[ny * width + nx];
-  if (cell < 3 || cell > 6) return false;
-  // ONEWAY_LEFT=3(dx=-1), ONEWAY_RIGHT=4(dx=1), ONEWAY_UP=5(dy=-1), ONEWAY_DOWN=6(dy=1)
-  switch (cell) {
-    case 3: return !(dx === -1 && dy === 0);
-    case 4: return !(dx ===  1 && dy === 0);
-    case 5: return !(dx ===  0 && dy === -1);
-    case 6: return !(dx ===  0 && dy ===  1);
-    default: return false;
-  }
+  return (cell >= 3 && cell <= 6) ? cell : 0;
+}
+
+// Extract {x,y} from a stateKey string without splitting the whole key.
+function _posFromKey(k) {
+  const c1 = k.indexOf(',');
+  const c2 = k.indexOf(',', c1 + 1);
+  return { x: +k.slice(0, c1), y: +k.slice(c1 + 1, c2) };
 }
 
 // Direction table — index 0–3 matches generator.js DIRS4 ordering.
@@ -44,16 +42,10 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
   const { cells, width, height, goal, doorRequirements = null, teleporterMap = null } = level;
   const toggleMap = buildToggleMap(cells);
 
-  // State key: encodes (x, y, di, ws, gearsUsed) into a single number.
-  // gearsLeft budget is at most ~20 in practice; ws fits in a few bits.
-  // We use a Map with a string key for simplicity and correctness.
-  const stateKey = (x, y, di, ws, g) =>
-    `${x},${y},${di},${ws},${g}`;
+  const stateKey = (x, y, di, ws, g) => `${x},${y},${di},${ws},${g}`;
 
-  // Heap entries: { x, y, di, ws, g, chain, fromKey }
-  // Priority: gears first (g), chain second.
-  const heap  = [];
-  const best  = new Map(); // stateKey → minimum [g, chain] seen
+  const heap   = [];
+  const best   = new Map(); // stateKey → minimum [g, chain] seen
   const parent = new Map(); // stateKey → { fromKey, di, x, y } for path reconstruction
 
   function heapPush(e) {
@@ -105,14 +97,12 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
     const cur = heapPop();
     const { x, y, di, ws, g, chain, key } = cur;
 
-    // Skip stale heap entries (a better path to this state was recorded later).
     const settled = best.get(key);
     if (!settled || g > settled[0] || (g === settled[0] && chain > settled[1])) continue;
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
 
-      // From boat (y < 0), only allow diving down.
       if (y < 0 && dy !== 1) continue;
 
       const isReversal = di < 4 && dx === -DIRS4[di].dx && dy === -DIRS4[di].dy;
@@ -123,22 +113,23 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
       const { path, crumblePos, keyPos } =
         slidePath(cells, width, height, { x, y }, dx, dy, toggleMap, ws, doorRequirements, teleporterMap);
 
+      const adjOW = _adjacentOnewayCell(cells, width, height, { x, y }, dx, dy);
       const blockedByOneway = path.length === 0 && crumblePos === null
-        && _adjacentBlockedByOneway(cells, width, height, { x, y }, dx, dy);
-      const chainRetracts = isReversal && blockedByOneway;
+        && adjOW !== 0 && !onewayAllows(adjOW, dx, dy);
+      // Backtrack: adjacent one-way blocks this direction but allows the opposite,
+      // meaning the chain crossed it in (-dx,-dy). No reversal requirement —
+      // the player can press the same direction twice to trigger it.
+      const isChainBacktrack = blockedByOneway && onewayAllows(adjOW, -dx, -dy);
 
-      // Cap forward moves at available chain budget.
       const avail      = chainAvail - chain;
-      const cappedPath = chainRetracts ? path : (path.length <= avail ? path : path.slice(0, avail));
+      const cappedPath = path.length <= avail ? path : path.slice(0, avail);
 
-      if (cappedPath.length === 0 && !crumblePos && !(isReversal && blockedByOneway)) continue;
+      if (cappedPath.length === 0 && !crumblePos && !isChainBacktrack) continue;
 
       // ── Forward landing ──────────────────────────────────────────────────────
       if (cappedPath.length > 0) {
         const landing  = cappedPath[cappedPath.length - 1];
-        const newChain = chainRetracts
-          ? chain - cappedPath.length
-          : chain + cappedPath.length;
+        const newChain = chain + cappedPath.length;
         const keyApplies = keyPos !== null && cappedPath.length === path.length;
         const ews        = keyApplies ? (ws | (1 << keyPos.toggleIdx)) : ws;
         const nk         = stateKey(landing.x, landing.y, i, ews, newG);
@@ -155,42 +146,13 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
         }
       }
 
-      // ── Post-oneway exit node ────────────────────────────────────────────────
-      // When a slide passes through one or more one-way tiles, also explore from
-      // the cell immediately after the LAST one-way encountered (not the final
-      // landing). That position is where the player can stand and trigger a
-      // one-way backtrack on a later move, so the solver must consider paths
-      // that branch from there. Mirrors the generator's Pass 1 logic.
-      if (!chainRetracts && cappedPath.length > 1) {
-        let lastOWIdx = -1;
-        for (let j = 0; j < cappedPath.length - 1; j++) {
-          if (cappedPath[j].cell >= 3 && cappedPath[j].cell <= 6) lastOWIdx = j;
-        }
-        if (lastOWIdx >= 0 && lastOWIdx + 1 < cappedPath.length - 1) {
-          const exitCell  = cappedPath[lastOWIdx + 1];
-          const exitChain = chain + lastOWIdx + 2; // cells traveled to reach exit
-          const ownk      = stateKey(exitCell.x, exitCell.y, i, ws, newG);
-          if (isBetter(ownk, newG, exitChain)) {
-            best.set(ownk, [newG, exitChain]);
-            parent.set(ownk, { fromKey: key, di: i, x: exitCell.x, y: exitCell.y });
-            heapPush({ x: exitCell.x, y: exitCell.y, di: i, ws, g: newG, chain: exitChain, key: ownk });
-            if (exitCell.x === goal.x && exitCell.y === goal.y) {
-              goalKey = ownk;
-              break outer;
-            }
-          }
-        }
-      }
-
       // ── Crumble bounce (worldState change, player stays) ────────────────────
       if (crumblePos && crumblePos.toggleIdx !== undefined && cappedPath.length === path.length) {
-        const newWS       = ws | (1 << crumblePos.toggleIdx);
-        const from        = cappedPath.length > 0 ? cappedPath[cappedPath.length - 1] : { x, y };
-        const crumbleG    = cappedPath.length === 0 ? g  : newG;
-        const crumbleDi   = cappedPath.length === 0 ? di : i;
-        const crumbleChain = chainRetracts
-          ? chain - cappedPath.length
-          : chain + cappedPath.length;
+        const newWS        = ws | (1 << crumblePos.toggleIdx);
+        const from         = cappedPath.length > 0 ? cappedPath[cappedPath.length - 1] : { x, y };
+        const crumbleG     = cappedPath.length === 0 ? g  : newG;
+        const crumbleDi    = cappedPath.length === 0 ? di : i;
+        const crumbleChain = chain + cappedPath.length;
         const nk = stateKey(from.x, from.y, crumbleDi, newWS, crumbleG);
 
         if (isBetter(nk, crumbleG, crumbleChain)) {
@@ -200,22 +162,34 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
         }
       }
 
-      // ── One-way backtrack: reversal blocked by oneway retracts chain ─────────
-      if (isReversal && blockedByOneway && path.length === 0) {
-        const parentEntry = parent.get(key);
-        if (parentEntry?.fromKey != null) {
-          const grandEntry = parent.get(parentEntry.fromKey);
-          if (grandEntry) {
-            const grandBest = best.get(parentEntry.fromKey);
-            if (grandBest) {
-              const [backG, backChain] = grandBest;
-              const bx = grandEntry.x, by = grandEntry.y;
-              const bnk = stateKey(bx, by, di, ws, backG);
-              if (isBetter(bnk, backG, backChain)) {
-                best.set(bnk, [backG, backChain]);
-                parent.set(bnk, { fromKey: key, di, x: bx, y: by });
-                heapPush({ x: bx, y: by, di, ws, g: backG, chain: backChain, key: bnk });
-              }
+      // ── One-way backtrack ─────────────────────────────────────────────────────
+      // Walk the parent chain to find the first ancestor on the entry side of the
+      // one-way (the side the chain came from), then snap the player back there.
+      if (isChainBacktrack) {
+        const owx = x + dx, owy = y + dy;
+        let walkKey = key;
+        let ancKey = null, ancX, ancY;
+        while (true) {
+          const pe = parent.get(walkKey);
+          const wp = pe !== null ? { x: pe.x, y: pe.y } : _posFromKey(walkKey);
+          // Entry side: (wp - OW) · (dx, dy) > 0
+          if ((wp.x - owx) * dx + (wp.y - owy) * dy > 0) {
+            ancKey = walkKey; ancX = wp.x; ancY = wp.y;
+            break;
+          }
+          if (pe === null) break;
+          walkKey = pe.fromKey;
+        }
+        if (ancKey !== null) {
+          const ancBest = best.get(ancKey);
+          if (ancBest) {
+            const [ancG, ancChain] = ancBest;
+            const bnk = stateKey(ancX, ancY, i, ws, ancG);
+            if (isBetter(bnk, ancG, ancChain)) {
+              best.set(bnk, [ancG, ancChain]);
+              parent.set(bnk, { fromKey: key, di: i, x: ancX, y: ancY });
+              heapPush({ x: ancX, y: ancY, di: i, ws, g: ancG, chain: ancChain, key: bnk });
+              if (ancX === goal.x && ancY === goal.y) { goalKey = bnk; break outer; }
             }
           }
         }
@@ -233,7 +207,7 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
   let cur = goalKey;
   while (true) {
     const entry = parent.get(cur);
-    if (entry === null) break; // start node
+    if (entry === null) break;
     diSeq.push(entry.di);
     cur = entry.fromKey;
   }
