@@ -159,7 +159,7 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
 
         if (isBetter(nk, crumbleG, crumbleChain)) {
           best.set(nk, [crumbleG, crumbleChain]);
-          parent.set(nk, { fromKey: key, di: crumbleDi, x: from.x, y: from.y });
+          parent.set(nk, { fromKey: key, di: i, x: from.x, y: from.y });
           heapPush({ x: from.x, y: from.y, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain, key: nk });
         }
       }
