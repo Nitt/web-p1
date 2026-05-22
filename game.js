@@ -54,8 +54,13 @@ const state = {
 };
 
 // ─── auto-solver ──────────────────────────────────────────────────────────────
-let _autoMoveQueue = [];
-let _autoSolving   = false;
+let _autoMoveQueue      = [];
+let _autoSolving        = false;
+let _solverStartPos     = null;   // player pos when solver was invoked
+let _solverStartGears   = 0;      // gearsLeft when solver was invoked
+let _solverStartChain   = 0;      // chainAvail when solver was invoked
+let _solverInitialMoves = [];     // full move list returned by solver
+let _solverMoveIdx      = 0;      // moves dispatched so far this run
 
 // Matches DIRS4 ordering in solver.js: RIGHT=0, LEFT=1, DOWN=2, UP=3, none=4.
 function _prevDirToIndex(prevDir) {
@@ -66,6 +71,95 @@ function _prevDirToIndex(prevDir) {
   return 3;
 }
 
+function _moveArrow({ dx, dy }) {
+  return dx === 1 ? '→' : dx === -1 ? '←' : dy === 1 ? '↓' : '↑';
+}
+
+function _renderLevelGrid() {
+  const { level, playerPos, gears, worldState, toggleMap } = state;
+  const { width, height, goal } = level;
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D', 'T'];
+
+  const gearNums = new Map();
+  gears.filter(g => !g.isTeleport).forEach((g, i) => gearNums.set(g.y * width + g.x, (i + 1) % 10));
+
+  const colHdr  = '       ' + Array.from({ length: width }, (_, x) => x % 10).join(' ');
+  const divider = '       ' + '-'.repeat(width * 2 - 1);
+  const lines   = [colHdr, divider];
+
+  for (let y = 0; y < height; y++) {
+    let row = `y=${String(y).padStart(2)} | `;
+    for (let x = 0; x < width; x++) {
+      if (x > 0) row += ' ';
+      const flat = y * width + x;
+      if (x === playerPos.x && y === playerPos.y) {
+        row += '@';
+      } else if (x === goal.x && y === goal.y) {
+        row += 'G';
+      } else if (gearNums.has(flat)) {
+        row += gearNums.get(flat);
+      } else {
+        const ct = level.cells[flat];
+        const ti = toggleMap?.get(flat);
+        if (ti !== undefined && ((worldState >> ti) & 1)) {
+          row += '.';  // crumble broken or key collected
+        } else if (ct === 9 && level.doorRequirements) {
+          const reqTi = level.doorRequirements.get(flat);
+          row += (reqTi !== undefined && ((worldState >> reqTi) & 1)) ? 'd' : 'D';
+        } else {
+          row += GLYPHS[ct] ?? '?';
+        }
+      }
+    }
+    lines.push(row);
+  }
+  return lines.join('\n');
+}
+
+function _logAutoSolveFailure(reason) {
+  const { level, playerPos, gears, worldState, gearsLeft, totalGears, chainLengthTotal, prevDir } = state;
+  const chainUsed  = _chainLengthUsed();
+  const bendGears  = gears.filter(g => !g.isTeleport);
+  const executed   = _solverInitialMoves.slice(0, _solverMoveIdx);
+  const remaining  = _solverInitialMoves.slice(_solverMoveIdx);
+
+  const features = [];
+  if (level.toggleMap?.size)        features.push(`${level.toggleMap.size} crumble/key toggles`);
+  if (level.doorRequirements?.size) features.push(`${level.doorRequirements.size} door(s)`);
+  if (level.teleporterMap?.size)    features.push('teleporters');
+
+  console.group(`%cLevel ${level.id} — ${reason}`, 'color:#e04060;font-weight:bold');
+  console.log(`Size: ${level.width}×${level.height}  |  seed: ${level.seed ?? '?'}  |  features: ${features.join(', ') || 'none'}`);
+  console.log(`Boat entry (y=-1): (${level.start.x}, -1)`);
+  if (_solverStartPos) console.log(`Solver started at: (${_solverStartPos.x}, ${_solverStartPos.y})  |  chainAvail at invoke: ${_solverStartChain}  |  gearsLeft: ${_solverStartGears}`);
+  console.log(`Chain limit: ${chainLengthTotal}  |  Gear budget: ${totalGears}`);
+  console.log(`Player stopped at: (${playerPos.x}, ${playerPos.y})  |  prevDir: ${prevDir ? _moveArrow(prevDir) : 'none'}`);
+  console.log(`World state: ${worldState.toString(2).padStart(8, '0')}`);
+  console.log(`Chain length (actual): ${chainUsed} / ${chainLengthTotal}`);
+  console.log(`Gears left / total: ${gearsLeft} / ${totalGears}`);
+  console.log(`Gear waypoints: ${bendGears.length ? bendGears.map(g => `(${g.x},${g.y})`).join(' → ') : '(none)'}`);
+  if (_solverInitialMoves.length > 0) {
+    console.log(`Planned moves (${_solverInitialMoves.length}): ${_solverInitialMoves.map(_moveArrow).join(' ')}`);
+    if (_solverMoveIdx > 0)        console.log(`  executed (${executed.length}):  ${executed.map(_moveArrow).join(' ')}`);
+    if (remaining.length > 0)      console.log(`  remaining (${remaining.length}): ${remaining.map(_moveArrow).join(' ')}`);
+  }
+  if (level.doorRequirements?.size) {
+    const pairs = [...level.doorRequirements.entries()].map(([flatIdx, ti]) => {
+      const dx = flatIdx % level.width, dy = Math.floor(flatIdx / level.width);
+      return `door(${dx},${dy})↔toggle${ti}`;
+    });
+    console.log(`Door requirements: ${pairs.join('  ')}`);
+  }
+  console.log('Grid:\n' + _renderLevelGrid());
+  const levelJSON = JSON.parse(JSON.stringify(level, (k, v) => {
+    if (v instanceof Uint8Array)  return Array.from(v);
+    if (v instanceof Map)         return Object.fromEntries([...v.entries()]);
+    return v;
+  }));
+  console.log('Level JSON:', levelJSON);
+  console.groupEnd();
+}
+
 function _cancelAutoSolve() {
   _autoSolving   = false;
   _autoMoveQueue = [];
@@ -73,7 +167,12 @@ function _cancelAutoSolve() {
 }
 
 function _dispatchNextAutoMove() {
-  if (!_autoSolving || _autoMoveQueue.length === 0) { _cancelAutoSolve(); return; }
+  if (!_autoSolving || _autoMoveQueue.length === 0) {
+    if (_autoSolving && !state.won) _logAutoSolveFailure('solver path exhausted without reaching goal (chain mismatch?)');
+    _cancelAutoSolve();
+    return;
+  }
+  _solverMoveIdx++;
   const { dx, dy } = _autoMoveQueue.shift();
   if (state.waitingForDive) {
     if (dy === 1) { state.waitingForDive = false; hideDiveIndicator(); }
@@ -86,21 +185,29 @@ function _autoSolve() {
   if (_autoSolving) { _cancelAutoSolve(); return; }
   if (state.won || state.isMoving) return;
 
-  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+  _solverStartPos   = { ...state.playerPos };
+  _solverStartGears = state.gearsLeft;
+  _solverStartChain = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+
   const result = solve(
     state.level, state.playerPos, state.worldState,
-    state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir)
+    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir)
   );
 
   const btn = document.getElementById('auto-solve-btn');
   if (!result || result.moves.length === 0) {
     btn?.classList.add('no-path');
     setTimeout(() => btn?.classList.remove('no-path'), 500);
+    _solverInitialMoves = [];
+    _solverMoveIdx      = 0;
+    _logAutoSolveFailure('solver found no path');
     return;
   }
 
-  _autoSolving   = true;
-  _autoMoveQueue = [...result.moves];
+  _solverInitialMoves = [...result.moves];
+  _solverMoveIdx      = 0;
+  _autoSolving        = true;
+  _autoMoveQueue      = [...result.moves];
   btn?.classList.add('active');
   _dispatchNextAutoMove();
 }
@@ -571,6 +678,10 @@ function _flushQueuedMove() {
 function _playBlockedWithJerk(dx, dy) {
   playBlocked();
   animateChainJerkInPlace(state.playerPos, { dx, dy }, state.level);
+  if (_autoSolving) {
+    _logAutoSolveFailure(`move blocked during auto-play (tried ${_moveArrow({ dx, dy })} — move ${_solverMoveIdx} of ${_solverInitialMoves.length})`);
+    _cancelAutoSolve();
+  }
 }
 
 function _tryOnewayBacktrack(target, dx, dy, didMove) {
