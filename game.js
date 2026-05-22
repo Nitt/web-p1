@@ -6,6 +6,7 @@ import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
 import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin } from './sounds.js';
+import { solve } from './solver.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
@@ -51,6 +52,58 @@ const state = {
   // True while the player is in the boat waiting to dive; cleared on first downward move.
   waitingForDive:       false,
 };
+
+// ─── auto-solver ──────────────────────────────────────────────────────────────
+let _autoMoveQueue = [];
+let _autoSolving   = false;
+
+// Matches DIRS4 ordering in solver.js: RIGHT=0, LEFT=1, DOWN=2, UP=3, none=4.
+function _prevDirToIndex(prevDir) {
+  if (!prevDir)          return 4;
+  if (prevDir.dx ===  1) return 0;
+  if (prevDir.dx === -1) return 1;
+  if (prevDir.dy ===  1) return 2;
+  return 3;
+}
+
+function _cancelAutoSolve() {
+  _autoSolving   = false;
+  _autoMoveQueue = [];
+  document.getElementById('auto-solve-btn')?.classList.remove('active');
+}
+
+function _dispatchNextAutoMove() {
+  if (!_autoSolving || _autoMoveQueue.length === 0) { _cancelAutoSolve(); return; }
+  const { dx, dy } = _autoMoveQueue.shift();
+  if (state.waitingForDive) {
+    if (dy === 1) { state.waitingForDive = false; hideDiveIndicator(); }
+    else          { _cancelAutoSolve(); return; }
+  }
+  _executeMove(dx, dy);
+}
+
+function _autoSolve() {
+  if (_autoSolving) { _cancelAutoSolve(); return; }
+  if (state.won || state.isMoving) return;
+
+  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
+  const result = solve(
+    state.level, state.playerPos, state.worldState,
+    state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir)
+  );
+
+  const btn = document.getElementById('auto-solve-btn');
+  if (!result || result.moves.length === 0) {
+    btn?.classList.add('no-path');
+    setTimeout(() => btn?.classList.remove('no-path'), 500);
+    return;
+  }
+
+  _autoSolving   = true;
+  _autoMoveQueue = [...result.moves];
+  btn?.classList.add('active');
+  _dispatchNextAutoMove();
+}
 
 // ─── teleporter test level (?tp in URL) ──────────────────────────────────────
 //
@@ -101,6 +154,9 @@ export function init() {
   document.getElementById('restart-btn')
     .addEventListener('click', () => loadLevel(state.level));
 
+  document.getElementById('auto-solve-btn')
+    .addEventListener('click', _autoSolve);
+
   // Backtick (`) skips to the next level — debug/testing shortcut.
   document.addEventListener('keydown', e => {
     if (e.key === '`') skipLevel();
@@ -126,6 +182,7 @@ function loadLevel(level) {
   // Cancel any in-flight player or retraction animations from the previous level.
   _moveToken++;
   _retractToken++;
+  _cancelAutoSolve();
   state.level       = level;
   state.playerPos   = { ...level.start };
   state.isMoving    = false;
@@ -206,6 +263,7 @@ function _nextLevel() {
 
 // ─── move dispatcher ──────────────────────────────────────────────────────────
 function handleMove(dx, dy) {
+  if (_autoSolving) _cancelAutoSolve();
   if (state.won) return;
 
   // Cancel the post-dive inactivity timer and dismiss the move hint on any input.
@@ -505,7 +563,9 @@ function _flushQueuedMove() {
   state.queuedMove = null;
   if (q && (performance.now() - q.queuedAt) <= QUEUE_WINDOW_MS) {
     _executeMove(q.dx, q.dy);
+    return;
   }
+  if (_autoSolving && _autoMoveQueue.length > 0) _dispatchNextAutoMove();
 }
 
 function _playBlockedWithJerk(dx, dy) {
@@ -719,6 +779,7 @@ function _animateWinRetract(onDone) {
 }
 
 function _handleWin() {
+  _cancelAutoSolve();
   state.won = true;
   playWin();
   state.queuedMove = null;

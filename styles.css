@@ -119,6 +119,20 @@ html, body {
 
 .btn-ghost:hover { background: rgba(0,0,0,0.06); }
 
+#auto-solve-btn.active {
+  background: var(--color-player);
+  border-color: var(--color-player);
+  color: #fff;
+}
+#auto-solve-btn.active:hover { background: #2a5fc8; }
+
+@keyframes auto-solve-shake {
+  0%,100% { transform: translateX(0); }
+  20%      { transform: translateX(-4px); }
+  60%      { transform: translateX(4px); }
+}
+#auto-solve-btn.no-path { animation: auto-solve-shake 0.4s ease; }
+
 /* grid container */
 #grid-container {
   flex: 1;
