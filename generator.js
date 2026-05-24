@@ -581,7 +581,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   const { goal, depths, difficulties, chainLengths, chainOnGearLengths, gearsOnChainDepths,
-          p4BestAtPos, toggleCount, universeDepths, universeChainLengths } =
+          p4BestAtPos, toggleCount, universeDepths, universeChainLengths, solution } =
     _findGoal(outCells, width, height, start, doorRequirements, carvedMask, teleporterMap, playerGears, playerChainLength);
   const goalDifficulty = difficulties[goal.y * width + goal.x];
 
@@ -653,7 +653,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor, solution };
 }
 
 /**
@@ -1008,6 +1008,18 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   // Companion value for Pass 1: for each cell, the chain length used on the min-gear path.
   const chainOnGearPath = new Map();
 
+  // Update bestKeyForPos only when (newDepth, newChain) strictly dominates the current best.
+  // Must be defined after landingVisited and parentOf are declared.
+  const _setBestIfBetter = (pk, newKey, newDepth, newChain) => {
+    const curBest = bestKeyForPos.get(pk);
+    if (curBest === undefined) { bestKeyForPos.set(pk, newKey); return; }
+    const curDepth = landingVisited.get(curBest) ?? Infinity;
+    const curChain = parentOf.get(curBest)?.chain ?? Infinity;
+    if (newDepth < curDepth || (newDepth === curDepth && newChain < curChain)) {
+      bestKeyForPos.set(pk, newKey);
+    }
+  };
+
   const startKey = stateKey(start, 3, 0);
   parentOf.set(startKey, { fromKey: null, landing: start, chain: 0 });
 
@@ -1026,7 +1038,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   // node at every ancestor with newWorldState at the ancestor's original depth.
   // This models the player collecting a toggle (key/crumble) and retracting their
   // entire departure-cog chain back to any prior waypoint for 0 net gears.
-  function _propagateFreeBacktrack(fromStateKey, newWorldState) {
+  //
+  // keySlideDir : direction index (0-3) of the slide that activated the toggle.
+  // triggerType : 'key' | 'crumble' — used by _reconstructSolution for path rebuilding.
+  function _propagateFreeBacktrack(fromStateKey, newWorldState, keySlideDir = null, triggerType = 'key') {
     let curKey = fromStateKey;
     while (curKey !== null && curKey !== undefined) {
       const entry = parentOf.get(curKey);
@@ -1039,9 +1054,14 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const freeKey = stateKey(ancPos, ancDi, newWorldState);
       if ((landingVisited.get(freeKey) ?? Infinity) > ancDepth) {
         landingVisited.set(freeKey, ancDepth);
-        parentOf.set(freeKey, { fromKey: curKey, landing: ancPos, chain: ancChain });
+        // isBacktrack/triggerKey/keySlideDir/triggerType are used only by
+        // _reconstructSolution for move-list reconstruction; they don't affect BFS.
+        parentOf.set(freeKey, {
+          fromKey: curKey, landing: ancPos, chain: ancChain,
+          isBacktrack: true, triggerKey: fromStateKey, keySlideDir, triggerType,
+        });
         const pk = posKey(ancPos);
-        if (!bestKeyForPos.has(pk)) bestKeyForPos.set(pk, freeKey);
+        _setBestIfBetter(pk, freeKey, ancDepth, ancChain);
         bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi, chain: ancChain });
         if (ancPos.y >= 0) _recUD(newWorldState, pk, ancDepth);
       }
@@ -1096,7 +1116,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           landingVisited.set(lk, nd);
           parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing, chain: newChain });
           const pf = posKey(landing);
-          if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
+          _setBestIfBetter(pf, lk, nd, newChain);
           (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i, chain: newChain });
         }
         // Key landing: record the landing cell in the universe AFTER key collection too.
@@ -1121,7 +1141,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
             if ((landingVisited.get(exitSK) ?? Infinity) > nd) {
               landingVisited.set(exitSK, nd);
               parentOf.set(exitSK, { fromKey: stateKey(pos, di, worldState), landing: exitCell, chain: exitChain });
-              if (!bestKeyForPos.has(exitPk)) bestKeyForPos.set(exitPk, exitSK);
+              _setBestIfBetter(exitPk, exitSK, nd, exitChain);
               if (!depths.has(exitPk) || depths.get(exitPk) > nd) depths.set(exitPk, nd);
               if (!chainOnGearPath.has(exitPk) || chainOnGearPath.get(exitPk) > exitChain) chainOnGearPath.set(exitPk, exitChain);
               _recUD(worldState, exitPk, nd);
@@ -1150,23 +1170,23 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const lk = stateKey(from, crumbleDi, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > crumbleNd) {
           landingVisited.set(lk, crumbleNd);
-          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from, chain: crumbleChain });
+          parentOf.set(lk, { fromKey: stateKey(pos, di, worldState), landing: from, chain: crumbleChain, moveDir: i });
           const pf = posKey(from);
-          if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, lk);
+          _setBestIfBetter(pf, lk, crumbleNd, crumbleChain);
           (crumbleDi !== di ? bfsNext : bfsCurr).push({ pos: from, depth: crumbleNd, worldState: newWorldState, di: crumbleDi, chain: crumbleChain });
         }
 
         // "Free-backtrack" variant: the player can break the crumble and retract
         // their entire departure-cog chain back to any prior waypoint for 0 net
         // gears.  Propagate the new worldState to pos AND all its ancestors.
-        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState);
+        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState, i, 'crumble');
       }
 
       // "Free-backtrack via key": collect the key and retract the entire
       // departure-cog chain back to any prior waypoint for 0 net gears.
       if (keyPos && keyPos.toggleIdx !== undefined) {
         const newWorldState = worldState | (1 << keyPos.toggleIdx);
-        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState);
+        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState, i, 'key');
       }
 
       // "Free-backtrack via one-way" variant: the player slid in the reversal direction,
@@ -1188,7 +1208,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
                 landingVisited.set(freeKey, nd);
                 parentOf.set(freeKey, { fromKey: stateKey(pos, di, worldState), landing: backPos, chain: backChain });
                 const pf = posKey(backPos);
-                if (!bestKeyForPos.has(pf)) bestKeyForPos.set(pf, freeKey);
+                _setBestIfBetter(pf, freeKey, nd, backChain);
                 bfsCurr.push({ pos: backPos, depth: nd, worldState, di, chain: backChain });
                 if (backPos.y >= 0) _recUD(worldState, pf, nd);
               }
@@ -1197,6 +1217,93 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         }
       }
     }
+  }
+
+  // ── Solution reconstruction from Pass 1 parentOf tree ────────────────────
+  // DIRS4 here matches _findGoal's local table: [LEFT, RIGHT, UP, DOWN] → indices 0-3.
+  // di=3 (DOWN) is used for the initial start node (the dive from the boat).
+  // We emit {dx,dy} objects so the ordering difference vs solver.js doesn't matter.
+  const _DIRS4G = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
+
+  function _reconstructSolution(goalFlat) {
+    const goalStateKey = bestKeyForPos.get(goalFlat);
+    if (goalStateKey === undefined) return null;
+
+    // Walk backward from goal, collecting arrival-direction indices.
+    // Stop when we hit a free-backtrack node (key or crumble backtracking needed)
+    // or reach the BFS root (fromKey === null).
+    const goalDiSeq = [];
+    let curKey = goalStateKey;
+    let btEntry = null;
+
+    while (true) {
+      const entry = parentOf.get(curKey);
+      if (!entry || entry.fromKey === null) break;
+      if (entry.isBacktrack) { btEntry = entry; break; }
+      const moveDi = entry.moveDir ?? curKey % 5;
+      if (moveDi < 4) goalDiSeq.push(moveDi);
+      curKey = entry.fromKey;
+    }
+
+    if (!btEntry) {
+      // ── Simple case: no backtracking required ────────────────────────────
+      goalDiSeq.reverse();
+      return { moves: goalDiSeq.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy })) };
+    }
+
+    // ── Key+door case: player must collect key then backtrack ─────────────
+    // Crumble backtracking is rare and the path geometry is more complex
+    // (player moves to an intermediate cell before the bounce); fall back
+    // to Dijkstra for those levels.
+    if (btEntry.triggerType === 'crumble') return null;
+
+    // goalDiSeq (reversed) = moves from the backtrack ancestor to the goal.
+    const goalMoves = [...goalDiSeq].reverse()
+      .map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy }));
+
+    // btEntry.fromKey    = stateKey(ancPos, ancDi, oldWS) — the backtrack anchor in old worldstate
+    // btEntry.triggerKey = stateKey(pos, *, oldWS)        — position the key slide was triggered from
+    // btEntry.keySlideDir = direction index of the key-collecting slide
+    const ancOldKey      = btEntry.fromKey;
+    const ancOldEntry    = parentOf.get(ancOldKey);
+    const backtrackChain = ancOldEntry ? (ancOldEntry.chain ?? 0) : 0;
+
+    // Walk the full path from start to key in one backward pass starting at triggerKey.
+    // We no longer split at ancPos — that split was fragile: if ancPos was reached via
+    // a free-backtrack (isBacktrack=true parent), startDiSeq would be empty.
+    // Instead we walk all the way to the root, skipping isBacktrack hop-entries
+    // (they are BFS phantom seeds, not real player moves) but continuing through them.
+    const allKeyDiSeq = [];
+    if (btEntry.keySlideDir !== null && btEntry.keySlideDir !== undefined) {
+      allKeyDiSeq.push(btEntry.keySlideDir); // last forward move: the key-collecting slide
+    }
+    let tc = btEntry.triggerKey;
+    let guard = 0;
+    while (tc !== undefined && guard++ < 50000) {
+      const te = parentOf.get(tc);
+      if (!te || te.fromKey === null) break; // reached BFS root
+      if (!te.isBacktrack) {
+        // Real move entry — push the direction.
+        const moveDi = te.moveDir ?? tc % 5;
+        if (moveDi < 4) allKeyDiSeq.push(moveDi);
+      } else if (te.triggerType === 'crumble' && te.keySlideDir !== null && te.keySlideDir !== undefined) {
+        // Crumble free-backtrack phantom: the BFS seeded the ancestor into the
+        // post-crumble worldstate, letting it slide through the now-broken crumble
+        // in one step.  In reality the player needs TWO moves: the approach slide
+        // (which hits the crumble and breaks it) then the continuation slide past it.
+        // We already capture the continuation when we process the child of this node,
+        // so here we inject the missing approach move (the direction that hit the crumble).
+        allKeyDiSeq.push(te.keySlideDir);
+      }
+      // Key isBacktrack entries are genuine backtrack targets — no move to inject,
+      // just follow fromKey to continue walking the pre-key path.
+      tc = te.fromKey;
+    }
+    allKeyDiSeq.reverse(); // now forward: start → ... → triggerPos → key
+
+    const keyMoves = allKeyDiSeq.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy }));
+
+    return { keyMoves, backtrackChain, goalMoves };
   }
 
   // ── Pass 2: Dijkstra for difficulty (variable cost) ───────────────────────
@@ -1607,9 +1714,12 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     }
   }
 
+  // Reconstruct the solution path for the chosen goal now that bestPos is known.
+  const solution = _reconstructSolution(bestPos.y * width + bestPos.x);
+
   return { goal: bestPos, depths: depthArray, difficulties: difficultyArray, chainLengths: chainLengthArray,
            chainOnGearLengths: chainOnGearArray, gearsOnChainDepths: gearsOnChainArray,
            p4BestAtPos: jBestAtPos,
-           toggleCount, universeDepths, universeChainLengths };
+           toggleCount, universeDepths, universeChainLengths, solution };
 }
 

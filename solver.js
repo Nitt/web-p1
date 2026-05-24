@@ -25,7 +25,7 @@ const OPPOSITE_DI = [1, 0, 3, 2]; // RIGHT↔LEFT, DOWN↔UP
  * @param {number} prevDi       - direction index of last move (0–3), or 4 for none
  * @returns {{ moves: {dx,dy}[], chainUsed: number, gearsUsed: number } | null}
  */
-export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi = 4) {
+export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi = 4, silent = false) {
   const { cells, width, height, goal, doorRequirements = null, teleporterMap = null } = level;
   const toggleMap = buildToggleMap(cells);
 
@@ -168,7 +168,7 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
   }
 
   if (goalKey === null) {
-    console.warn('[solver] no path found — dead end or solver cannot model required backtracking');
+    if (!silent) console.warn('[solver] no path found — dead end or solver cannot model required backtracking');
     return null;
   }
 

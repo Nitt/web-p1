@@ -63,6 +63,14 @@ let _solverStartChain   = 0;      // chainAvail when solver was invoked
 let _solverInitialMoves = [];     // full move list returned by solver
 let _solverMoveIdx      = 0;      // moves dispatched so far this run
 
+// ─── batch / ∞ test ───────────────────────────────────────────────────────────
+// When running, chain and gear limits are tracked but not enforced so the
+// solver can win even when budgets are slightly wrong.  Failures auto-advance
+// to the next level; wins skip the banner and advance immediately.
+let _batchRunning = false;
+let _batchTotal   = 0;
+let _batchFails   = 0;
+
 // Matches DIRS4 ordering in solver.js: RIGHT=0, LEFT=1, DOWN=2, UP=3, none=4.
 function _prevDirToIndex(prevDir) {
   if (!prevDir)          return 4;
@@ -159,6 +167,13 @@ function _logAutoSolveFailure(reason) {
   }));
   console.log('Level JSON:', levelJSON);
   console.groupEnd();
+
+  if (_batchRunning) {
+    _batchTotal++;
+    _batchFails++;
+    // Defer so any _cancelAutoSolve() after this call finishes first.
+    setTimeout(() => _batchAdvanceLevel(), 0);
+  }
 }
 
 function _cancelAutoSolve() {
@@ -200,6 +215,48 @@ function _autoSolve() {
   _solverStartGears = state.gearsLeft;
   _solverStartChain = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
 
+  // ── Use the generator's pre-computed solution when the player hasn't moved yet.
+  // level.solution is produced by _reconstructSolution in generator.js.
+  // It is only valid from the initial state (player at the boat, about to dive).
+  const sol = state.level.solution;
+  if (sol && state.waitingForDive) {
+    const btn = document.getElementById('auto-solve-btn');
+    if (sol.moves) {
+      // Simple path: no backtracking needed.
+      console.log(`[auto-solve] using generator solution — ${sol.moves.length} moves: ${sol.moves.map(_moveArrow).join(' ')}`);
+      _solverInitialMoves = [...sol.moves];
+      _solverMoveIdx      = 0;
+      _autoSolving        = true;
+      _autoMoveQueue      = [...sol.moves];
+      btn?.classList.add('active');
+      _dispatchNextAutoMove();
+      return;
+    }
+    if (sol.keyMoves) {
+      // Key+door with backtracking: run key phase first, then goal phase.
+      const keyCell = _findUncollectedKeyCell();
+      console.log(
+        `[auto-solve] using generator solution (key+door backtrack)` +
+        `\n  key is at: ${keyCell ? `(${keyCell.x},${keyCell.y})` : '(already collected?)'}` +
+        `\n  goal is at: (${state.level.goal.x},${state.level.goal.y})` +
+        `\n  phase 1 — key moves (${sol.keyMoves.length}): ${sol.keyMoves.map(_moveArrow).join(' ')}` +
+        `\n  phase 2 — goal moves (${sol.goalMoves.length}): ${sol.goalMoves.map(_moveArrow).join(' ')}` +
+        `\n  backtrack target chain length: ${sol.backtrackChain}`
+      );
+      _solverInitialMoves = [...sol.keyMoves];
+      _solverMoveIdx      = 0;
+      _autoSolving        = true;
+      _autoMoveQueue      = [...sol.keyMoves];
+      _autoPhaseCallback  = () => _planGoalAfterKeyWithHint(sol.backtrackChain, sol.goalMoves);
+      btn?.classList.add('active');
+      _dispatchNextAutoMove();
+      return;
+    }
+    // sol exists but has neither moves nor keyMoves (e.g. crumble backtrack fallback).
+    console.log('[auto-solve] generator solution is null (crumble backtrack) — falling back to Dijkstra');
+  }
+
+  // ── Fallback: run Dijkstra from the current player position ─────────────
   const result = solve(
     state.level, state.playerPos, state.worldState,
     state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir)
@@ -229,6 +286,62 @@ function _autoSolve() {
   _solverInitialMoves = [];
   _solverMoveIdx      = 0;
   _logAutoSolveFailure('solver found no path');
+}
+
+// Key+door phase 2 (generator-hint path): key has just been collected.
+// First try reaching the goal directly (maybe no backtracking needed after all).
+// If chain is too full, backtrack to the gear identified by backtrackChain and
+// execute the generator's pre-computed goalMoves from there.
+function _planGoalAfterKeyWithHint(backtrackChain, goalMoves) {
+  const chainUsed  = _chainLengthUsed();
+  const chainAvail = Math.max(0, state.chainLengthTotal - chainUsed);
+  console.log(
+    `[auto-solve] hint phase 2 — key collected at (${state.playerPos.x},${state.playerPos.y})` +
+    `  chainUsed=${chainUsed}/${state.chainLengthTotal}  gearsLeft=${state.gearsLeft}` +
+    `  backtrackTarget=${backtrackChain}`
+  );
+
+  // Try direct Dijkstra from key position first (maybe chain is still short enough).
+  console.log(`[auto-solve] hint phase 2 — trying direct goal solve (chainAvail=${chainAvail})`);
+  const result = solve(state.level, state.playerPos, state.worldState,
+    state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir), true);
+  if (result && result.moves.length > 0) {
+    console.log(`[auto-solve] hint phase 2 — direct path found (${result.moves.length} moves): ${result.moves.map(_moveArrow).join(' ')}`);
+    _solverInitialMoves = [...result.moves];
+    _solverMoveIdx      = 0;
+    _autoMoveQueue      = [...result.moves];
+    _dispatchNextAutoMove();
+    return;
+  }
+  console.log(`[auto-solve] hint phase 2 — no direct path, need to backtrack`);
+
+  // Find the gear whose accumulated chain length is closest to (but not over)
+  // backtrackChain — this is where the generator planned the backtrack to.
+  let gearIdx = -1; // -1 = boat
+  const gearLengths = state.gears
+    .map((g, i) => ({ i, g, len: _chainLengthAtGearIdx(i) }))
+    .filter(({ g }) => !g.isTeleport);
+  for (const { i, len } of gearLengths) {
+    if (len <= backtrackChain) gearIdx = i;
+  }
+
+  const gearLengthStr = gearLengths.map(({ i, g, len }) =>
+    `gear[${i}](${g.x},${g.y})=chain${len}`).join(', ') || '(none)';
+  const targetPos = gearIdx < 0 ? 'boat' : `gear[${gearIdx}] (${state.gears[gearIdx].x},${state.gears[gearIdx].y})`;
+  console.log(
+    `[auto-solve] hint phase 2 — gear chain lengths: ${gearLengthStr}` +
+    `\n  backtrack target chain ≤ ${backtrackChain} → ${targetPos}` +
+    `\n  goal moves after backtrack (${goalMoves.length}): ${goalMoves.map(_moveArrow).join(' ')}`
+  );
+
+  _autoPhaseCallback = () => {
+    _solverInitialMoves = [...goalMoves];
+    _solverMoveIdx      = 0;
+    _autoMoveQueue      = [...goalMoves];
+    _autoPhaseCallback  = null;
+    _dispatchNextAutoMove();
+  };
+  _executeBacktrack(gearIdx);
 }
 
 // Returns the position of the first uncollected KEY cell, or null.
@@ -289,7 +402,7 @@ function _tryKeyFirstStrategy() {
   // Try goal directly from current position (ignoring door, in case there's a path around it).
   const goalOnly = { ...state.level, doorRequirements: null };
   const directResult = solve(goalOnly, state.playerPos, state.worldState,
-    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir));
+    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir), true);
 
   if (directResult && directResult.moves.length > 0) {
     console.log(`[auto-solve] phase 1 — found direct path to goal (${directResult.moves.length} moves), executing`);
@@ -780,6 +893,57 @@ export function skipLevel() {
 }
 
 /**
+ * Advance to the next level and immediately auto-solve it (batch mode only).
+ * Mirrors _nextLevel() but inlines the async load so we can run _autoSolve()
+ * right after loadLevel() while _batchRunning is still true.
+ */
+function _batchAdvanceLevel() {
+  if (!_batchRunning) return;
+
+  const seed = state.nextSeed;
+  const id   = state.nextId;
+  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
+  state.nextId   += 1;
+  state.levelIndex += 1;
+  const hadKeyDoor = state.level?.doorRequirements?.size > 0;
+  state.levelsSinceKeyDoor = hadKeyDoor ? 0 : state.levelsSinceKeyDoor + 1;
+
+  Promise.resolve(takePendingLevel()).then(level => {
+    if (!_batchRunning) return;
+    if (!level) {
+      const recipe = getRecipe(id, state.levelsSinceKeyDoor);
+      level = generateFallback(seed, id, recipe);
+    }
+    loadLevel(level);
+    _autoSolve();
+  });
+}
+
+/**
+ * Start (or stop) the ∞ batch test.
+ * Runs _autoSolve() on every level from the current one onward.
+ * Failures are logged in full; clean passes print only "✓ Level N".
+ * Chain and gear limits are tracked but not enforced so a budget mismatch
+ * doesn't block the solver from winning.
+ */
+export function startBatchTest() {
+  if (_batchRunning) {
+    _batchRunning = false;
+    _cancelAutoSolve();
+    document.getElementById('batch-test-btn')?.classList.remove('active');
+    console.log(`[batch] stopped — ${_batchTotal} levels, ${_batchFails} failures`);
+    return;
+  }
+
+  _batchRunning = true;
+  _batchTotal   = 0;
+  _batchFails   = 0;
+  document.getElementById('batch-test-btn')?.classList.add('active');
+  console.log(`[batch] started from level ${state.level?.id ?? '?'}`);
+  _autoSolve();
+}
+
+/**
  * Deterministically compute the seed and levelsSinceKeyDoor at level n by
  * simulating the full progression from level 2, using the level seed itself
  * as the RNG source for key/door decisions so the result is always the same.
@@ -934,13 +1098,13 @@ function _buildDepartureCtx(target, dx, dy) {
   const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && bendGearCount === 1;
 
   if (willUseGear && state.gearsLeft === 0) {
-    return null;
+    if (!_batchRunning) return null;
   }
   if (isBoatEntry && isBend && !isAtLastCog && bendGearCount >= 2 && state.gearsLeft === 0) {
-    return null;
+    if (!_batchRunning) return null;
   }
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) {
-    return null;
+    if (!_batchRunning) return null;
   }
 
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
@@ -1078,6 +1242,23 @@ function _handleWin() {
   const peakChain    = Math.max(chainUsed, state.peakChainUsed);
   const gearOptimal  = peakGears === state.totalGears;
   const chainOptimal = peakChain === state.chainLengthTotal;
+  if (_batchRunning) {
+    _batchTotal++;
+    if (gearOptimal && chainOptimal) {
+      console.log(`✓ Level ${state.level.id}`);
+    } else {
+      const chainLeft  = state.chainLengthTotal - peakChain;
+      const gearsLeft2 = state.totalGears - peakGears;
+      console.warn(
+        `Level ${state.level.id} — budget mismatch: ` +
+        `gears ${peakGears}/${state.totalGears}${gearOptimal ? ' ✓' : ` (${gearsLeft2} left)`}  |  ` +
+        `chain ${peakChain}/${state.chainLengthTotal}${chainOptimal ? ' ✓' : ` (${chainLeft} left)`}`
+      );
+    }
+    _animateWinRetract(() => _batchAdvanceLevel());
+    return;
+  }
+
   console.log(
     `Level ${state.level.id} — ` +
     `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}  |  ` +
@@ -1270,7 +1451,7 @@ function _executeMove(dx, dy) {
     + Math.abs(target.x - target.teleportCrossing.exitX) + Math.abs(target.y - target.teleportCrossing.exitY)
     : Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
   const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
-  const moveTarget = chainWouldExceed
+  const moveTarget = (chainWouldExceed && !_batchRunning)
     ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
     : target;
 
