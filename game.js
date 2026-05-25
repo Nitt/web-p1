@@ -54,8 +54,9 @@ const state = {
 };
 
 // ─── auto-solver ──────────────────────────────────────────────────────────────
-let _autoMoveQueue      = [];
-let _autoSolving        = false;
+let _autoMoveQueue         = [];
+let _autoSolving           = false;
+let _autoSolveUsedBacktrack = false; // true when phase 3 / hint-backtrack was needed
 let _autoPhaseCallback  = null;   // called instead of failure when queue empties mid-solve
 let _solverStartPos     = null;   // player pos when solver was invoked
 let _solverStartGears   = 0;      // gearsLeft when solver was invoked
@@ -177,9 +178,10 @@ function _logAutoSolveFailure(reason) {
 }
 
 function _cancelAutoSolve() {
-  _autoSolving        = false;
-  _autoMoveQueue      = [];
-  _autoPhaseCallback  = null;
+  _autoSolving           = false;
+  _autoSolveUsedBacktrack = false;
+  _autoMoveQueue         = [];
+  _autoPhaseCallback     = null;
   document.getElementById('auto-solve-btn')?.classList.remove('active');
 }
 
@@ -223,7 +225,6 @@ function _autoSolve() {
     const btn = document.getElementById('auto-solve-btn');
     if (sol.moves) {
       // Simple path: no backtracking needed.
-      console.log(`[auto-solve] using generator solution — ${sol.moves.length} moves: ${sol.moves.map(_moveArrow).join(' ')}`);
       _solverInitialMoves = [...sol.moves];
       _solverMoveIdx      = 0;
       _autoSolving        = true;
@@ -234,15 +235,6 @@ function _autoSolve() {
     }
     if (sol.keyMoves) {
       // Key+door with backtracking: run key phase first, then goal phase.
-      const keyCell = _findUncollectedKeyCell();
-      console.log(
-        `[auto-solve] using generator solution (key+door backtrack)` +
-        `\n  key is at: ${keyCell ? `(${keyCell.x},${keyCell.y})` : '(already collected?)'}` +
-        `\n  goal is at: (${state.level.goal.x},${state.level.goal.y})` +
-        `\n  phase 1 — key moves (${sol.keyMoves.length}): ${sol.keyMoves.map(_moveArrow).join(' ')}` +
-        `\n  phase 2 — goal moves (${sol.goalMoves.length}): ${sol.goalMoves.map(_moveArrow).join(' ')}` +
-        `\n  backtrack target chain length: ${sol.backtrackChain}`
-      );
       _solverInitialMoves = [...sol.keyMoves];
       _solverMoveIdx      = 0;
       _autoSolving        = true;
@@ -253,7 +245,6 @@ function _autoSolve() {
       return;
     }
     // sol exists but has neither moves nor keyMoves (e.g. crumble backtrack fallback).
-    console.log('[auto-solve] generator solution is null (crumble backtrack) — falling back to Dijkstra');
   }
 
   // ── Fallback: run Dijkstra from the current player position ─────────────
@@ -276,7 +267,6 @@ function _autoSolve() {
   // No direct path — for key+door levels try navigating to the goal first (in case
   // there's a route without the key), then fall back to key-first.
   if (state.level.doorRequirements?.size > 0 && _findUncollectedKeyCell()) {
-    console.log('[auto-solve] direct solver found no path → trying key+door fallback strategy');
     _tryKeyFirstStrategy();
     return;
   }
@@ -295,25 +285,18 @@ function _autoSolve() {
 function _planGoalAfterKeyWithHint(backtrackChain, goalMoves) {
   const chainUsed  = _chainLengthUsed();
   const chainAvail = Math.max(0, state.chainLengthTotal - chainUsed);
-  console.log(
-    `[auto-solve] hint phase 2 — key collected at (${state.playerPos.x},${state.playerPos.y})` +
-    `  chainUsed=${chainUsed}/${state.chainLengthTotal}  gearsLeft=${state.gearsLeft}` +
-    `  backtrackTarget=${backtrackChain}`
-  );
 
   // Try direct Dijkstra from key position first (maybe chain is still short enough).
-  console.log(`[auto-solve] hint phase 2 — trying direct goal solve (chainAvail=${chainAvail})`);
   const result = solve(state.level, state.playerPos, state.worldState,
     state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir), true);
   if (result && result.moves.length > 0) {
-    console.log(`[auto-solve] hint phase 2 — direct path found (${result.moves.length} moves): ${result.moves.map(_moveArrow).join(' ')}`);
     _solverInitialMoves = [...result.moves];
     _solverMoveIdx      = 0;
     _autoMoveQueue      = [...result.moves];
     _dispatchNextAutoMove();
     return;
   }
-  console.log(`[auto-solve] hint phase 2 — no direct path, need to backtrack`);
+  // No direct path — need to backtrack to a gear.
 
   // Find the gear whose accumulated chain length is closest to (but not over)
   // backtrackChain — this is where the generator planned the backtrack to.
@@ -325,15 +308,7 @@ function _planGoalAfterKeyWithHint(backtrackChain, goalMoves) {
     if (len <= backtrackChain) gearIdx = i;
   }
 
-  const gearLengthStr = gearLengths.map(({ i, g, len }) =>
-    `gear[${i}](${g.x},${g.y})=chain${len}`).join(', ') || '(none)';
-  const targetPos = gearIdx < 0 ? 'boat' : `gear[${gearIdx}] (${state.gears[gearIdx].x},${state.gears[gearIdx].y})`;
-  console.log(
-    `[auto-solve] hint phase 2 — gear chain lengths: ${gearLengthStr}` +
-    `\n  backtrack target chain ≤ ${backtrackChain} → ${targetPos}` +
-    `\n  goal moves after backtrack (${goalMoves.length}): ${goalMoves.map(_moveArrow).join(' ')}`
-  );
-
+  _autoSolveUsedBacktrack = true;
   _autoPhaseCallback = () => {
     _solverInitialMoves = [...goalMoves];
     _solverMoveIdx      = 0;
@@ -397,15 +372,12 @@ function _prevDiAtGearIdx(gearIdx) {
 // Phase 1: try goal directly first; if that fails, navigate to the key.
 function _tryKeyFirstStrategy() {
   const keyCell = _findUncollectedKeyCell();
-  console.log(`[auto-solve] phase 1 — trying goal directly before key (key at ${keyCell.x},${keyCell.y})`);
-
   // Try goal directly from current position (ignoring door, in case there's a path around it).
   const goalOnly = { ...state.level, doorRequirements: null };
   const directResult = solve(goalOnly, state.playerPos, state.worldState,
     state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir), true);
 
   if (directResult && directResult.moves.length > 0) {
-    console.log(`[auto-solve] phase 1 — found direct path to goal (${directResult.moves.length} moves), executing`);
     _solverInitialMoves = [...directResult.moves];
     _solverMoveIdx      = 0;
     _autoSolving        = true;
@@ -415,7 +387,6 @@ function _tryKeyFirstStrategy() {
     return;
   }
 
-  console.log('[auto-solve] phase 1 — no direct path to goal → navigating to key');
   const keyLevel  = { ...state.level, goal: keyCell };
   const keyResult = solve(keyLevel, state.playerPos, state.worldState,
     state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir));
@@ -431,7 +402,6 @@ function _tryKeyFirstStrategy() {
     return;
   }
 
-  console.log(`[auto-solve] phase 1 — navigating to key (${keyResult.moves.length} moves)`);
   _solverInitialMoves = [...keyResult.moves];
   _solverMoveIdx      = 0;
   _autoSolving        = true;
@@ -444,12 +414,10 @@ function _tryKeyFirstStrategy() {
 // Phase 2: key collected — try to solve to goal; if stuck, try backtracking through gears.
 function _planGoalAfterKey() {
   const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
-  console.log(`[auto-solve] phase 2 — key collected, trying goal from (${state.playerPos.x},${state.playerPos.y}), chainAvail=${chainAvail}, gearsLeft=${state.gearsLeft}`);
   const result = solve(state.level, state.playerPos, state.worldState,
     state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir));
 
   if (result && result.moves.length > 0) {
-    console.log(`[auto-solve] phase 2 — found path to goal (${result.moves.length} moves), executing`);
     _solverInitialMoves = [...result.moves];
     _solverMoveIdx      = 0;
     _autoMoveQueue      = [...result.moves];
@@ -457,7 +425,6 @@ function _planGoalAfterKey() {
     return;
   }
 
-  console.log('[auto-solve] phase 2 — no path to goal from key position → trying gear backtrack');
   _tryBacktrackForGoal();
 }
 
@@ -466,7 +433,6 @@ function _planGoalAfterKey() {
 // then animate the backtrack and execute the solution.
 function _tryBacktrackForGoal() {
   const gears = state.gears;
-  console.log(`[auto-solve] phase 3 — trying backtrack through ${gears.length} gear(s) + boat`);
 
   for (let i = gears.length - 1; i >= -1; i--) {
     if (i >= 0 && gears[i].isTeleport) continue;
@@ -478,12 +444,11 @@ function _tryBacktrackForGoal() {
     const gearsFreed = gears.slice(Math.max(0, i)).filter(g => !g.isTeleport).length;
     const gearsAvail = state.gearsLeft + gearsFreed;
 
-    console.log(`[auto-solve] phase 3 — checking backtrack to ${i < 0 ? 'boat' : `gear[${i}] (${pos.x},${pos.y})`}, chainAvail=${chainAvail}, gearsAvail=${gearsAvail}`);
     const result = solve(state.level, pos, state.worldState,
       gearsAvail, chainAvail, _prevDiAtGearIdx(i));
 
     if (result && result.moves.length > 0) {
-      console.log(`[auto-solve] phase 3 — backtracking to ${i < 0 ? 'boat' : `gear[${i}] (${pos.x},${pos.y})`}, then executing ${result.moves.length} moves to goal`);
+      _autoSolveUsedBacktrack = true;
       const goalMoves = [...result.moves];
       _autoPhaseCallback = () => {
         _solverInitialMoves = [...goalMoves];
@@ -1231,6 +1196,8 @@ function _animateWinRetract(onDone) {
 }
 
 function _handleWin() {
+  const wasAutoSolving   = _autoSolving;
+  const usedBacktrack    = _autoSolveUsedBacktrack;
   _cancelAutoSolve();
   state.won = true;
   playWin();
@@ -1259,11 +1226,15 @@ function _handleWin() {
     return;
   }
 
-  console.log(
-    `Level ${state.level.id} — ` +
-    `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}  |  ` +
-    `chain: ${peakChain}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - peakChain} left)`}`
-  );
+  if (wasAutoSolving) {
+    console.log(`[auto-solve] ✓${usedBacktrack ? ' (used backtracking)' : ''}`);
+  } else {
+    console.log(
+      `Level ${state.level.id} — ` +
+      `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}  |  ` +
+      `chain: ${peakChain}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - peakChain} left)`}`
+    );
+  }
 
   _animateWinRetract(() => {
     _showBanner(winBanner, _nextLevel);

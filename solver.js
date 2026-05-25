@@ -168,7 +168,6 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
   }
 
   if (goalKey === null) {
-    if (!silent) console.warn('[solver] no path found — dead end or solver cannot model required backtracking');
     return null;
   }
 

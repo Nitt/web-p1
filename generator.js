@@ -644,6 +644,30 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     if (chainLengths[kFlat] >= 0) effectiveChainLength  = Math.max(effectiveChainLength,  chainLengths[kFlat]);
   }
 
+  // ── Solver-solvability correction ─────────────────────────────────────────────
+  // Pass 1 (min-gear BFS) and Pass 4 can find paths using chain retraction —
+  // sliding back through a gear waypoint shortens _chainLengthUsed() and allows
+  // moves that a straight path would exhaust the budget on.  The solver (Dijkstra,
+  // no waypoint backtracking) matches Pass 3: it measures chain as total cells
+  // traveled.  pairB_chain is therefore the solver-compatible minimum chain cost.
+  //
+  // If effectiveChainLength < pairB_chain the chosen budget is based on a
+  // backtracking path the solver cannot replicate:
+  //   • pairB_chain ≤ pc  → solver CAN reach the goal; bump effectiveChainLength
+  //                          up so the budget covers what the solver needs.
+  //   • pairB_chain > pc  → no in-budget non-backtracking path exists; solver
+  //                          cannot solve this level — flag it unsolvable so
+  //                          generateHardestLevel can deprioritise it.
+  let solverSolvable = true;
+  if (pairB_chain > effectiveChainLength) {
+    if (pairB_chain <= pc) {
+      effectiveChainLength = pairB_chain;
+      if (pairB_gears > effectiveCogs) effectiveCogs = pairB_gears;
+    } else {
+      solverSolvable = false;
+    }
+  }
+
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
   for (const [pi, bits] of (universeVDs.get('') ?? [])) {
@@ -653,7 +677,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor, solution };
+  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor, solution, solverSolvable };
 }
 
 /**
@@ -671,12 +695,55 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   for (let i = 0; i < candidates; i++) {
     const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears, playerChainLength });
     const d = level.goalDifficulty;
-    const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
+    const rawScore = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
+    // Unsolvable levels get a large penalty so any solvable candidate beats them.
+    // They are only ever selected if every candidate in this batch is unsolvable.
+    const score = level.solverSolvable ? rawScore : rawScore + 1e6;
 
     if (score < bestScore) {
       bestScore = score;
       best      = level;
       if (difficultyTarget !== null && bestScore < 0.5) break;
+    }
+  }
+
+  // ── Validate winning candidate's budget against real gear mechanics ──────────
+  // Only warn for levels the solverSolvable flag already identified as problematic.
+  // solution=null is almost always expected and benign: _slidePath does not stop at
+  // the goal cell (unlike slidePlayer in the game), so Pass 1 records the goal as a
+  // traversal node rather than a landing — _reconstructSolution can't find it in
+  // bestKeyForPos.  Budget values are still correct (traversal chain costs are tracked).
+  {
+    const { solution, solverSolvable, cells, width: w, height: h, start, goal,
+            effectiveChainLength, effectiveCogs, seed: s,
+            doorRequirements, teleporterMap } = best;
+
+    if (!solverSolvable) {
+      console.warn(`[gen validate] seed=${s}  budget chain=${effectiveChainLength} gears=${effectiveCogs}  |  ⚠ unsolvable (non-backtracking path exceeds player chain limit — selected as fallback)`);
+    } else {
+      const solMoves = solution?.moves
+                    ?? (solution ? [...(solution.keyMoves ?? []),
+                                    ...(solution.goalMoves ?? [])] : null);
+      if (solMoves?.length) {
+        // We have a reconstructed path — simulate gear mechanics to verify budget.
+        // Note: the simulation uses _slidePath which (a) doesn't stop at the goal cell
+        // and (b) can't execute "one-way reversal backtrack" transitions (BFS-internal
+        // mechanics where reversing into a blocking one-way retracts the chain to the
+        // previous waypoint — _slidePath returns path.length=0 for these).
+        // Therefore only flag a budget problem when the simulation REACHED the goal
+        // but still used more chain than budgeted; if atGoal=false the simulation
+        // broke early due to a reconstruction limitation, not a budget overrun.
+        const sim = _simulateGearPath(cells, w, h, start, goal, solMoves,
+                                      buildToggleMap(cells), doorRequirements, teleporterMap);
+        if (sim.reachedGoal && (sim.physicalChain > effectiveChainLength || sim.totalCells > effectiveChainLength)) {
+          console.warn(
+            `[gen validate] seed=${s}  budget chain=${effectiveChainLength} gears=${effectiveCogs}` +
+            `  |  ⚠ chain overrun: moves=${solMoves.length} cells=${sim.totalCells} physChain=${sim.physicalChain}`
+          );
+        }
+      }
+      // solution=null (or simulation didn't reach goal): reconstruction limitation —
+      // budget is verified by the pairB_chain check above; solver will find the path.
     }
   }
 
@@ -716,6 +783,48 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
   console.log(legend);
   console.log(`start=(${start.x},${start.y})  goal=(${goal.x},${goal.y})  difficulty=${goalDifficulty?.toFixed(2) ?? '?'}`);
   console.groupEnd();
+}
+
+// ── Budget validator ──────────────────────────────────────────────────────────
+
+/**
+ * Walk a move sequence from startPos, tracking bend gears to compute the
+ * physical chain length (Manhattan distance through waypoints) — the same
+ * quantity the game measures as _chainLengthUsed().
+ * Returns { physicalChain, totalCells, finalPos, reachedGoal }.
+ */
+function _simulateGearPath(cells, width, height, startPos, goal, moves, toggleMap, doorRequirements, teleporterMap) {
+  const DIRS4S = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
+  let pos    = { ...startPos };
+  let ws     = 0;
+  let prevDi = 4; // 4 = no prior direction (boat)
+  const bendGears = [];
+  let totalCells  = 0;
+
+  for (const { dx, dy } of moves) {
+    const di         = DIRS4S.findIndex(d => d.dx === dx && d.dy === dy);
+    const isReversal = prevDi < 4 && dx === -DIRS4S[prevDi].dx && dy === -DIRS4S[prevDi].dy;
+    const isBend     = prevDi < 4 && di !== prevDi && !isReversal;
+    if (isBend) bendGears.push({ ...pos });
+
+    const { path, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, ws, doorRequirements, teleporterMap);
+    if (path.length === 0) break;
+    pos        = { x: path[path.length - 1].x, y: path[path.length - 1].y };
+    totalCells += path.length;
+    prevDi     = di;
+    if (keyPos?.toggleIdx !== undefined) ws |= (1 << keyPos.toggleIdx);
+  }
+
+  let physicalChain = 0;
+  let anchor = startPos;
+  for (const g of bendGears) {
+    physicalChain += Math.abs(g.x - anchor.x) + Math.abs(g.y - anchor.y);
+    anchor = g;
+  }
+  physicalChain += Math.abs(pos.x - anchor.x) + Math.abs(pos.y - anchor.y);
+
+  return { physicalChain, totalCells, finalPos: pos,
+           reachedGoal: pos.x === goal.x && pos.y === goal.y };
 }
 
 // ── BFS goal finder ──────────────────────────────────────────────────────────
