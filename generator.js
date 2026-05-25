@@ -707,12 +707,18 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     }
   }
 
-  // ── Validate winning candidate's budget against real gear mechanics ──────────
-  // Only warn for levels the solverSolvable flag already identified as problematic.
-  // solution=null is almost always expected and benign: _slidePath does not stop at
-  // the goal cell (unlike slidePlayer in the game), so Pass 1 records the goal as a
-  // traversal node rather than a landing — _reconstructSolution can't find it in
-  // bestKeyForPos.  Budget values are still correct (traversal chain costs are tracked).
+  // ── Validate & correct winning candidate's budget against real gear mechanics ──
+  // _simulateGearPath replays the reconstructed move sequence with full gear physics
+  // (crumble activation, teleporter routing, bend gear placement) and computes both
+  // the physical chain length and total cells traveled.
+  //
+  // If the simulation finds that the physical chain needed exceeds effectiveChainLength,
+  // bump the budget so the player actually has enough chain to execute the path.
+  // If the bumped budget exceeds the player's chain limit (pc), flag the level as
+  // unsolvable (the reconstructed path can't be executed within the player's budget).
+  //
+  // solution=null is expected when _slidePath doesn't stop at the goal (most levels).
+  // In that case the simulation can't run, and we trust pairB_chain verified above.
   {
     const { solution, solverSolvable, cells, width: w, height: h, start, goal,
             effectiveChainLength, effectiveCogs, seed: s,
@@ -725,25 +731,29 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
                     ?? (solution ? [...(solution.keyMoves ?? []),
                                     ...(solution.goalMoves ?? [])] : null);
       if (solMoves?.length) {
-        // We have a reconstructed path — simulate gear mechanics to verify budget.
-        // Note: the simulation uses _slidePath which (a) doesn't stop at the goal cell
-        // and (b) can't execute "one-way reversal backtrack" transitions (BFS-internal
-        // mechanics where reversing into a blocking one-way retracts the chain to the
-        // previous waypoint — _slidePath returns path.length=0 for these).
-        // Therefore only flag a budget problem when the simulation REACHED the goal
-        // but still used more chain than budgeted; if atGoal=false the simulation
-        // broke early due to a reconstruction limitation, not a budget overrun.
+        // Simulate gear mechanics to check physical chain cost.
         const sim = _simulateGearPath(cells, w, h, start, goal, solMoves,
                                       buildToggleMap(cells), doorRequirements, teleporterMap);
-        if (sim.reachedGoal && (sim.physicalChain > effectiveChainLength || sim.totalCells > effectiveChainLength)) {
-          console.warn(
-            `[gen validate] seed=${s}  budget chain=${effectiveChainLength} gears=${effectiveCogs}` +
-            `  |  ⚠ chain overrun: moves=${solMoves.length} cells=${sim.totalCells} physChain=${sim.physicalChain}`
-          );
+        const needed = Math.max(sim.physicalChain, sim.totalCells);
+        if (needed > best.effectiveChainLength) {
+          if (needed <= playerChainLength) {
+            // Bump budget to match actual physical chain requirement.
+            console.log(
+              `[gen validate] seed=${s}  bumping chain budget ${best.effectiveChainLength}→${needed}` +
+              `  (physChain=${sim.physicalChain} cells=${sim.totalCells} reachedGoal=${sim.reachedGoal})`
+            );
+            best.effectiveChainLength = needed;
+          } else {
+            // Can't fit in player budget — flag as unsolvable.
+            console.warn(
+              `[gen validate] seed=${s}  chain overrun: needed=${needed} > playerChain=${playerChainLength}` +
+              `  (physChain=${sim.physicalChain} cells=${sim.totalCells} reachedGoal=${sim.reachedGoal})  ⚠ flagging unsolvable`
+            );
+            best.solverSolvable = false;
+          }
         }
       }
-      // solution=null (or simulation didn't reach goal): reconstruction limitation —
-      // budget is verified by the pairB_chain check above; solver will find the path.
+      // solution=null: reconstruction limitation — pairB_chain check above is sufficient.
     }
   }
 
@@ -798,30 +808,71 @@ function _simulateGearPath(cells, width, height, startPos, goal, moves, toggleMa
   let pos    = { ...startPos };
   let ws     = 0;
   let prevDi = 4; // 4 = no prior direction (boat)
-  const bendGears = [];
-  let totalCells  = 0;
+  let totalCells = 0;
+
+  // Combined waypoints for physical chain computation (in order of occurrence).
+  // Bend entries:     { x, y, type:'bend' }            — direction-change gear positions.
+  // Teleport entries: { x, y, type:'teleport', exitX, exitY } — chain routes entry→exit.
+  // Physical chain mirrors _chainLengthUsed(): anchor→waypoint, teleport jumps to exitX/Y.
+  const chainWaypoints = [];
 
   for (const { dx, dy } of moves) {
     const di         = DIRS4S.findIndex(d => d.dx === dx && d.dy === dy);
     const isReversal = prevDi < 4 && dx === -DIRS4S[prevDi].dx && dy === -DIRS4S[prevDi].dy;
     const isBend     = prevDi < 4 && di !== prevDi && !isReversal;
-    if (isBend) bendGears.push({ ...pos });
+    if (isBend) {
+      chainWaypoints.push({ x: pos.x, y: pos.y, type: 'bend' });
+    }
 
-    const { path, keyPos } = _slidePath(cells, width, height, pos, dx, dy, toggleMap, ws, doorRequirements, teleporterMap);
-    if (path.length === 0) break;
+    const { path, crumblePos, keyPos } =
+      _slidePath(cells, width, height, pos, dx, dy, toggleMap, ws, doorRequirements, teleporterMap);
+
+    // Zero-move crumble bounce: player stays put, crumble breaks, continue to next move.
+    if (path.length === 0) {
+      if (crumblePos?.toggleIdx !== undefined) {
+        ws |= (1 << crumblePos.toggleIdx);
+        // prevDi unchanged (no movement).
+        continue;
+      }
+      break; // truly blocked, stop simulation
+    }
+
+    // Detect teleporter crossings from path cells (cell type 10 = TELEPORTER).
+    // The path includes the entry cell but not the exit — we look up the exit via teleporterMap.
+    if (teleporterMap) {
+      for (const step of path) {
+        if (step.cell === 10) {
+          const entryFlat = step.y * width + step.x;
+          const exitFlat  = teleporterMap.get(entryFlat);
+          if (exitFlat !== undefined) {
+            const exitX = exitFlat % width, exitY = Math.floor(exitFlat / width);
+            chainWaypoints.push({ x: step.x, y: step.y, type: 'teleport', exitX, exitY });
+          }
+        }
+      }
+    }
+
     pos        = { x: path[path.length - 1].x, y: path[path.length - 1].y };
     totalCells += path.length;
     prevDi     = di;
-    if (keyPos?.toggleIdx !== undefined) ws |= (1 << keyPos.toggleIdx);
+    if (keyPos?.toggleIdx    !== undefined) ws |= (1 << keyPos.toggleIdx);
+    if (crumblePos?.toggleIdx !== undefined) ws |= (1 << crumblePos.toggleIdx);
+
+    if (pos.x === goal.x && pos.y === goal.y) break; // reached goal
   }
 
+  // Compute physical chain, routing through teleporter entry→exit correctly.
   let physicalChain = 0;
-  let anchor = startPos;
-  for (const g of bendGears) {
-    physicalChain += Math.abs(g.x - anchor.x) + Math.abs(g.y - anchor.y);
-    anchor = g;
+  let anchorX = startPos.x, anchorY = startPos.y;
+  for (const wp of chainWaypoints) {
+    physicalChain += Math.abs(wp.x - anchorX) + Math.abs(wp.y - anchorY);
+    if (wp.type === 'teleport') {
+      anchorX = wp.exitX; anchorY = wp.exitY;
+    } else {
+      anchorX = wp.x; anchorY = wp.y;
+    }
   }
-  physicalChain += Math.abs(pos.x - anchor.x) + Math.abs(pos.y - anchor.y);
+  physicalChain += Math.abs(pos.x - anchorX) + Math.abs(pos.y - anchorY);
 
   return { physicalChain, totalCells, finalPos: pos,
            reachedGoal: pos.x === goal.x && pos.y === goal.y };

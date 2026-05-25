@@ -189,5 +189,7 @@ export function solve(level, startPos, worldState, gearsLeft, chainAvail, prevDi
   const moves = diSeq.map(di => ({ dx: DIRS4[di].dx, dy: DIRS4[di].dy }));
 
   const goalBest = best.get(goalKey);
-  return { moves, chainUsed: goalBest[1], gearsUsed: goalBest[0] };
+  // Extract the worldState at the goal from the stateKey string ("x,y,di,ws,g").
+  const finalWorldState = parseInt(goalKey.split(',')[3]);
+  return { moves, chainUsed: goalBest[1], gearsUsed: goalBest[0], finalWorldState };
 }

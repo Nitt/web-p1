@@ -61,8 +61,9 @@ let _autoPhaseCallback  = null;   // called instead of failure when queue emptie
 let _solverStartPos     = null;   // player pos when solver was invoked
 let _solverStartGears   = 0;      // gearsLeft when solver was invoked
 let _solverStartChain   = 0;      // chainAvail when solver was invoked
-let _solverInitialMoves = [];     // full move list returned by solver
-let _solverMoveIdx      = 0;      // moves dispatched so far this run
+let _solverInitialMoves    = [];   // full move list returned by solver
+let _solverMoveIdx         = 0;   // moves dispatched so far this run
+let _solverFinalWorldState = null; // worldState at goal in the solver's planned path
 
 // ─── batch / ∞ test ───────────────────────────────────────────────────────────
 // When running, chain and gear limits are tracked but not enforced so the
@@ -127,14 +128,14 @@ function _renderLevelGrid() {
 }
 
 function _logAutoSolveFailure(reason) {
-  const { level, playerPos, gears, worldState, gearsLeft, totalGears, chainLengthTotal, prevDir } = state;
+  const { level, playerPos, gears, worldState, gearsLeft, totalGears, chainLengthTotal, prevDir, toggleMap } = state;
   const chainUsed  = _chainLengthUsed();
   const bendGears  = gears.filter(g => !g.isTeleport);
   const executed   = _solverInitialMoves.slice(0, _solverMoveIdx);
   const remaining  = _solverInitialMoves.slice(_solverMoveIdx);
 
   const features = [];
-  if (level.toggleMap?.size)        features.push(`${level.toggleMap.size} crumble/key toggles`);
+  if (toggleMap?.size)              features.push(`${toggleMap.size} crumble/key toggles`);
   if (level.doorRequirements?.size) features.push(`${level.doorRequirements.size} door(s)`);
   if (level.teleporterMap?.size)    features.push('teleporters');
 
@@ -145,6 +146,31 @@ function _logAutoSolveFailure(reason) {
   console.log(`Chain limit: ${chainLengthTotal}  |  Gear budget: ${totalGears}`);
   console.log(`Player stopped at: (${playerPos.x}, ${playerPos.y})  |  prevDir: ${prevDir ? _moveArrow(prevDir) : 'none'}`);
   console.log(`World state: ${worldState.toString(2).padStart(8, '0')}`);
+  if (_solverFinalWorldState !== null) {
+    const planned = _solverFinalWorldState;
+    const delta   = planned & ~worldState;  // toggles the solver intended to activate
+    if (delta !== 0) {
+      // Decode delta bits into human-readable labels (key vs crumble).
+      const { cells, width: lw } = level;
+      const toggleEntries = toggleMap ? [...toggleMap.entries()] : [];
+      const labels = [];
+      for (let bit = 0; bit < 31; bit++) {
+        if (!((delta >> bit) & 1)) continue;
+        const entry = toggleEntries.find(([, ti]) => ti === bit);
+        if (entry) {
+          const flatIdx  = entry[0];
+          const cx = flatIdx % lw, cy = Math.floor(flatIdx / lw);
+          const ct = cells[flatIdx];
+          labels.push(`toggle${bit}=${ct === 8 ? 'KEY' : 'CRUMBLE'}(${cx},${cy})`);
+        } else {
+          labels.push(`toggle${bit}`);
+        }
+      }
+      console.log(`Solver planned to activate: ${labels.join('  ')}  (finalWS=${planned.toString(2).padStart(8,'0')})`);
+    } else {
+      console.log(`Solver planned NO new toggles  (finalWS=${planned.toString(2).padStart(8,'0')})`);
+    }
+  }
   console.log(`Chain length (actual): ${chainUsed} / ${chainLengthTotal}`);
   console.log(`Gears left / total: ${gearsLeft} / ${totalGears}`);
   console.log(`Gear waypoints: ${bendGears.length ? bendGears.map(g => `(${g.x},${g.y})`).join(' → ') : '(none)'}`);
@@ -178,10 +204,11 @@ function _logAutoSolveFailure(reason) {
 }
 
 function _cancelAutoSolve() {
-  _autoSolving           = false;
+  _autoSolving            = false;
   _autoSolveUsedBacktrack = false;
-  _autoMoveQueue         = [];
-  _autoPhaseCallback     = null;
+  _autoMoveQueue          = [];
+  _autoPhaseCallback      = null;
+  _solverFinalWorldState  = null;
   document.getElementById('auto-solve-btn')?.classList.remove('active');
 }
 
@@ -255,10 +282,11 @@ function _autoSolve() {
 
   const btn = document.getElementById('auto-solve-btn');
   if (result && result.moves.length > 0) {
-    _solverInitialMoves = [...result.moves];
-    _solverMoveIdx      = 0;
-    _autoSolving        = true;
-    _autoMoveQueue      = [...result.moves];
+    _solverInitialMoves    = [...result.moves];
+    _solverMoveIdx         = 0;
+    _solverFinalWorldState = result.finalWorldState ?? null;
+    _autoSolving           = true;
+    _autoMoveQueue         = [...result.moves];
     btn?.classList.add('active');
     _dispatchNextAutoMove();
     return;
