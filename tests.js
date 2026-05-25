@@ -355,23 +355,16 @@ test('level id is preserved', () => {
   eq(generateLevel(9, 9, { seed: 0, id: 7 }).id, 7);
 });
 
-test('depths array length equals width × height', () => {
-  const level = generateLevel(9, 9, { seed: 0 });
-  eq(level.depths.length, 81);
-});
-
-test('goalDepth is non-negative', () => {
-  for (const seed of [0, 42, 100]) {
-    const { goalDepth } = generateLevel(9, 9, { seed });
-    assert(goalDepth >= 0, `seed ${seed}: goalDepth is ${goalDepth}`);
-  }
-});
-
-test('effectiveCogs is at least goalDepth', () => {
+test('effectiveCogs is at least 1', () => {
   for (const seed of [0, 42, 100, 200]) {
-    const { effectiveCogs, goalDepth } = generateLevel(9, 9, { seed });
-    assert(effectiveCogs >= goalDepth, `seed ${seed}: effectiveCogs ${effectiveCogs} < goalDepth ${goalDepth}`);
+    const { effectiveCogs } = generateLevel(9, 9, { seed });
+    assert(effectiveCogs >= 1, `seed ${seed}: effectiveCogs ${effectiveCogs} < 1`);
   }
+});
+
+test('effectiveChainLength equals width + height', () => {
+  const { effectiveChainLength, width, height } = generateLevel(9, 9, { seed: 0 });
+  eq(effectiveChainLength, width + height);
 });
 
 // ── Render ────────────────────────────────────────────────────────────────────
