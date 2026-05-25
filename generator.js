@@ -18,6 +18,9 @@ const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, key: 0
 // Order: LEFT(0)→3, UP(1)→5, RIGHT(2)→4, DOWN(3)→6
 const ONEWAY_OUT = [3, 5, 4, 6];
 
+// The four orthogonal directions — shared across _slidePath, _findGoal, _simulateGearPath, etc.
+const DIRS4 = [{ dx: -1, dy: 0 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }, { dx: 0, dy: 1 }];
+
 // ── Difficulty weights ────────────────────────────────────────────────────────
 // Each entry represents the cognitive cost added to a move when that interaction
 // occurs. BASE_MOVE is applied once per slide action. All others stack on top.
@@ -155,6 +158,25 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
+  // Push a branch for (queueX, queueY) in the universe where toggleCellIdx is activated.
+  // Deduplicates by (universe, position) so the same branch is never enqueued twice.
+  function enqueueActivated(toggleCellIdx, queueX, queueY) {
+    const activated = [...currentBranchActivated, toggleCellIdx].sort((a, b) => a - b);
+    const bpk = `${activated.join(',')}|${queueX},${queueY}`;
+    if (!branchPosSet.has(bpk)) {
+      branchPosSet.add(bpk);
+      branchQueue.push({ x: queueX, y: queueY, activated });
+    }
+  }
+
+  // Convert cell ni to EMPTY and continue carving in dirIdx from (nx, ny).
+  // Used as the fallback when a randomly-chosen type can't be placed.
+  function carveEmpty(dirIdx, x, y, nx, ny, ni) {
+    cells[ni] = G.EMPTY;
+    rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
+    carve(dirIdx, nx, ny);
+  }
+
   // Tracks key→door linkages placed during carving, used to build doorRequirements after output conversion.
   const keyDoorPairs = [];
 
@@ -282,9 +304,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   function carveUntouched(dirIdx, x, y, nx, ny, ni, dir) {
     const type = pickType();
     if (type === 'empty') {
-      cells[ni] = G.EMPTY;
-      rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-      carve(dirIdx, nx, ny);
+      carveEmpty(dirIdx, x, y, nx, ny, ni);
     } else if (type === 'oneway') {
       if (hasOnewayRoom(nx, ny, dir)) {
         cells[idx(nx + dir.dx, ny + dir.dy)] = G.EMPTY;
@@ -305,10 +325,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
       // Bumping a crumble immediately activates it, so there is no game state
       // where the player is at (x,y) with the crumble still intact.
-      { const ca = [...currentBranchActivated, ni].sort((a, b) => a - b);
-        const cuk = ca.join(',');
-        const bpk = `${cuk}|${x},${y}`;
-        if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x, y, activated: ca }); } }
+      enqueueActivated(ni, x, y);
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door) {
@@ -322,14 +339,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         // starts clean — no inherited visited-dirs from before the key was collected.
         // The carver will reach the door naturally from the key side and slide through
         // (door is open), so no extra far-side seeding is needed.
-        { const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
-          const kuk = ka.join(',');
-          const bpk = `${kuk}|${nx},${ny}`;
-          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); } }
+        enqueueActivated(ni, nx, ny);
       } else {
-        cells[ni] = G.EMPTY;
-        rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-        carve(dirIdx, nx, ny);
+        carveEmpty(dirIdx, x, y, nx, ny, ni);
       }
     } else if (type === 'teleporter') {
       if (useTeleporter && !hasTeleporter && hasOnlyOpenNeighbors(nx, ny)) {
@@ -350,14 +362,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           markVisited(ni, dirIdx);
           if (!hasVisited(exitNi, dirIdx)) carve(dirIdx, ex, ey);
         } else {
-          cells[ni] = G.EMPTY;
-          rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny);
+          carveEmpty(dirIdx, x, y, nx, ny, ni);
         }
       } else {
-        cells[ni] = G.EMPTY;
-        rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-        carve(dirIdx, nx, ny);
+        carveEmpty(dirIdx, x, y, nx, ny, ni);
       }
     } else {
       cells[ni] = G.STICKY;
@@ -391,10 +399,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          const ca = [...currentBranchActivated, ni].sort((a, b) => a - b);
-          const cuk = ca.join(',');
-          const bpk = `${cuk}|${x},${y}`;
-          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x, y, activated: ca }); }
+          enqueueActivated(ni, x, y);
         }
         break;
       case G.BLOCK:
@@ -422,10 +427,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-          const ka = [...currentBranchActivated, ni].sort((a, b) => a - b);
-          const kuk = ka.join(',');
-          const bpk = `${kuk}|${nx},${ny}`;
-          if (!branchPosSet.has(bpk)) { branchPosSet.add(bpk); branchQueue.push({ x: nx, y: ny, activated: ka }); }
+          enqueueActivated(ni, nx, ny);
         }
         break;
       case G.DOOR: {
@@ -756,34 +758,6 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   return best;
 }
 
-// ── Debug logging ─────────────────────────────────────────────────────────────
-
-function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', '░', 'K', 'D', 'T'];
-
-  // Column header: "   x: 0 1 2 3 ..."
-  const colHeader = '    x: ' + Array.from({ length: width }, (_, i) => i).join(' ');
-
-  const lines = [colHeader, '       ' + '-'.repeat(width * 2 - 1)];
-  for (let y = 0; y < height; y++) {
-    const yLabel = String(y).padStart(2);
-    let row = `y=${yLabel} | `;
-    for (let x = 0; x < width; x++) {
-      if (x > 0) row += ' ';
-      if (x === start.x && y === start.y)     row += '@';
-      else if (x === goal.x  && y === goal.y) row += 'G';
-      else row += GLYPHS[cells[y * width + x]] ?? '?';
-    }
-    lines.push(row);
-  }
-
-  const legend = '  . empty  # wall  S sticky  ←→↑↓ oneway  ░ crumble  K key  D door  @ start  G goal';
-  console.group(`[Level ${id}] ${width}×${height}`);
-  console.log(lines.join('\n'));
-  console.log(legend);
-  console.log(`start=(${start.x},${start.y})  goal=(${goal.x},${goal.y})  difficulty=${goalDifficulty?.toFixed(2) ?? '?'}`);
-  console.groupEnd();
-}
 
 // ── Budget validator ──────────────────────────────────────────────────────────
 
@@ -794,7 +768,6 @@ function _logLevel(cells, width, height, start, goal, id, goalDifficulty) {
  * Returns { physicalChain, totalCells, finalPos, reachedGoal }.
  */
 function _simulateGearPath(cells, width, height, startPos, goal, moves, toggleMap, doorRequirements, teleporterMap) {
-  const DIRS4S = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
   let pos    = { ...startPos };
   let ws     = 0;
   let prevDi = 4; // 4 = no prior direction (boat)
@@ -802,8 +775,8 @@ function _simulateGearPath(cells, width, height, startPos, goal, moves, toggleMa
   let totalCells  = 0;
 
   for (const { dx, dy } of moves) {
-    const di         = DIRS4S.findIndex(d => d.dx === dx && d.dy === dy);
-    const isReversal = prevDi < 4 && dx === -DIRS4S[prevDi].dx && dy === -DIRS4S[prevDi].dy;
+    const di         = DIRS4.findIndex(d => d.dx === dx && d.dy === dy);
+    const isReversal = prevDi < 4 && dx === -DIRS4[prevDi].dx && dy === -DIRS4[prevDi].dy;
     const isBend     = prevDi < 4 && di !== prevDi && !isReversal;
     if (isBend) bendGears.push({ ...pos });
 
@@ -993,7 +966,6 @@ export function computeStepAnalysis(step, width, height, start) {
 // for every direction D, if the cell behind T can be approached from -D, then
 // the cell one step past the partner in direction D must be non-wall and in-bounds.
 function _isTeleporterPairValid(cells, width, height, x1, y1, x2, y2) {
-  const DIRS4 = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
   for (const { dx, dy } of DIRS4) {
     // Can the player approach T1 moving in direction (dx,dy)? (i.e. non-wall behind T1)
     const ax1 = x1 - dx, ay1 = y1 - dy;
@@ -1042,7 +1014,6 @@ function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
 
     // Every in-bounds orthogonal neighbor must be empty or untouched — any carved
     // non-empty cell (wall, door, etc.) risks stopping the player on the teleporter.
-    const DIRS4 = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
     const allNeighborsOpen = (x, y) => DIRS4.every(({ dx, dy }) => {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || nx >= width || ny < 0 || ny >= height) return true;
@@ -1071,8 +1042,6 @@ function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
 }
 
 function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null, playerGears = Infinity, playerChainLength = Infinity) {
-  const DIRS4 = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
-
   // ── Build toggle map ───────────────────────────────────────────────────────
   // Assign a toggle index to every activating cell: CRUMBLE(7) and KEY(8).
   // worldState is a bitmask over these indices; 2^N possible universes.
@@ -1330,10 +1299,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   }
 
   // ── Solution reconstruction from Pass 1 parentOf tree ────────────────────
-  // DIRS4 here matches _findGoal's local table: [LEFT, RIGHT, UP, DOWN] → indices 0-3.
-  // di=3 (DOWN) is used for the initial start node (the dive from the boat).
+  // DIRS4 indices: 0=LEFT, 1=RIGHT, 2=UP, 3=DOWN — di=3 (DOWN) for the initial boat dive.
   // We emit {dx,dy} objects so the ordering difference vs solver.js doesn't matter.
-  const _DIRS4G = [{ dx:-1,dy:0 }, { dx:1,dy:0 }, { dx:0,dy:-1 }, { dx:0,dy:1 }];
 
   function _reconstructSolution(goalFlat) {
     const goalStateKey = bestKeyForPos.get(goalFlat);
@@ -1358,7 +1325,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     if (!btEntry) {
       // ── Simple case: no backtracking required ────────────────────────────
       goalDiSeq.reverse();
-      return { moves: goalDiSeq.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy })) };
+      return { moves: goalDiSeq.map(di => ({ dx: DIRS4[di].dx, dy: DIRS4[di].dy })) };
     }
 
     // ── Crumble phantom in the goal path ─────────────────────────────────
@@ -1383,12 +1350,12 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       preDiSeq.reverse();   // now forward: start → pos
       goalDiSeq.reverse();  // now forward: pos(wsNew) → goal
       const allDi = [...preDiSeq, btEntry.keySlideDir, ...goalDiSeq];
-      return { moves: allDi.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy })) };
+      return { moves: allDi.map(di => ({ dx: DIRS4[di].dx, dy: DIRS4[di].dy })) };
     }
 
     // goalDiSeq (reversed) = moves from the backtrack ancestor to the goal.
     const goalMoves = [...goalDiSeq].reverse()
-      .map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy }));
+      .map(di => ({ dx: DIRS4[di].dx, dy: DIRS4[di].dy }));
 
     // btEntry.fromKey    = stateKey(ancPos, ancDi, oldWS) — the backtrack anchor in old worldstate
     // btEntry.triggerKey = stateKey(pos, *, oldWS)        — position the key slide was triggered from
@@ -1432,7 +1399,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     }
     allKeyDiSeq.reverse(); // now forward: start → ... → triggerPos → key
 
-    const keyMoves = allKeyDiSeq.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy }));
+    const keyMoves = allKeyDiSeq.map(di => ({ dx: DIRS4[di].dx, dy: DIRS4[di].dy }));
 
     return { keyMoves, backtrackChain, goalMoves };
   }
@@ -1544,15 +1511,31 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   clVisMap.set(stateKey(start, 4, 0), 0);
   gearsOnChainPath.set(posKey(start), 0);
   const clHeap = [{ pos: start, cl: 0, worldState: 0, di: 4, gears: 0 }];
-  function clPush(e) {
-    clHeap.push(e); let i = clHeap.length - 1;
-    while (i > 0) { const p = (i-1)>>1; if (clHeap[p].cl <= clHeap[i].cl) break; [clHeap[p],clHeap[i]]=[clHeap[i],clHeap[p]]; i=p; }
+  function clPush(entry) {
+    clHeap.push(entry);
+    let i = clHeap.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (clHeap[parent].cl <= clHeap[i].cl) break;
+      [clHeap[parent], clHeap[i]] = [clHeap[i], clHeap[parent]];
+      i = parent;
+    }
   }
   function clPop() {
-    const top = clHeap[0], last = clHeap.pop();
+    const top = clHeap[0];
+    const last = clHeap.pop();
     if (clHeap.length > 0) {
-      clHeap[0] = last; let i = 0;
-      while (true) { let s=i; const l=2*i+1,r=2*i+2; if(l<clHeap.length&&clHeap[l].cl<clHeap[s].cl)s=l; if(r<clHeap.length&&clHeap[r].cl<clHeap[s].cl)s=r; if(s===i)break; [clHeap[i],clHeap[s]]=[clHeap[s],clHeap[i]]; i=s; }
+      clHeap[0] = last;
+      let i = 0;
+      while (true) {
+        let smallest = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < clHeap.length && clHeap[l].cl < clHeap[smallest].cl) smallest = l;
+        if (r < clHeap.length && clHeap[r].cl < clHeap[smallest].cl) smallest = r;
+        if (smallest === i) break;
+        [clHeap[i], clHeap[smallest]] = [clHeap[smallest], clHeap[i]];
+        i = smallest;
+      }
     }
     return top;
   }
@@ -1707,15 +1690,31 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       }
     }
 
-    function jPush(e) {
-      jHeap.push(e); let i = jHeap.length - 1;
-      while (i > 0) { const p = (i-1)>>1; if (jHeap[p].chain <= jHeap[i].chain) break; [jHeap[p],jHeap[i]]=[jHeap[i],jHeap[p]]; i=p; }
+    function jPush(entry) {
+      jHeap.push(entry);
+      let i = jHeap.length - 1;
+      while (i > 0) {
+        const parent = (i - 1) >> 1;
+        if (jHeap[parent].chain <= jHeap[i].chain) break;
+        [jHeap[parent], jHeap[i]] = [jHeap[i], jHeap[parent]];
+        i = parent;
+      }
     }
     function jPop() {
-      const top = jHeap[0], last = jHeap.pop();
+      const top = jHeap[0];
+      const last = jHeap.pop();
       if (jHeap.length > 0) {
-        jHeap[0] = last; let i = 0;
-        while (true) { let s=i,l=2*i+1,r=2*i+2; if(l<jHeap.length&&jHeap[l].chain<jHeap[s].chain)s=l; if(r<jHeap.length&&jHeap[r].chain<jHeap[s].chain)s=r; if(s===i)break; [jHeap[i],jHeap[s]]=[jHeap[s],jHeap[i]]; i=s; }
+        jHeap[0] = last;
+        let i = 0;
+        while (true) {
+          let smallest = i;
+          const l = 2 * i + 1, r = 2 * i + 2;
+          if (l < jHeap.length && jHeap[l].chain < jHeap[smallest].chain) smallest = l;
+          if (r < jHeap.length && jHeap[r].chain < jHeap[smallest].chain) smallest = r;
+          if (smallest === i) break;
+          [jHeap[i], jHeap[smallest]] = [jHeap[smallest], jHeap[i]];
+          i = smallest;
+        }
       }
       return top;
     }
