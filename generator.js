@@ -679,7 +679,15 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  return { id, width, height, cells: outCells, start, goal, depths, difficulties, goalDifficulty, goalDepth, keyDepths, effectiveCogs, chainLengths, effectiveChainLength, doorRequirements, teleporterMap, seed, visitedDirs: visitedDirsOut, toggleCount, universeDepths, universeChainLengths, useKeyDoor, solution, solverSolvable };
+  return {
+    id, width, height, cells: outCells, start, goal,
+    depths, difficulties, goalDifficulty, goalDepth, keyDepths,
+    effectiveCogs, chainLengths, effectiveChainLength,
+    doorRequirements, teleporterMap, seed,
+    visitedDirs: visitedDirsOut, toggleCount,
+    universeDepths, universeChainLengths,
+    useKeyDoor, solution, solverSolvable,
+  };
 }
 
 /**
@@ -1041,6 +1049,54 @@ function _placeTeleporters(outCells, width, height, carvedMask, start, rng) {
   return null;
 }
 
+// ── Shared utilities for _findGoal ───────────────────────────────────────────
+
+// Binary min-heap keyed on entry[key]. Returns { push, pop, length }.
+function makeMinHeap(key) {
+  const h = [];
+  return {
+    get length() { return h.length; },
+    push(entry) {
+      h.push(entry);
+      let i = h.length - 1;
+      while (i > 0) {
+        const parent = (i - 1) >> 1;
+        if (h[parent][key] <= h[i][key]) break;
+        [h[parent], h[i]] = [h[i], h[parent]];
+        i = parent;
+      }
+    },
+    pop() {
+      const top = h[0];
+      const last = h.pop();
+      if (h.length > 0) {
+        h[0] = last;
+        let i = 0;
+        while (true) {
+          let smallest = i;
+          const l = 2 * i + 1, r = 2 * i + 2;
+          if (l < h.length && h[l][key] < h[smallest][key]) smallest = l;
+          if (r < h.length && h[r][key] < h[smallest][key]) smallest = r;
+          if (smallest === i) break;
+          [h[i], h[smallest]] = [h[smallest], h[i]];
+          i = smallest;
+        }
+      }
+      return top;
+    },
+  };
+}
+
+// Index of the last one-way cell traversed (not the landing), or -1 if none.
+// Used to inject a cheaper exploration node just past the final one-way.
+function _lastOnewayIdx(path) {
+  let last = -1;
+  for (let j = 0; j < path.length - 1; j++) {
+    if (path[j].cell >= 3 && path[j].cell <= 6) last = j;
+  }
+  return last;
+}
+
 function _findGoal(cells, width, height, start, doorRequirements = null, carvedMask = null, teleporterMap = null, playerGears = Infinity, playerChainLength = Infinity) {
   // ── Build toggle map ───────────────────────────────────────────────────────
   // Assign a toggle index to every activating cell: CRUMBLE(7) and KEY(8).
@@ -1075,8 +1131,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   // Per-universe tracking: ws → Map<posKey, value>
   const uDepths    = new Map();
   const uChainLens = new Map();
-  const _recUD  = (ws, k, d) => { let m = uDepths.get(ws);    if (!m) { m = new Map(); uDepths.set(ws, m); }    if ((m.get(k) ?? Infinity) > d) m.set(k, d); };
-  const _recUCL = (ws, k, v) => { let m = uChainLens.get(ws); if (!m) { m = new Map(); uChainLens.set(ws, m); } if ((m.get(k) ?? Infinity) > v) m.set(k, v); };
+  const recordUniDepth  = (ws, k, d) => { let m = uDepths.get(ws);    if (!m) { m = new Map(); uDepths.set(ws, m); }    if ((m.get(k) ?? Infinity) > d) m.set(k, d); };
+  const recordUniChain = (ws, k, v) => { let m = uChainLens.get(ws); if (!m) { m = new Map(); uChainLens.set(ws, m); } if ((m.get(k) ?? Infinity) > v) m.set(k, v); };
 
   // Parent-pointer tables for path-crossing detection (added after BFS completes).
   // parentOf     : stateKey → { fromKey, landing: {x,y} }
@@ -1104,8 +1160,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   landingVisited.set(stateKey(start, 3, 0), 0);
   depths.set(posKey(start), 0);
   chainOnGearPath.set(posKey(start), 0);
-  _recUD(0, posKey(start), 0);
-  _recUCL(0, posKey(start), 0);
+  recordUniDepth(0, posKey(start), 0);
+  recordUniChain(0, posKey(start), 0);
   // 0-1 BFS: bfsCurr holds nodes at the current bend-depth, bfsNext at current+1.
   // 0-cost (same direction) → push to bfsCurr; 1-cost (bend) → push to bfsNext.
   let bfsCurr = [{ pos: start, depth: 0, worldState: 0, di: 3, chain: 0 }];
@@ -1141,7 +1197,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const pk = posKey(ancPos);
         _setBestIfBetter(pk, freeKey, ancDepth, ancChain);
         bfsCurr.push({ pos: ancPos, depth: ancDepth, worldState: newWorldState, di: ancDi, chain: ancChain });
-        if (ancPos.y >= 0) _recUD(newWorldState, pk, ancDepth);
+        if (ancPos.y >= 0) recordUniDepth(newWorldState, pk, ancDepth);
       }
       curKey = entry.fromKey;
     }
@@ -1182,7 +1238,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           depths.set(k, nd);
           chainOnGearPath.set(k, chainJ);
         }
-        _recUD(worldState, k, nd);
+        recordUniDepth(worldState, k, nd);
       }
 
       if (path.length > 0) {
@@ -1198,7 +1254,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           (isBendMove ? bfsNext : bfsCurr).push({ pos: landing, depth: nd, worldState: effectiveWS, di: i, chain: newChain });
         }
         // Key landing: record the landing cell in the universe AFTER key collection too.
-        if (keyPos) _recUD(effectiveWS, posKey(landing), nd);
+        if (keyPos) recordUniDepth(effectiveWS, posKey(landing), nd);
 
         // Post-oneway exit node: when the slide passes through one or more one-way
         // tiles, add an extra exploration node at the cell immediately after the last
@@ -1206,10 +1262,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         // avoids over-counting chain when the player later explores perpendicular
         // directions from near the one-way rather than from the farther landing cell.
         if (!chainRetracts && path.length > 1) {
-          let lastOWIdx = -1;
-          for (let j = 0; j < path.length - 1; j++) {
-            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
-          }
+          const lastOWIdx = _lastOnewayIdx(path);
           if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
             const exitIdx   = lastOWIdx + 1;
             const exitCell  = path[exitIdx];
@@ -1222,8 +1275,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
               _setBestIfBetter(exitPk, exitSK, nd, exitChain);
               if (!depths.has(exitPk) || depths.get(exitPk) > nd) depths.set(exitPk, nd);
               if (!chainOnGearPath.has(exitPk) || chainOnGearPath.get(exitPk) > exitChain) chainOnGearPath.set(exitPk, exitChain);
-              _recUD(worldState, exitPk, nd);
-              _recUCL(worldState, exitPk, exitChain);
+              recordUniDepth(worldState, exitPk, nd);
+              recordUniChain(worldState, exitPk, exitChain);
               (isBendMove ? bfsNext : bfsCurr).push({ pos: exitCell, depth: nd, worldState, di: i, chain: exitChain });
             }
           }
@@ -1244,7 +1297,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           depths.set(fk, crumbleNd);
           chainOnGearPath.set(fk, crumbleChain);
         }
-        _recUD(newWorldState, fk, crumbleNd);
+        recordUniDepth(newWorldState, fk, crumbleNd);
         const lk = stateKey(from, crumbleDi, newWorldState);
         if ((landingVisited.get(lk) ?? Infinity) > crumbleNd) {
           landingVisited.set(lk, crumbleNd);
@@ -1289,7 +1342,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
                 const pf = posKey(backPos);
                 _setBestIfBetter(pf, freeKey, nd, backChain);
                 bfsCurr.push({ pos: backPos, depth: nd, worldState, di, chain: backChain });
-                if (backPos.y >= 0) _recUD(worldState, pf, nd);
+                if (backPos.y >= 0) recordUniDepth(worldState, pf, nd);
               }
             }
           }
@@ -1411,39 +1464,11 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   difficulties.set(posKey(start), 0);
   diffLandingVis.set(stateKey(start, 4, 0), 0);
 
-  const heap = [{ pos: start, diff: 0, worldState: 0, di: 4 }];
+  const diffHeap = makeMinHeap('diff');
+  diffHeap.push({ pos: start, diff: 0, worldState: 0, di: 4 });
 
-  function heapPush(entry) {
-    heap.push(entry);
-    let i = heap.length - 1;
-    while (i > 0) {
-      const parent = (i - 1) >> 1;
-      if (heap[parent].diff <= heap[i].diff) break;
-      [heap[parent], heap[i]] = [heap[i], heap[parent]];
-      i = parent;
-    }
-  }
-  function heapPop() {
-    const top = heap[0];
-    const last = heap.pop();
-    if (heap.length > 0) {
-      heap[0] = last;
-      let i = 0;
-      while (true) {
-        let smallest = i;
-        const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < heap.length && heap[l].diff < heap[smallest].diff) smallest = l;
-        if (r < heap.length && heap[r].diff < heap[smallest].diff) smallest = r;
-        if (smallest === i) break;
-        [heap[i], heap[smallest]] = [heap[smallest], heap[i]];
-        i = smallest;
-      }
-    }
-    return top;
-  }
-
-  while (heap.length > 0) {
-    const { pos, diff, worldState, di } = heapPop();
+  while (diffHeap.length > 0) {
+    const { pos, diff, worldState, di } = diffHeap.pop();
     if ((diffLandingVis.get(stateKey(pos, di, worldState)) ?? Infinity) < diff) continue;
 
     for (let i = 0; i < DIRS4.length; i++) {
@@ -1464,15 +1489,12 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const lk = stateKey(landing, i, effectiveWS);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: landing, diff: nd, worldState: effectiveWS, di: i });
+          diffHeap.push({ pos: landing, diff: nd, worldState: effectiveWS, di: i });
         }
 
         // Post-oneway exit node: extra exploration from cell after last traversed one-way.
         if (path.length > 1) {
-          let lastOWIdx = -1;
-          for (let j = 0; j < path.length - 1; j++) {
-            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
-          }
+          const lastOWIdx = _lastOnewayIdx(path);
           if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
             const exitCell = path[lastOWIdx + 1];
             const exitPk   = posKey(exitCell);
@@ -1480,7 +1502,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
             const exitSK = stateKey(exitCell, i, worldState);
             if ((diffLandingVis.get(exitSK) ?? Infinity) > nd) {
               diffLandingVis.set(exitSK, nd);
-              heapPush({ pos: exitCell, diff: nd, worldState, di: i });
+              diffHeap.push({ pos: exitCell, diff: nd, worldState, di: i });
             }
           }
         }
@@ -1495,7 +1517,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         const lk = stateKey(from, i, newWorldState);
         if ((diffLandingVis.get(lk) ?? Infinity) > nd) {
           diffLandingVis.set(lk, nd);
-          heapPush({ pos: from, diff: nd, worldState: newWorldState, di: i });
+          diffHeap.push({ pos: from, diff: nd, worldState: newWorldState, di: i });
         }
       }
     }
@@ -1510,37 +1532,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   clLenMap.set(posKey(start), 0);
   clVisMap.set(stateKey(start, 4, 0), 0);
   gearsOnChainPath.set(posKey(start), 0);
-  const clHeap = [{ pos: start, cl: 0, worldState: 0, di: 4, gears: 0 }];
-  function clPush(entry) {
-    clHeap.push(entry);
-    let i = clHeap.length - 1;
-    while (i > 0) {
-      const parent = (i - 1) >> 1;
-      if (clHeap[parent].cl <= clHeap[i].cl) break;
-      [clHeap[parent], clHeap[i]] = [clHeap[i], clHeap[parent]];
-      i = parent;
-    }
-  }
-  function clPop() {
-    const top = clHeap[0];
-    const last = clHeap.pop();
-    if (clHeap.length > 0) {
-      clHeap[0] = last;
-      let i = 0;
-      while (true) {
-        let smallest = i;
-        const l = 2 * i + 1, r = 2 * i + 2;
-        if (l < clHeap.length && clHeap[l].cl < clHeap[smallest].cl) smallest = l;
-        if (r < clHeap.length && clHeap[r].cl < clHeap[smallest].cl) smallest = r;
-        if (smallest === i) break;
-        [clHeap[i], clHeap[smallest]] = [clHeap[smallest], clHeap[i]];
-        i = smallest;
-      }
-    }
-    return top;
-  }
+  const clHeap = makeMinHeap('cl');
+  clHeap.push({ pos: start, cl: 0, worldState: 0, di: 4, gears: 0 });
   while (clHeap.length > 0) {
-    const { pos, cl, worldState, di, gears } = clPop();
+    const { pos, cl, worldState, di, gears } = clHeap.pop();
     if ((clVisMap.get(stateKey(pos, di, worldState)) ?? Infinity) < cl) continue;
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
@@ -1558,22 +1553,19 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           clLenMap.set(k, clj);
           gearsOnChainPath.set(k, newGears);
         }
-        _recUCL(worldState, k, clj);
+        recordUniChain(worldState, k, clj);
       }
       if (path.length > 0) {
         const landing = path[path.length - 1];
         const ews = keyPos ? (worldState | (1 << keyPos.toggleIdx)) : worldState;
         const lk = stateKey(landing, i, ews);
-        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: landing, cl: nCl, worldState: ews, di: i, gears: newGears }); }
-        if (keyPos) _recUCL(ews, posKey(landing), nCl);
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clHeap.push({ pos: landing, cl: nCl, worldState: ews, di: i, gears: newGears }); }
+        if (keyPos) recordUniChain(ews, posKey(landing), nCl);
 
         // Post-oneway exit node: extra exploration from cell after last traversed one-way,
         // using chain length and gear count at that intermediate position.
         if (!chainRetracts && path.length > 1) {
-          let lastOWIdx = -1;
-          for (let j = 0; j < path.length - 1; j++) {
-            if (path[j].cell >= 3 && path[j].cell <= 6) lastOWIdx = j;
-          }
+          const lastOWIdx = _lastOnewayIdx(path);
           if (lastOWIdx >= 0 && lastOWIdx + 1 < path.length - 1) {
             const exitIdx  = lastOWIdx + 1;
             const exitCell = path[exitIdx];
@@ -1586,8 +1578,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
                 clLenMap.set(exitPk, exitCl);
                 gearsOnChainPath.set(exitPk, newGears);
               }
-              _recUCL(worldState, exitPk, exitCl);
-              clPush({ pos: exitCell, cl: exitCl, worldState, di: i, gears: newGears });
+              recordUniChain(worldState, exitPk, exitCl);
+              clHeap.push({ pos: exitCell, cl: exitCl, worldState, di: i, gears: newGears });
             }
           }
         }
@@ -1600,9 +1592,9 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           clLenMap.set(fk, nCl);
           gearsOnChainPath.set(fk, newGears);
         }
-        _recUCL(nws, fk, nCl);
+        recordUniChain(nws, fk, nCl);
         const lk = stateKey(from, i, nws);
-        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clPush({ pos: from, cl: nCl, worldState: nws, di: i, gears: newGears }); }
+        if ((clVisMap.get(lk) ?? Infinity) > nCl) { clVisMap.set(lk, nCl); clHeap.push({ pos: from, cl: nCl, worldState: nws, di: i, gears: newGears }); }
       }
     }
   }
@@ -1680,7 +1672,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
 
     const jVis    = new Map();
     const jParent = new Map();
-    const jHeap   = [];
+    const jHeap   = makeMinHeap('chain');
     jBestAtPos = new Map(); // posFlat → { g, chain } with min chain (then min gears)
 
     function jUpdateBest(pf, newG, newChain) {
@@ -1688,35 +1680,6 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       if (!cur || newChain < cur.chain || (newChain === cur.chain && newG < cur.g)) {
         jBestAtPos.set(pf, { g: newG, chain: newChain });
       }
-    }
-
-    function jPush(entry) {
-      jHeap.push(entry);
-      let i = jHeap.length - 1;
-      while (i > 0) {
-        const parent = (i - 1) >> 1;
-        if (jHeap[parent].chain <= jHeap[i].chain) break;
-        [jHeap[parent], jHeap[i]] = [jHeap[i], jHeap[parent]];
-        i = parent;
-      }
-    }
-    function jPop() {
-      const top = jHeap[0];
-      const last = jHeap.pop();
-      if (jHeap.length > 0) {
-        jHeap[0] = last;
-        let i = 0;
-        while (true) {
-          let smallest = i;
-          const l = 2 * i + 1, r = 2 * i + 2;
-          if (l < jHeap.length && jHeap[l].chain < jHeap[smallest].chain) smallest = l;
-          if (r < jHeap.length && jHeap[r].chain < jHeap[smallest].chain) smallest = r;
-          if (smallest === i) break;
-          [jHeap[i], jHeap[smallest]] = [jHeap[smallest], jHeap[i]];
-          i = smallest;
-        }
-      }
-      return top;
     }
     // Walk ancestor chain; re-enqueue each ancestor at its original (gearsUsed, chainUsed)
     // but with newWS — models the player collecting a toggle and retracting to any prior waypoint.
@@ -1729,7 +1692,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         if ((jVis.get(nk) ?? Infinity) > e.chain) {
           jVis.set(nk, e.chain);
           jParent.set(nk, { fromKey: curKey, pos: e.pos, di: e.di, ws: newWS, g: e.g, chain: e.chain });
-          jPush({ pos: e.pos, di: e.di, ws: newWS, g: e.g, chain: e.chain });
+          jHeap.push({ pos: e.pos, di: e.di, ws: newWS, g: e.g, chain: e.chain });
           if (e.pos.y >= 0) { jointReachable.add(posKey(e.pos)); jUpdateBest(posKey(e.pos), e.g, e.chain); }
         }
         curKey = e.fromKey;
@@ -1742,10 +1705,10 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
     jParent.set(initKey, { fromKey: null, pos: start, di: 3, ws: 0, g: 0, chain: 0 });
     jointReachable.add(posKey(start));
     if (start.y >= 0) jUpdateBest(posKey(start), 0, 0);
-    jPush({ pos: start, di: 3, ws: 0, g: 0, chain: 0 });
+    jHeap.push({ pos: start, di: 3, ws: 0, g: 0, chain: 0 });
 
     while (jHeap.length > 0) {
-      const { pos, di, ws, g, chain } = jPop();
+      const { pos, di, ws, g, chain } = jHeap.pop();
       const sk = jKey(pos, di, ws, g);
       if ((jVis.get(sk) ?? Infinity) < chain) continue;
 
@@ -1774,7 +1737,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           if ((jVis.get(nk) ?? Infinity) > newChain) {
             jVis.set(nk, newChain);
             jParent.set(nk, { fromKey: sk, pos: landing, di: i, ws: ews, g: newG, chain: newChain });
-            jPush({ pos: landing, di: i, ws: ews, g: newG, chain: newChain });
+            jHeap.push({ pos: landing, di: i, ws: ews, g: newG, chain: newChain });
           }
           if (landing.y >= 0) { jointReachable.add(posKey(landing)); jUpdateBest(posKey(landing), newG, newChain); }
           if (keyApplies && keyPos.toggleIdx !== undefined) jFreeBacktrack(sk, ews);
@@ -1791,7 +1754,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
           if ((jVis.get(nk) ?? Infinity) > crumbleChain) {
             jVis.set(nk, crumbleChain);
             jParent.set(nk, { fromKey: sk, pos: from, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain });
-            jPush({ pos: from, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain });
+            jHeap.push({ pos: from, di: crumbleDi, ws: newWS, g: crumbleG, chain: crumbleChain });
           }
           if (from.y >= 0) { jointReachable.add(posKey(from)); jUpdateBest(posKey(from), crumbleG, crumbleChain); }
           jFreeBacktrack(sk, newWS);
@@ -1811,7 +1774,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
               if ((jVis.get(nk) ?? Infinity) > backChain) {
                 jVis.set(nk, backChain);
                 jParent.set(nk, { fromKey: sk, pos: backPos, di, ws, g: backG, chain: backChain });
-                jPush({ pos: backPos, di, ws, g: backG, chain: backChain });
+                jHeap.push({ pos: backPos, di, ws, g: backG, chain: backChain });
                 if (backPos.y >= 0) { jointReachable.add(posKey(backPos)); jUpdateBest(posKey(backPos), backG, backChain); }
               }
             }
