@@ -1041,7 +1041,7 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
   //
   // keySlideDir : direction index (0-3) of the slide that activated the toggle.
   // triggerType : 'key' | 'crumble' — used by _reconstructSolution for path rebuilding.
-  function _propagateFreeBacktrack(fromStateKey, newWorldState, keySlideDir = null, triggerType = 'key') {
+  function _propagateFreeBacktrack(fromStateKey, newWorldState, keySlideDir = null, triggerType = 'key', isZeroMove = false) {
     let curKey = fromStateKey;
     while (curKey !== null && curKey !== undefined) {
       const entry = parentOf.get(curKey);
@@ -1054,11 +1054,11 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       const freeKey = stateKey(ancPos, ancDi, newWorldState);
       if ((landingVisited.get(freeKey) ?? Infinity) > ancDepth) {
         landingVisited.set(freeKey, ancDepth);
-        // isBacktrack/triggerKey/keySlideDir/triggerType are used only by
+        // isBacktrack/triggerKey/keySlideDir/triggerType/isZeroMove are used only by
         // _reconstructSolution for move-list reconstruction; they don't affect BFS.
         parentOf.set(freeKey, {
           fromKey: curKey, landing: ancPos, chain: ancChain,
-          isBacktrack: true, triggerKey: fromStateKey, keySlideDir, triggerType,
+          isBacktrack: true, triggerKey: fromStateKey, keySlideDir, triggerType, isZeroMove,
         });
         const pk = posKey(ancPos);
         _setBestIfBetter(pk, freeKey, ancDepth, ancChain);
@@ -1179,7 +1179,8 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         // "Free-backtrack" variant: the player can break the crumble and retract
         // their entire departure-cog chain back to any prior waypoint for 0 net
         // gears.  Propagate the new worldState to pos AND all its ancestors.
-        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState, i, 'crumble');
+        // isZeroMove=true means path.length===0: player didn't move, just bounced.
+        _propagateFreeBacktrack(stateKey(pos, di, worldState), newWorldState, i, 'crumble', path.length === 0);
       }
 
       // "Free-backtrack via key": collect the key and retract the entire
@@ -1251,11 +1252,30 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
       return { moves: goalDiSeq.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy })) };
     }
 
-    // ── Key+door case: player must collect key then backtrack ─────────────
-    // Crumble backtracking is rare and the path geometry is more complex
-    // (player moves to an intermediate cell before the bounce); fall back
-    // to Dijkstra for those levels.
-    if (btEntry.triggerType === 'crumble') return null;
+    // ── Crumble phantom in the goal path ─────────────────────────────────
+    // A zero-move bounce at pos flipped the worldState; the player stayed at pos
+    // and continues to the goal in wsNew.  Reconstructible only for the first-level
+    // phantom (fromKey === triggerKey, i.e. ancPos === pos) with no nested phantoms.
+    // Non-zero bounces and deep ancestor phantoms fall back to Dijkstra.
+    if (btEntry.triggerType === 'crumble') {
+      if (!btEntry.isZeroMove || btEntry.fromKey !== btEntry.triggerKey) return null;
+
+      // Collect the wsOld path from start to pos (= btEntry.fromKey = triggerKey).
+      const preDiSeq = [];
+      let cur = btEntry.fromKey;
+      while (true) {
+        const e = parentOf.get(cur);
+        if (!e || e.fromKey === null) break;
+        if (e.isBacktrack) return null; // nested phantom — give up
+        const moveDi = e.moveDir ?? cur % 5;
+        if (moveDi < 4) preDiSeq.push(moveDi);
+        cur = e.fromKey;
+      }
+      preDiSeq.reverse();   // now forward: start → pos
+      goalDiSeq.reverse();  // now forward: pos(wsNew) → goal
+      const allDi = [...preDiSeq, btEntry.keySlideDir, ...goalDiSeq];
+      return { moves: allDi.map(di => ({ dx: _DIRS4G[di].dx, dy: _DIRS4G[di].dy })) };
+    }
 
     // goalDiSeq (reversed) = moves from the backtrack ancestor to the goal.
     const goalMoves = [...goalDiSeq].reverse()
@@ -1286,17 +1306,19 @@ function _findGoal(cells, width, height, start, doorRequirements = null, carvedM
         // Real move entry — push the direction.
         const moveDi = te.moveDir ?? tc % 5;
         if (moveDi < 4) allKeyDiSeq.push(moveDi);
-      } else if (te.triggerType === 'crumble' && te.keySlideDir !== null && te.keySlideDir !== undefined) {
-        // Crumble free-backtrack phantom: the BFS seeded the ancestor into the
-        // post-crumble worldstate, letting it slide through the now-broken crumble
-        // in one step.  In reality the player needs TWO moves: the approach slide
-        // (which hits the crumble and breaks it) then the continuation slide past it.
-        // We already capture the continuation when we process the child of this node,
-        // so here we inject the missing approach move (the direction that hit the crumble).
-        allKeyDiSeq.push(te.keySlideDir);
+      } else if (te.triggerType === 'crumble') {
+        // Crumble phantom in the key path.
+        // Only handle zero-move, first-level phantoms (fromKey === triggerKey).
+        // Deep ancestor phantoms and non-zero bounces can't be reliably reconstructed.
+        if (!te.isZeroMove || te.fromKey !== te.triggerKey) return null;
+        // Inject the crumble-slide direction (the zero-move bounce at ancPos).
+        // Then tc = te.fromKey below continues the walk from ancPos in wsOld.
+        if (te.keySlideDir !== null && te.keySlideDir !== undefined && te.keySlideDir < 4) {
+          allKeyDiSeq.push(te.keySlideDir);
+        }
       }
-      // Key isBacktrack entries are genuine backtrack targets — no move to inject,
-      // just follow fromKey to continue walking the pre-key path.
+      // Key isBacktrack and crumble zero-move first-level: follow fromKey
+      // to continue walking the pre-backtrack path in wsOld.
       tc = te.fromKey;
     }
     allKeyDiSeq.reverse(); // now forward: start → ... → triggerPos → key
