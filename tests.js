@@ -362,9 +362,28 @@ test('effectiveCogs is at least 1', () => {
   }
 });
 
-test('effectiveChainLength equals width + height', () => {
-  const { effectiveChainLength, width, height } = generateLevel(9, 9, { seed: 0 });
-  eq(effectiveChainLength, width + height);
+test('effectiveChainLength is positive', () => {
+  for (const seed of [0, 42, 100, 200]) {
+    const { effectiveChainLength } = generateLevel(9, 9, { seed });
+    assert(effectiveChainLength >= 1, `seed ${seed}: effectiveChainLength ${effectiveChainLength} < 1`);
+  }
+});
+
+test('depths, chainLengths, difficulties arrays cover all cells', () => {
+  const level = generateLevel(9, 9, { seed: 42 });
+  const n = level.width * level.height;
+  eq(level.depths.length, n);
+  eq(level.chainLengths.length, n);
+  eq(level.difficulties.length, n);
+});
+
+test('goal cell has valid depth and difficulty', () => {
+  for (const seed of [0, 42, 100]) {
+    const level = generateLevel(9, 9, { seed });
+    const flat  = level.goal.y * level.width + level.goal.x;
+    assert(level.depths[flat] >= 0,       `seed ${seed}: depths[goal] not set`);
+    assert(level.difficulties[flat] >= 0, `seed ${seed}: difficulties[goal] not set`);
+  }
 });
 
 // ── Render ────────────────────────────────────────────────────────────────────
