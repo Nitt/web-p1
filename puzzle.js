@@ -119,6 +119,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   let keyCollected     = null;
   let blockedByOneway  = null;
   let teleportCrossing    = null;
+  let virtualLanding      = null; // cell just past the last traversable one-way on this slide
   let skipTeleportEntry   = -1; // flat index of teleport entry to skip after teleporting
 
   while (true) {
@@ -192,6 +193,12 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       blockedByOneway = { x: nx, y: ny };
       break;
     }
+    if (isOneway(cell)) {  // allowed direction — cell just past it is a virtual landing candidate
+      const vx = nx + dx, vy = ny + dy;
+      if (vx >= 0 && vx < width && vy >= 0 && vy < height) {
+        virtualLanding = { x: vx, y: vy };
+      }
+    }
 
     // ── TELEPORTER: enter entry cell, jump to exit, continue sliding ───────
     if (cell === CellType.TELEPORTER) {
@@ -232,5 +239,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     }
   }
 
-  return { x, y, crumble, keyCollected, blockedByOneway, teleportCrossing };
+  // Discard virtual landing if it coincides with the actual landing (redundant node).
+  if (virtualLanding && virtualLanding.x === x && virtualLanding.y === y) virtualLanding = null;
+  return { x, y, crumble, keyCollected, blockedByOneway, teleportCrossing, virtualLanding };
 }

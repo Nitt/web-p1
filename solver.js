@@ -1,4 +1,4 @@
-import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
+import { slidePlayer, buildToggleMap } from './puzzle.js';
 
 
 // Direction table — index 0–3 matches generator.js DIRS4 ordering.
@@ -11,37 +11,6 @@ const DIRS4 = [
 // di=4 means "no prior direction" (start of level or boat).
 const OPPOSITE_DI = [1, 0, 3, 2]; // RIGHT↔LEFT, DOWN↔UP
 
-/**
- * Scan cells along the slide path (startPos exclusive, landing exclusive) in
- * direction (dx,dy) and return the position just after the last traversable
- * one-way, or null if none (or if it would equal the actual landing).
- *
- * Used to synthesise the "virtual one-way landing": slide to the wall, then
- * reverse — the reverse stops at the cell just past the last traversable one-way.
- * Aborts (returns null) when a TELEPORTER is encountered, since the path is not
- * straight in that case.
- */
-function _findVirtualLanding(cells, width, height, startPos, dx, dy, landing) {
-  let virtualPos = null;
-  let x = startPos.x, y = startPos.y;
-  while (true) {
-    const nx = x + dx, ny = y + dy;
-    if (nx < 0 || nx >= width || ny < 0 || ny >= height) return null;
-    if (nx === landing.x && ny === landing.y) break;
-    const cell = cells[ny * width + nx];
-    if (cell === CellType.TELEPORTER) return null;
-    if (cell >= CellType.ONEWAY_LEFT && cell <= CellType.ONEWAY_DOWN
-        && onewayAllows(cell, dx, dy)) {
-      const ax = nx + dx, ay = ny + dy;
-      if (ax >= 0 && ax < width && ay >= 0 && ay < height
-          && (ax !== landing.x || ay !== landing.y)) {
-        virtualPos = { x: ax, y: ay };
-      }
-    }
-    x = nx; y = ny;
-  }
-  return virtualPos;
-}
 
 /**
  * Find the optimal move sequence from the given game state to level.goal.
@@ -184,7 +153,7 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
       //
       // World state for virtual landing uses ws (not finalWS) because the key
       // and crumble at the actual landing haven't been reached yet.
-      const vPos = _findVirtualLanding(cells, width, height, { x, y }, dx, dy, { x: lx, y: ly });
+      const vPos = result.virtualLanding;
       if (vPos) {
         const vNk = stateKey(vPos.x, vPos.y, i, ws);
         if ((best.get(vNk) ?? Infinity) > newG) {
