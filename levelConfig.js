@@ -42,65 +42,59 @@
 export const PROGRESSION = [
   {
     // ── first level ── simple and quick to load
-    levels:            1,
-    weights:           { sticky: 0.08, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
-    keyDoor:           false,
-    difficultyTarget:  [1, 1],
-    candidates:        10,
-    playerGears:       3,
-    playerChainLength: 10,
+    levels:           1,
+    weights:          { sticky: 0.08, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
+    keyDoor:          false,
+    difficultyTarget: [1, 1],
+    candidates:       10,
+    playerGears:      3,
   },
   {
     // ── introduction ── sticky only, gentle ramp
-    levels:            3,
-    weights:           { sticky: 0.18, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
-    keyDoor:           false,
-    difficultyTarget:  [4, 8],
-    candidates:        20,
-    playerGears:       3,
-    playerChainLength: 12,
+    levels:           3,
+    weights:          { sticky: 0.18, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
+    keyDoor:          false,
+    difficultyTarget: [4, 8],
+    candidates:       20,
+    playerGears:      3,
   },
   {
     // ── walls enter ── dead-ends and corridors
-    levels:            4,
-    weights:           { sticky: 0.10, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
-    keyDoor:           false,
-    difficultyTarget:  [9, 16],
-    candidates:        25,
-    playerGears:       4,
-    playerChainLength: 14,
+    levels:           4,
+    weights:          { sticky: 0.10, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
+    keyDoor:          false,
+    difficultyTarget: [9, 16],
+    candidates:       25,
+    playerGears:      4,
   },
   {
     // ── one-ways enter ── directional constraints
-    levels:            5,
-    weights:           { sticky: 0.08, block: 0.10, oneway: 0.04, crumble: 0.00, empty: 1.0 },
-    keyDoor:           false,
-    difficultyTarget:  [16, 24],
-    candidates:        30,
-    playerGears:       5,
-    playerChainLength: 15,
+    levels:           5,
+    weights:          { sticky: 0.08, block: 0.10, oneway: 0.04, crumble: 0.00, empty: 1.0 },
+    keyDoor:          false,
+    difficultyTarget: [16, 24],
+    candidates:       30,
+    playerGears:      5,
   },
   {
     // ── crumble enters ── topology-changing blocks
-    levels:            5,
-    weights:           { sticky: 0.06, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
-    keyDoor:           false,
-    useTeleporter:     true,
-    difficultyTarget:  [22, 30],
-    candidates:        35,
-    playerGears:       5,
-    playerChainLength: 17,
+    levels:           5,
+    weights:          { sticky: 0.06, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
+    keyDoor:          false,
+    useTeleporter:    true,
+    difficultyTarget: [22, 30],
+    candidates:       35,
+    playerGears:      5,
   },
   {
     // ── everything ── full chaos, key/door cycles
-    levels:            Infinity,
-    weights:           { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
-    keyDoor:           { minInterval: 4, maxInterval: 15 },
-    useTeleporter:     true,
-    difficultyTarget:  null,   // pick hardest
-    candidates:        40,
-    playerGears:       6,
-    playerChainLength: 20,
+    levels:           Infinity,
+    weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
+    keyDoor:          { minInterval: 4, maxInterval: 15 },
+    useTeleporter:    true,
+    difficultyTarget: null,   // pick hardest
+    candidates:       40,
+    playerGears:      6,
   },
 ];
 
@@ -161,13 +155,12 @@ export function getRecipe(levelIndex, levelsSinceKeyDoor, rng = null) {
   }
 
   return {
-    weights:           stage.weights,
+    weights:          stage.weights,
     useKeyDoor,
-    useTeleporter:     stage.useTeleporter ?? false,
+    useTeleporter:    stage.useTeleporter ?? false,
     difficultyTarget,
-    candidates:        stage.candidates,
-    entrySlide:        stage.entrySlide ?? null,
-    playerGears:       stage.playerGears,
-    playerChainLength: stage.playerChainLength,
+    candidates:       stage.candidates,
+    entrySlide:       stage.entrySlide ?? null,
+    playerGears:      stage.playerGears,
   };
 }

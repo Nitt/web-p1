@@ -26,10 +26,6 @@
 
     <div class="resource-bar">
       <div id="gear-hearts" class="gear-hearts"></div>
-      <div class="chain-bar-track">
-        <div id="chain-bar-fill" class="chain-bar-fill"></div>
-      </div>
-      <span id="chain-label" class="chain-label"></span>
     </div>
 
     <div id="grid-container"></div>
@@ -177,18 +173,16 @@
     let _steps            = [];
     let _depths           = null;   // Int16Array from final generateLevel result
     let _difficulties     = null;   // Float32Array
-    let _chainLengths     = null;   // Int16Array — min chain length to each cell
     let _levelW           = 0;
     let _levelH           = 0;
     let _levelStart       = null;
-    let _universeMode          = false;
-    let _doorRequirements      = null;   // Map<outputFlatIdx, toggleIdx> from final result
-    let _finalCells            = null;   // Uint8Array output cells (CellType values)
-    let _universeDepths        = null;   // Array<Int16Array> indexed by worldState bitmask
-    let _universeChainLengths  = null;   // Array<Int16Array> indexed by worldState bitmask
-    let _pathCellOrder      = null;   // [{px,py,sdx,sdy,ws}] padded-grid cells in path order
-    let _pathCellReveal     = null;   // Map<key → stepIndex> when each cell first appears
-    let _teleporterMap      = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
+    let _universeMode         = false;
+    let _doorRequirements     = null;   // Map<outputFlatIdx, toggleIdx> from final result
+    let _finalCells           = null;   // Uint8Array output cells (CellType values)
+    let _universeDepths       = null;   // Array<Int16Array> indexed by worldState bitmask
+    let _pathCellOrder    = null;   // [{px,py,sdx,sdy,ws}] padded-grid cells in path order
+    let _pathCellReveal   = null;   // Map<key → stepIndex> when each cell first appears
+    let _teleporterMap    = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
 
     function _syncSlider(jumpToEnd = false) {
       slider.max = Math.max(0, _steps.length - 1);
@@ -203,15 +197,13 @@
       const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, _steps });
       _depths           = result.depths;
       _difficulties     = result.difficulties;
-      _chainLengths     = result.chainLengths;
       _levelW           = w;
       _levelH           = h;
       _levelStart       = result.start;
-      _doorRequirements     = result.doorRequirements;
-      _finalCells           = result.cells;
-      _teleporterMap        = result.teleporterMap ?? null;
-      _universeDepths       = result.universeDepths;
-      _universeChainLengths = result.universeChainLengths;
+      _doorRequirements = result.doorRequirements;
+      _finalCells       = result.cells;
+      _teleporterMap    = result.teleporterMap ?? null;
+      _universeDepths   = result.universeDepths;
       _pathCellOrder        = null;
       _pathCellReveal       = null;
 
@@ -246,7 +238,7 @@
       if (_universeMode) {
         drawUniverses(step, sliderPos);
       } else {
-        drawStep(step, _depths, _difficulties, _chainLengths, sliderPos);
+        drawStep(step, _depths, _difficulties, sliderPos);
       }
     }
 
@@ -263,7 +255,7 @@
       '#7b2fbe',    // 8 TELEPORTER
     ];
 
-    function drawStep(step, depths, difficulties, chainLengths, stepIdx) {
+    function drawStep(step, depths, difficulties, stepIdx) {
       const { grid, pw, ph, fromX, fromY, toX, toY } = step;
 
       // Size canvas to fit the panel, keeping cells square
@@ -290,7 +282,6 @@
             const fi = iy * _levelW + ix;
             const d  = depths[fi];
             const df = difficulties?.[fi];
-            const cl = chainLengths?.[fi];
             const fontSize = Math.max(5, Math.floor(size * 0.22));
             ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
 
@@ -303,10 +294,6 @@
               const txt = df % 1 === 0 ? df : df.toFixed(1);
               const tw  = ctx.measureText(txt).width;
               ctx.fillText(txt, cx * size + size - tw - 2, cy * size + size - 3);
-            }
-            if (cl !== undefined && cl >= 0) {
-              ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#30a090';
-              ctx.fillText(cl, cx * size + 2, cy * size + size - 3);
             }
           }
 
@@ -523,12 +510,11 @@
           }
         }
 
-        // Per-universe depth (blue) and chain length (teal) overlays.
+        // Per-universe depth (blue) overlay.
         // Only shown once the carver has explored OUTWARD from a cell in this
         // universe — i.e., the cell has VD entries — matching how arrows work.
         if (uW >= 12 && _universeDepths) {
           const uDep = _universeDepths[u];
-          const uCL  = _universeChainLengths?.[u];
           const fontSize = Math.max(5, Math.floor(uW * 0.28));
           ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
           for (let cy = 1; cy < ph - 1; cy++) {
@@ -538,16 +524,9 @@
               if (!vd?.get(cy * pw + cx)) continue; // not yet explored from here
               const fi = (cy - 1) * w + (cx - 1);
               const d  = uDep?.[fi];
-              const cl = uCL?.[fi];
               if (d !== undefined && d >= 0) {
                 ctx.fillStyle = '#3a6fd8';
                 ctx.fillText(d, ox + cx * uW + 2, oy + cy * uW + fontSize + 1);
-              }
-              if (cl !== undefined && cl >= 0 && uW >= 18) {
-                ctx.fillStyle = '#30a090';
-                const txt = String(cl);
-                const tw  = ctx.measureText(txt).width;
-                ctx.fillText(txt, ox + cx * uW + uW - tw - 2, oy + cy * uW + uW - 3);
               }
             }
           }

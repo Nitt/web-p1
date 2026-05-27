@@ -1,9 +1,9 @@
 import { generateHardestLevel } from './generator.js';
 
 self.onmessage = function ({ data }) {
-  const { genId, width, height, seed, id, candidates, weights, useKeyDoor, useTeleporter, difficultyTarget, entrySlide, playerGears = Infinity, playerChainLength = Infinity } = data;
+  const { genId, width, height, seed, id, candidates, weights, useKeyDoor, useTeleporter, difficultyTarget, entrySlide, playerGears = Infinity } = data;
   try {
-    const level = generateHardestLevel(width, height, { seed, id, candidates, weights, useKeyDoor, useTeleporter, difficultyTarget, entrySlide, playerGears, playerChainLength });
+    const level = generateHardestLevel(width, height, { seed, id, candidates, weights, useKeyDoor, useTeleporter, difficultyTarget, entrySlide, playerGears });
     self.postMessage({ genId, level });
   } catch (err) {
     console.error('[levelWorker] generation failed:', err);

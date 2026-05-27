@@ -1,6 +1,6 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
 import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setChainLengthTotal, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -37,9 +37,7 @@ const state = {
   gears:                [],     // [{x,y}] cog positions (bends/reversals only)
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
-  chainLengthTotal:     0,      // total chain length allowed for this level
   peakGearsUsed:        0,      // highest (totalGears - gearsLeft) seen this level (recorded at key)
-  peakChainUsed:        0,      // highest _chainLengthUsed() seen this level (recorded at key)
   prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
   worldState:           0,
@@ -60,7 +58,6 @@ let _autoSolveUsedBacktrack = false; // true when phase 3 / hint-backtrack was n
 let _autoPhaseCallback  = null;   // called instead of failure when queue empties mid-solve
 let _solverStartPos     = null;   // player pos when solver was invoked
 let _solverStartGears   = 0;      // gearsLeft when solver was invoked
-let _solverStartChain   = 0;      // chainAvail when solver was invoked
 let _solverInitialMoves = [];     // full move list returned by solver
 let _solverMoveIdx      = 0;      // moves dispatched so far this run
 
@@ -127,8 +124,7 @@ function _renderLevelGrid() {
 }
 
 function _logAutoSolveFailure(reason) {
-  const { level, playerPos, gears, worldState, gearsLeft, totalGears, chainLengthTotal, prevDir } = state;
-  const chainUsed  = _chainLengthUsed();
+  const { level, playerPos, gears, worldState, gearsLeft, totalGears, prevDir } = state;
   const bendGears  = gears.filter(g => !g.isTeleport);
   const executed   = _solverInitialMoves.slice(0, _solverMoveIdx);
   const remaining  = _solverInitialMoves.slice(_solverMoveIdx);
@@ -141,11 +137,10 @@ function _logAutoSolveFailure(reason) {
   console.group(`%cLevel ${level.id} — ${reason}`, 'color:#e04060;font-weight:bold');
   console.log(`Size: ${level.width}×${level.height}  |  seed: ${level.seed ?? '?'}  |  features: ${features.join(', ') || 'none'}`);
   console.log(`Boat entry (y=-1): (${level.start.x}, -1)`);
-  if (_solverStartPos) console.log(`Solver started at: (${_solverStartPos.x}, ${_solverStartPos.y})  |  chainAvail at invoke: ${_solverStartChain}  |  gearsLeft: ${_solverStartGears}`);
-  console.log(`Chain limit: ${chainLengthTotal}  |  Gear budget: ${totalGears}`);
+  if (_solverStartPos) console.log(`Solver started at: (${_solverStartPos.x}, ${_solverStartPos.y})  |  gearsLeft: ${_solverStartGears}`);
+  console.log(`Gear budget: ${totalGears}`);
   console.log(`Player stopped at: (${playerPos.x}, ${playerPos.y})  |  prevDir: ${prevDir ? _moveArrow(prevDir) : 'none'}`);
   console.log(`World state: ${worldState.toString(2).padStart(8, '0')}`);
-  console.log(`Chain length (actual): ${chainUsed} / ${chainLengthTotal}`);
   console.log(`Gears left / total: ${gearsLeft} / ${totalGears}`);
   console.log(`Gear waypoints: ${bendGears.length ? bendGears.map(g => `(${g.x},${g.y})`).join(' → ') : '(none)'}`);
   if (_solverInitialMoves.length > 0) {
@@ -215,42 +210,11 @@ function _autoSolve() {
   _autoPhaseCallback = null;
   _solverStartPos   = { ...state.playerPos };
   _solverStartGears = state.gearsLeft;
-  _solverStartChain = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
 
-  // ── Use the generator's pre-computed solution when the player hasn't moved yet.
-  // level.solution is produced by _reconstructSolution in generator.js.
-  // It is only valid from the initial state (player at the boat, about to dive).
-  const sol = state.level.solution;
-  if (sol && state.waitingForDive) {
-    const btn = document.getElementById('auto-solve-btn');
-    if (sol.moves) {
-      // Simple path: no backtracking needed.
-      _solverInitialMoves = [...sol.moves];
-      _solverMoveIdx      = 0;
-      _autoSolving        = true;
-      _autoMoveQueue      = [...sol.moves];
-      btn?.classList.add('active');
-      _dispatchNextAutoMove();
-      return;
-    }
-    if (sol.keyMoves) {
-      // Key+door with backtracking: run key phase first, then goal phase.
-      _solverInitialMoves = [...sol.keyMoves];
-      _solverMoveIdx      = 0;
-      _autoSolving        = true;
-      _autoMoveQueue      = [...sol.keyMoves];
-      _autoPhaseCallback  = () => _planGoalAfterKeyWithHint(sol.backtrackChain, sol.goalMoves);
-      btn?.classList.add('active');
-      _dispatchNextAutoMove();
-      return;
-    }
-    // sol exists but has neither moves nor keyMoves (e.g. crumble backtrack fallback).
-  }
-
-  // ── Fallback: run Dijkstra from the current player position ─────────────
+  // ── Run Dijkstra from the current player position ─────────────────────────
   const result = solve(
     state.level, state.playerPos, state.worldState,
-    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir)
+    state.gearsLeft, _prevDirToIndex(state.prevDir)
   );
 
   const btn = document.getElementById('auto-solve-btn');
@@ -278,47 +242,6 @@ function _autoSolve() {
   _logAutoSolveFailure('solver found no path');
 }
 
-// Key+door phase 2 (generator-hint path): key has just been collected.
-// First try reaching the goal directly (maybe no backtracking needed after all).
-// If chain is too full, backtrack to the gear identified by backtrackChain and
-// execute the generator's pre-computed goalMoves from there.
-function _planGoalAfterKeyWithHint(backtrackChain, goalMoves) {
-  const chainUsed  = _chainLengthUsed();
-  const chainAvail = Math.max(0, state.chainLengthTotal - chainUsed);
-
-  // Try direct Dijkstra from key position first (maybe chain is still short enough).
-  const result = solve(state.level, state.playerPos, state.worldState,
-    state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir), true);
-  if (result && result.moves.length > 0) {
-    _solverInitialMoves = [...result.moves];
-    _solverMoveIdx      = 0;
-    _autoMoveQueue      = [...result.moves];
-    _dispatchNextAutoMove();
-    return;
-  }
-  // No direct path — need to backtrack to a gear.
-
-  // Find the gear whose accumulated chain length is closest to (but not over)
-  // backtrackChain — this is where the generator planned the backtrack to.
-  let gearIdx = -1; // -1 = boat
-  const gearLengths = state.gears
-    .map((g, i) => ({ i, g, len: _chainLengthAtGearIdx(i) }))
-    .filter(({ g }) => !g.isTeleport);
-  for (const { i, len } of gearLengths) {
-    if (len <= backtrackChain) gearIdx = i;
-  }
-
-  _autoSolveUsedBacktrack = true;
-  _autoPhaseCallback = () => {
-    _solverInitialMoves = [...goalMoves];
-    _solverMoveIdx      = 0;
-    _autoMoveQueue      = [...goalMoves];
-    _autoPhaseCallback  = null;
-    _dispatchNextAutoMove();
-  };
-  _executeBacktrack(gearIdx);
-}
-
 // Returns the position of the first uncollected KEY cell, or null.
 function _findUncollectedKeyCell() {
   const { cells, width } = state.level;
@@ -331,26 +254,6 @@ function _findUncollectedKeyCell() {
     }
   }
   return null;
-}
-
-// Chain length if the player backtracks to gears[gearIdx] (with pending-pop applied).
-// gearIdx = -1 → boat (chain = 0).
-function _chainLengthAtGearIdx(gearIdx) {
-  if (gearIdx < 0) return 0;
-  let len = 0;
-  let prevX = state.level.start.x, prevY = state.level.start.y;
-  for (let i = 0; i < gearIdx; i++) {
-    const g = state.gears[i];
-    if (g.isTeleport) {
-      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
-      prevX = g.exitX; prevY = g.exitY;
-    } else {
-      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
-      prevX = g.x; prevY = g.y;
-    }
-  }
-  const t = state.gears[gearIdx];
-  return len + Math.abs(t.x - prevX) + Math.abs(t.y - prevY);
 }
 
 // Direction index (0–3, or 4=none) the player would have after backtracking to gears[gearIdx].
@@ -375,7 +278,7 @@ function _tryKeyFirstStrategy() {
   // Try goal directly from current position (ignoring door, in case there's a path around it).
   const goalOnly = { ...state.level, doorRequirements: null };
   const directResult = solve(goalOnly, state.playerPos, state.worldState,
-    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir), true);
+    state.gearsLeft, _prevDirToIndex(state.prevDir));
 
   if (directResult && directResult.moves.length > 0) {
     _solverInitialMoves = [...directResult.moves];
@@ -389,7 +292,7 @@ function _tryKeyFirstStrategy() {
 
   const keyLevel  = { ...state.level, goal: keyCell };
   const keyResult = solve(keyLevel, state.playerPos, state.worldState,
-    state.gearsLeft, _solverStartChain, _prevDirToIndex(state.prevDir));
+    state.gearsLeft, _prevDirToIndex(state.prevDir));
 
   if (!keyResult || keyResult.moves.length === 0) {
     console.log('[auto-solve] phase 1 — cannot reach key either, giving up');
@@ -413,9 +316,8 @@ function _tryKeyFirstStrategy() {
 
 // Phase 2: key collected — try to solve to goal; if stuck, try backtracking through gears.
 function _planGoalAfterKey() {
-  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
   const result = solve(state.level, state.playerPos, state.worldState,
-    state.gearsLeft, chainAvail, _prevDirToIndex(state.prevDir));
+    state.gearsLeft, _prevDirToIndex(state.prevDir));
 
   if (result && result.moves.length > 0) {
     _solverInitialMoves = [...result.moves];
@@ -437,15 +339,14 @@ function _tryBacktrackForGoal() {
   for (let i = gears.length - 1; i >= -1; i--) {
     if (i >= 0 && gears[i].isTeleport) continue;
 
-    const pos        = i < 0 ? state.level.start : { x: gears[i].x, y: gears[i].y };
-    const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthAtGearIdx(i));
+    const pos = i < 0 ? state.level.start : { x: gears[i].x, y: gears[i].y };
     // Backtracking to gears[i] frees gears[i..N-1] (via _executeBacktrack) plus the
     // pending-pop of gears[i] itself, so total freed = gears.slice(i) non-teleport count.
     const gearsFreed = gears.slice(Math.max(0, i)).filter(g => !g.isTeleport).length;
     const gearsAvail = state.gearsLeft + gearsFreed;
 
     const result = solve(state.level, pos, state.worldState,
-      gearsAvail, chainAvail, _prevDiAtGearIdx(i));
+      gearsAvail, _prevDiAtGearIdx(i));
 
     if (result && result.moves.length > 0) {
       _autoSolveUsedBacktrack = true;
@@ -501,7 +402,6 @@ function _makeTeleporterTestLevel() {
     start: { x: 2, y: -1 },
     goal:  { x: 0, y: 5 },
     teleporterMap,
-    effectiveChainLength: 20,
     effectiveCogs: 3,
   };
 }
@@ -559,14 +459,10 @@ function loadLevel(level) {
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
   const budget = (level.effectiveCogs ?? goalDepth) > 0 ? (level.effectiveCogs ?? goalDepth) : 1;
-  state.gears             = [];
-  state.gearsLeft         = budget;
-  state.totalGears        = budget;
-  state.peakGearsUsed     = 0;
-  state.peakChainUsed     = 0;
-  const chainBudget       = (level.effectiveChainLength ?? 0) > 0 ? level.effectiveChainLength : (level.width + level.height);
-  state.chainLengthTotal  = chainBudget;
-  setChainLengthTotal(chainBudget);
+  state.gears         = [];
+  state.gearsLeft     = budget;
+  state.totalGears    = budget;
+  state.peakGearsUsed = 0;
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
 
@@ -1116,7 +1012,6 @@ function _applyCollectibles(target) {
   if (target.keyCollected) {
     const { x: kx, y: ky, toggleIdx } = target.keyCollected;
     state.peakGearsUsed = Math.max(state.peakGearsUsed, state.totalGears - state.gearsLeft);
-    state.peakChainUsed = Math.max(state.peakChainUsed, _chainLengthUsed());
     if (toggleIdx !== undefined) {
       state.worldState |= (1 << toggleIdx);
       if (state.level.doorRequirements) {
@@ -1203,23 +1098,18 @@ function _handleWin() {
   playWin();
   state.queuedMove = null;
 
-  const gearsUsed    = state.totalGears - state.gearsLeft;
-  const chainUsed    = _chainLengthUsed();
-  const peakGears    = Math.max(gearsUsed, state.peakGearsUsed);
-  const peakChain    = Math.max(chainUsed, state.peakChainUsed);
-  const gearOptimal  = peakGears === state.totalGears;
-  const chainOptimal = peakChain === state.chainLengthTotal;
+  const gearsUsed   = state.totalGears - state.gearsLeft;
+  const peakGears   = Math.max(gearsUsed, state.peakGearsUsed);
+  const gearOptimal = peakGears === state.totalGears;
   if (_batchRunning) {
     _batchTotal++;
-    if (gearOptimal && chainOptimal) {
+    if (gearOptimal) {
       console.log(`✓ Level ${state.level.id}`);
     } else {
-      const chainLeft  = state.chainLengthTotal - peakChain;
       const gearsLeft2 = state.totalGears - peakGears;
       console.warn(
         `Level ${state.level.id} — budget mismatch: ` +
-        `gears ${peakGears}/${state.totalGears}${gearOptimal ? ' ✓' : ` (${gearsLeft2} left)`}  |  ` +
-        `chain ${peakChain}/${state.chainLengthTotal}${chainOptimal ? ' ✓' : ` (${chainLeft} left)`}`
+        `gears ${peakGears}/${state.totalGears}${gearOptimal ? ' ✓' : ` (${gearsLeft2} left)`}`
       );
     }
     _animateWinRetract(() => _batchAdvanceLevel());
@@ -1231,8 +1121,7 @@ function _handleWin() {
   } else {
     console.log(
       `Level ${state.level.id} — ` +
-      `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}  |  ` +
-      `chain: ${peakChain}/${state.chainLengthTotal} ${chainOptimal ? '✓' : `(${state.chainLengthTotal - peakChain} left)`}`
+      `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}`
     );
   }
 
@@ -1356,22 +1245,6 @@ function _gearOutPos(g) {
   return g.isTeleport ? { x: g.exitX, y: g.exitY } : { x: g.x, y: g.y };
 }
 
-function _chainLengthUsed() {
-  // Teleport crossings contribute zero physical length: skip the entry→exit gap.
-  let len = 0;
-  let prevX = state.level.start.x, prevY = state.level.start.y;
-  for (const g of state.gears) {
-    if (g.isTeleport) {
-      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
-      prevX = g.exitX; prevY = g.exitY;
-    } else {
-      len += Math.abs(g.x - prevX) + Math.abs(g.y - prevY);
-      prevX = g.x; prevY = g.y;
-    }
-  }
-  len += Math.abs(state.playerPos.x - prevX) + Math.abs(state.playerPos.y - prevY);
-  return len;
-}
 
 function _executeMove(dx, dy) {
   _retractToken++;
@@ -1382,9 +1255,7 @@ function _executeMove(dx, dy) {
   // won't be in gearSet yet.
   gearSet.add(state.playerPos.y * state.level.width + state.playerPos.x);
 
-  // Call without chain limit so backtrack detection sees the natural landing position.
-  // Chain length is only enforced for forward moves (after all backtrack checks below).
-  const target     = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
+  const target = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet);
   const didMove    = target.x !== state.playerPos.x || target.y !== state.playerPos.y;
   const hasCrumble = target.crumble !== null;
 
@@ -1398,51 +1269,18 @@ function _executeMove(dx, dy) {
   state.pendingOnewayBreak = null;
 
   const revisitIdx = state.gears.findIndex(g => g.x === target.x && g.y === target.y);
-  const isBoatEntry = target.y < 0;
-
-  // Detect moves that retrace the last chain segment back toward the previous anchor
-  // (last gear or start).  These always shorten the chain so the cap must never block
-  // them — doing so causes a softlock when chain is full and a one-way is in the way.
-  // For teleport crossings, the post-teleport segment starts at the EXIT, so use
-  // _gearOutPos to get the correct anchor for backward-direction detection.
-  const chainAnchor = state.gears.length > 0
-    ? _gearOutPos(state.gears[state.gears.length - 1])
-    : state.level.start;
-  const isBackwardAlongChain =
-    (chainAnchor.x === state.playerPos.x && dx === 0 && dy === Math.sign(chainAnchor.y - state.playerPos.y)) ||
-    (chainAnchor.y === state.playerPos.y && dy === 0 && dx === Math.sign(chainAnchor.x - state.playerPos.x));
-
-  // Landing on an existing gear, the boat, or retracing the last segment is a backtrack —
-  // chain shortens, so no cap.  Only cap genuine forward moves into new territory.
-  const chainAvail = Math.max(0, state.chainLengthTotal - _chainLengthUsed());
-  // For teleporter moves the physical chain extension is dist(playerPos→entry) + dist(exit→target),
-  // not the straight Manhattan from playerPos to target (which can over- or under-estimate).
-  const slideLen = target.teleportCrossing
-    ? Math.abs(target.teleportCrossing.entryX - state.playerPos.x) + Math.abs(target.teleportCrossing.entryY - state.playerPos.y)
-    + Math.abs(target.x - target.teleportCrossing.exitX) + Math.abs(target.y - target.teleportCrossing.exitY)
-    : Math.abs(target.x - state.playerPos.x) + Math.abs(target.y - state.playerPos.y);
-  const chainWouldExceed = revisitIdx < 0 && !isBoatEntry && !isBackwardAlongChain && slideLen > chainAvail;
-  const moveTarget = (chainWouldExceed && !_batchRunning)
-    ? slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState, gearSet, chainAvail)
-    : target;
-
-  if (moveTarget.x === state.playerPos.x && moveTarget.y === state.playerPos.y && moveTarget.crumble === null && !moveTarget.teleportCrossing) {
-    _playBlockedWithJerk(dx, dy);
-    return;
-  }
-
-  const ctx = _buildDepartureCtx(moveTarget, dx, dy);
+  const ctx = _buildDepartureCtx(target, dx, dy);
   if (ctx === null) { _playBlockedWithJerk(dx, dy); return; }
 
   state.isMoving = true;
   playSlide();
-  _applyPreAnimationChain(ctx, !!moveTarget.teleportCrossing);
+  _applyPreAnimationChain(ctx, !!target.teleportCrossing);
 
   const moveToken = _moveToken;
 
   // If the slide crosses a teleporter, provide entry/exit info and a callback
   // that inserts the crossing into state.gears at the flash-out moment.
-  const tc = moveTarget.teleportCrossing;
+  const tc = target.teleportCrossing;
   const teleportInfo = tc ? {
     entryPos:           { x: tc.entryX, y: tc.entryY },
     exitPos:            { x: tc.exitX,  y: tc.exitY  },
@@ -1467,12 +1305,12 @@ function _executeMove(dx, dy) {
 
   const _comingFromBoat = state.playerPos.y < 0;
 
-  animatePlayer(state.playerPos, moveTarget, state.level, () => {
+  animatePlayer(state.playerPos, target, state.level, () => {
     if (moveToken !== _moveToken) return;
-    state.playerPos = { x: moveTarget.x, y: moveTarget.y };
+    state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
     playLand();
-    _onPlayerLanded(moveTarget, dx, dy, ctx);
+    _onPlayerLanded(target, dx, dy, ctx);
     // If the player just dived AND needed the hint, schedule an inactivity nudge.
     if (_comingFromBoat && _diveHintShown) {
       _moveHintTimer = setTimeout(showMoveHint, 3500);

@@ -111,7 +111,7 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  *   In both cases the caller computes the new worldState:
  *     newWS = worldState | (1 << toggleIdx)
  */
-export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null, maxSlideLength = Infinity) {
+export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
@@ -119,7 +119,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
   let keyCollected     = null;
   let blockedByOneway  = null;
   let teleportCrossing    = null;
-  let stepsTaken          = 0;
   let skipTeleportEntry   = -1; // flat index of teleport entry to skip after teleporting
 
   while (true) {
@@ -136,9 +135,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       break;
     }
 
-    // Stop if chain length budget is exhausted.
-    if (stepsTaken >= maxSlideLength) break;
-
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
 
@@ -147,7 +143,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     // the slide in the same direction would immediately re-enter the entry.
     if (flatIdx === skipTeleportEntry) {
       skipTeleportEntry = -1;
-      x = nx; y = ny; stepsTaken++;
+      x = nx; y = ny;
       if (level.goal && x === level.goal.x && y === level.goal.y) break;
       if (cell === CellType.STICKY) break;
       if (gearSet && gearSet.has(flatIdx)) break;
@@ -175,7 +171,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       const collected = toggleIdx !== undefined && (worldState & (1 << toggleIdx)) !== 0;
       if (!collected) {
         x = nx; y = ny;
-        stepsTaken++;
         keyCollected = { x, y, toggleIdx };
         break;
       }
@@ -200,7 +195,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
     // ── TELEPORTER: enter entry cell, jump to exit, continue sliding ───────
     if (cell === CellType.TELEPORTER) {
-      x = nx; y = ny; stepsTaken++;
+      x = nx; y = ny;
       const exitFlat = level.teleporterMap?.get(flatIdx);
       if (exitFlat !== undefined) {
         const exitX = exitFlat % width;
@@ -222,7 +217,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     // ── Move onto the cell ────────────────────────────────────────────────
     x = nx;
     y = ny;
-    stepsTaken++;
 
     if (level.goal && x === level.goal.x && y === level.goal.y) {
       break;

@@ -49,7 +49,7 @@ const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity, playerChainLength = Infinity } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -580,8 +580,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, effectiveCogs, effectiveChainLength, goalDifficulty,
-          depths, chainLengths, difficulties } =
+  const { goal, effectiveCogs, goalDifficulty, depths, difficulties } =
     _computeCosts(outCells, width, height, start, doorRequirements, teleporterMap, carvedMask);
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
@@ -595,8 +594,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   return {
     id, width, height, cells: outCells, start, goal,
-    effectiveCogs, effectiveChainLength, goalDifficulty,
-    depths, chainLengths, difficulties,
+    effectiveCogs, goalDifficulty,
+    depths, difficulties,
     doorRequirements, teleporterMap, seed,
     visitedDirs: visitedDirsOut, useKeyDoor,
   };
@@ -611,12 +610,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity, playerChainLength = Infinity } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity } = {}) {
   let best      = null;
   let bestScore = Infinity;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears, playerChainLength });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 
@@ -777,14 +776,12 @@ function _onewayAllows(cellType, dx, dy) {
 // already-running bucket — these are appended to the live bucket array and
 // processed in the same pass.
 //
-// Returns { goal, effectiveCogs, effectiveChainLength, goalDifficulty,
-//           depths, chainLengths, difficulties }
+// Returns { goal, effectiveCogs, goalDifficulty, depths, difficulties }
 function _computeCosts(cells, width, height, start, doorRequirements, teleporterMap, carvedMask) {
   const toggleMap = buildToggleMap(cells);
   const n         = width * height;
   // Per-cell arrays; -1 = not yet reached.
   const depthArr  = new Int16Array(n).fill(-1);    // min gears to reach this cell
-  const chainArr  = new Int16Array(n).fill(-1);    // chain length for that min-gear path
   const diffArr   = new Float32Array(n).fill(-1);  // accumulated difficulty for same path
 
   // wsGears: `${x},${y},${ws}` → minimum gears seen to reach (x, y) in worldstate ws.
@@ -798,35 +795,31 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
   // Update per-cell global arrays with the minimum-gear path to (x, y).
   // At equal gear counts, keeps the lower-difficulty recording so a precise
   // landing value can overwrite an earlier over-estimated intermediate value.
-  function _recordGlobal(x, y, gears, chain, diff) {
+  function _recordGlobal(x, y, gears, diff) {
     if (y < 0) return; // boat position — not in the output grid
     const flat = y * width + x;
     if (depthArr[flat] < 0 || gears < depthArr[flat] ||
         (gears === depthArr[flat] && diff < diffArr[flat])) {
       depthArr[flat] = gears;
-      chainArr[flat] = chain;
       diffArr[flat]  = diff;
-    } else if (gears === depthArr[flat] && chain < chainArr[flat]) {
-      // Same gear count but a shorter chain path — keep the tighter chain budget.
-      chainArr[flat] = chain;
     }
   }
 
   // Attempt to enqueue (x, y, ws) at the given gear count.
   // Rejected if an equal-or-better path is already known.
-  function _tryEnqueue(x, y, ws, gears, chain, diff, arrivalDir) {
+  function _tryEnqueue(x, y, ws, gears, diff, arrivalDir) {
     const key      = _key(x, y, ws);
     const existing = wsGears.get(key);
     if (existing !== undefined && existing <= gears) return false;
     wsGears.set(key, gears);
     while (buckets.length <= gears) buckets.push([]);
-    buckets[gears].push({ x, y, ws, gears, chain, diff, arrivalDir, key });
-    _recordGlobal(x, y, gears, chain, diff);
+    buckets[gears].push({ x, y, ws, gears, diff, arrivalDir, key });
+    _recordGlobal(x, y, gears, diff);
     return true;
   }
 
   // Seed from the boat (y = -1), arriving via a downward slide.
-  _tryEnqueue(start.x, start.y, 0, 0, 0, 0, 3 /* DOWN */);
+  _tryEnqueue(start.x, start.y, 0, 0, 0, 3 /* DOWN */);
 
   for (let g = 0; g < buckets.length; g++) {
     const bucket = buckets[g]; // live reference — length may grow during iteration
@@ -842,10 +835,10 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
         //   straight continuation → 0 gears
         //   reversal (180°)       → 0 gears (backtrack, no bend placed)
         //   any 90° bend          → 1 gear
-        const isStraight = di === item.arrivalDir;
-        const isReversal = dx === -DIRS4[item.arrivalDir].dx &&
-                           dy === -DIRS4[item.arrivalDir].dy;
-        const newGears   = item.gears + ((!isStraight && !isReversal) ? 1 : 0);
+        const isStraight  = di === item.arrivalDir;
+        const isReversal  = dx === -DIRS4[item.arrivalDir].dx &&
+                            dy === -DIRS4[item.arrivalDir].dy;
+        const newGears    = item.gears + ((!isStraight && !isReversal) ? 1 : 0);
 
         const { path, cost, crumblePos, keyPos } = _slidePath(
           cells, width, height, { x: item.x, y: item.y }, dx, dy,
@@ -857,22 +850,18 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
 
         // ── Normal landing ──────────────────────────────────────────────────
         if (path.length > 0) {
-          const landing  = path[path.length - 1];
-          const newChain = item.chain + path.length;
-          const newDiff  = item.diff + cost;
+          const landing = path[path.length - 1];
+          const newDiff = item.diff + cost;
           // If a key was collected, activate its toggle in the new worldstate.
           const newWS = keyPos?.toggleIdx !== undefined
             ? (item.ws | (1 << keyPos.toggleIdx))
             : item.ws;
-          _tryEnqueue(landing.x, landing.y, newWS, newGears, newChain, newDiff, di);
+          _tryEnqueue(landing.x, landing.y, newWS, newGears, newDiff, di);
 
           // Record every cell the player slid *through* so all carved cells
-          // get valid depth/chain/difficulty values for the renderer overlay.
-          // Intermediate cells use the full slide cost — it's a slight over-
-          // count but the min-diff rule in _recordGlobal will correct it when
-          // a cleaner landing path visits the same cell later.
+          // get valid depth/difficulty values for the renderer overlay.
           for (let i = 0; i < path.length - 1; i++) {
-            _recordGlobal(path[i].x, path[i].y, newGears, item.chain + i + 1, newDiff);
+            _recordGlobal(path[i].x, path[i].y, newGears, newDiff);
           }
         }
 
@@ -880,16 +869,13 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
         // Enqueue the position just before the crumble in the crumble-active
         // worldstate so the BFS can slide through it in future moves.
         if (crumblePos?.toggleIdx !== undefined) {
-          const newWS     = item.ws | (1 << crumblePos.toggleIdx);
+          const newWS = item.ws | (1 << crumblePos.toggleIdx);
           // If the player slid some cells before hitting the crumble, they're
           // now at the last path cell; otherwise they didn't move.
           const from      = path.length > 0 ? path[path.length - 1] : { x: item.x, y: item.y };
-          const newChain  = item.chain + path.length;
-          // If the player slid before hitting the crumble, they may have bent;
-          // if they didn't move (crumble bounce), arrivalDir is unchanged.
           const crumGears = path.length > 0 ? newGears : item.gears;
-          const crumDi    = path.length > 0 ? di        : item.arrivalDir;
-          _tryEnqueue(from.x, from.y, newWS, crumGears, newChain, item.diff + cost, crumDi);
+          const crumDi    = path.length > 0 ? di       : item.arrivalDir;
+          _tryEnqueue(from.x, from.y, newWS, crumGears, item.diff + cost, crumDi);
         }
       }
     }
@@ -922,12 +908,10 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
   const goalFlat = goal.y * width + goal.x;
   return {
     goal,
-    effectiveCogs:        Math.max(1, depthArr[goalFlat] >= 0 ? depthArr[goalFlat] : 1),
-    effectiveChainLength: chainArr[goalFlat] >= 0 ? chainArr[goalFlat] : width + height,
-    goalDifficulty:       diffArr[goalFlat]  >= 0 ? diffArr[goalFlat]  : 0,
-    depths:               depthArr,
-    chainLengths:         chainArr,
-    difficulties:         diffArr,
+    effectiveCogs:  Math.max(1, depthArr[goalFlat] >= 0 ? depthArr[goalFlat] : 1),
+    goalDifficulty: diffArr[goalFlat] >= 0 ? diffArr[goalFlat] : 0,
+    depths:         depthArr,
+    difficulties:   diffArr,
   };
 }
 
