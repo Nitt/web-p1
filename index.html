@@ -71,6 +71,7 @@
         <label>h <input id="gen-debug-h" type="number" value="9" min="3" max="20"></label>
         <button id="gen-debug-run">Generate</button>
         <button id="gen-debug-universes">universes</button>
+        <button id="gen-debug-path-only" hidden>path only</button>
         <button id="gen-debug-close">✕</button>
       </div>
     </div>
@@ -166,7 +167,14 @@
     document.getElementById('gen-debug-universes').addEventListener('click', () => {
       _universeMode = !_universeMode;
       document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
+      document.getElementById('gen-debug-path-only').hidden = !_universeMode;
       _syncSlider(true);
+      renderStep(+slider.value);
+    });
+
+    document.getElementById('gen-debug-path-only').addEventListener('click', () => {
+      _pathOnlyMode = !_pathOnlyMode;
+      document.getElementById('gen-debug-path-only').classList.toggle('active', _pathOnlyMode);
       renderStep(+slider.value);
     });
 
@@ -177,12 +185,14 @@
     let _levelH           = 0;
     let _levelStart       = null;
     let _universeMode         = false;
+    let _pathOnlyMode         = false;
     let _doorRequirements     = null;   // Map<outputFlatIdx, toggleIdx> from final result
     let _finalCells           = null;   // Uint8Array output cells (CellType values)
     let _universeDepths       = null;   // Array<Int16Array> indexed by worldState bitmask
     let _pathCellOrder    = null;   // [{px,py,sdx,sdy,ws}] padded-grid cells in path order
     let _pathCellReveal   = null;   // Map<key → stepIndex> when each cell first appears
     let _teleporterMap    = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
+    let _pathWorldStates  = null;   // Set<number> worldState bitmasks on the optimal path
 
     function _syncSlider(jumpToEnd = false) {
       slider.max = Math.max(0, _steps.length - 1);
@@ -206,6 +216,7 @@
       _universeDepths   = result.universeDepths;
       _pathCellOrder        = null;
       _pathCellReveal       = null;
+      _pathWorldStates      = result.pathWorldStates ?? new Set([0]);
 
       _syncSlider(true);
       renderStep(+slider.value);
@@ -269,6 +280,7 @@
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      const stepDepths = step.depths ?? depths;
       for (let cy = 0; cy < ph; cy++) {
         for (let cx = 0; cx < pw; cx++) {
           const cell = grid[cy * pw + cx];
@@ -277,10 +289,10 @@
 
           // Overlay depth (top-left, blue) and difficulty (bottom-right, red)
           // only for inner cells (not border padding) and only when data exists.
-          if (size >= 10 && cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1 && depths && cell !== 0) {
+          if (size >= 10 && cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1 && stepDepths && cell !== 0) {
             const ix = cx - 1, iy = cy - 1;
             const fi = iy * _levelW + ix;
-            const d  = depths[fi];
+            const d  = stepDepths[fi];
             const df = difficulties?.[fi];
             const fontSize = Math.max(5, Math.floor(size * 0.22));
             ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
@@ -428,16 +440,24 @@
         }
       }
 
-      const universeCount = activeUniverses.length || 1;
+      // Filter to only path-relevant universes when "path only" mode is active.
+      const displayUniverses = (_pathOnlyMode && _pathWorldStates && _pathWorldStates.size > 0)
+        ? activeUniverses.filter(({ u }) => _pathWorldStates.has(u))
+        : activeUniverses;
+
+      const universeCount = displayUniverses.length || 1;
       const cols          = Math.min(8, universeCount);
       const rows          = Math.ceil(universeCount / cols);
 
       const LABEL_H = 14;
       const GAP     = 6;
 
-      const wrap  = canvas.parentElement;
-      const availW = Math.max(800, (wrap.clientWidth || 800) - 20);
-      const uW    = Math.max(4, Math.floor((availW - GAP * (cols + 1)) / cols / pw));
+      const wrap   = canvas.parentElement;
+      const availW = Math.max(400, (wrap.clientWidth  || 400) - 20);
+      const availH = Math.max(200, (wrap.clientHeight || 400) - 32); // subtract legend row
+      const maxUWW = Math.max(4, Math.floor((availW - GAP * (cols + 1)) / cols / pw));
+      const maxUWH = Math.max(4, Math.floor((availH - GAP * (rows + 1) - LABEL_H * rows) / rows / ph));
+      const uW     = Math.min(maxUWW, maxUWH);
       const gridPixW = pw * uW;
       const gridPixH = ph * uW;
 
@@ -447,7 +467,7 @@
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      activeUniverses.forEach(({ key, u, vd }, idx) => {
+      displayUniverses.forEach(({ key, u, vd }, idx) => {
         const col = idx % cols;
         const row = Math.floor(idx / cols);
         const ox  = GAP + col * (gridPixW + GAP);
@@ -510,20 +530,19 @@
           }
         }
 
-        // Per-universe depth (blue) overlay.
-        // Only shown once the carver has explored OUTWARD from a cell in this
-        // universe — i.e., the cell has VD entries — matching how arrows work.
-        if (uW >= 12 && _universeDepths) {
-          const uDep = _universeDepths[u];
+        // Gear-count (depth) overlay — blue number in top-left of each carved cell.
+        // Uses per-universe depths so each panel shows the minimum gears for that worldState.
+        const uDepths = _universeDepths?.get(u);
+        if (uW >= 12 && uDepths) {
           const fontSize = Math.max(5, Math.floor(uW * 0.28));
           ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
           for (let cy = 1; cy < ph - 1; cy++) {
             for (let cx = 1; cx < pw - 1; cx++) {
               const cell = grid[cy * pw + cx];
               if (cell === 0 || cell === 3) continue;
-              if (!vd?.get(cy * pw + cx)) continue; // not yet explored from here
+              if (!vd?.get(cy * pw + cx)) continue; // only show if carver has explored here in this universe
               const fi = (cy - 1) * w + (cx - 1);
-              const d  = uDep?.[fi];
+              const d  = uDepths[fi];
               if (d !== undefined && d >= 0) {
                 ctx.fillStyle = '#3a6fd8';
                 ctx.fillText(d, ox + cx * uW + 2, oy + cy * uW + fontSize + 1);

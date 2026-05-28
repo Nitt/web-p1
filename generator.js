@@ -221,6 +221,75 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   // ── Step recorder (no-op when _steps is null) ──
+
+  // Converts the current partial padded grid to outCells format and runs _computeCosts
+  // so each step snapshot carries its own depth data instead of always showing the final result.
+  function _computeStepDepths() {
+    const stepOutCells = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const pi   = idx(x + 1, y + 1);
+        const cell = cells[pi];
+        let out;
+        switch (cell) {
+          case G.EMPTY:      out = 0;  break;
+          case G.STICKY:     out = 2;  break;
+          case G.ONEWAY: {
+            const dk = onewayDir.get(pi);
+            out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
+            break;
+          }
+          case G.CRUMBLE:    out = 7;  break;
+          case G.KEY:        out = 8;  break;
+          case G.DOOR:       out = 9;  break;
+          case G.BLOCK:      out = 1;  break;
+          case G.TELEPORTER: out = 10; break;
+          default:           out = 1;  break; // G.UNTOUCHED → wall so it blocks slides in partial grids
+        }
+        stepOutCells[y * width + x] = out;
+      }
+    }
+    // Build toggle index map to resolve key→door linkages.
+    const stepToggleMap = new Map();
+    let tIdx = 0;
+    for (let i = 0; i < stepOutCells.length; i++) {
+      if (stepOutCells[i] === 7 || stepOutCells[i] === 8) stepToggleMap.set(i, tIdx++);
+    }
+    // Build doorRequirements from key-door pairs carved so far.
+    const stepDoorReqs = new Map();
+    for (const { keyI, doorI } of keyDoorPairs) {
+      const kx = (keyI % pw) - 1, ky = Math.floor(keyI / pw) - 1;
+      const dx = (doorI % pw) - 1, dy = Math.floor(doorI / pw) - 1;
+      if (kx >= 0 && kx < width && ky >= 0 && ky < height && dx >= 0 && dx < width && dy >= 0 && dy < height) {
+        const ti = stepToggleMap.get(ky * width + kx);
+        if (ti !== undefined) stepDoorReqs.set(dy * width + dx, ti);
+      }
+    }
+    // Build teleporterMap from pairs placed so far.
+    let stepTeleporterMap = null;
+    if (paddedTeleporterMap.size > 0) {
+      stepTeleporterMap = new Map();
+      for (const [pni1, pni2] of paddedTeleporterMap) {
+        const ox1 = (pni1 % pw) - 1, oy1 = Math.floor(pni1 / pw) - 1;
+        const ox2 = (pni2 % pw) - 1, oy2 = Math.floor(pni2 / pw) - 1;
+        if (ox1 >= 0 && ox1 < width && oy1 >= 0 && oy1 < height && ox2 >= 0 && ox2 < width && oy2 >= 0 && oy2 < height) {
+          stepTeleporterMap.set(oy1 * width + ox1, oy2 * width + ox2);
+        }
+      }
+    }
+    // Carved mask: cells explicitly opened (not UNTOUCHED) and not sealed teleporter neighbours.
+    const stepCarvedMask = new Uint8Array(width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const pi = idx(x + 1, y + 1);
+        if (cells[pi] !== G.UNTOUCHED && !sealedPaddedIdxs.has(pi)) stepCarvedMask[y * width + x] = 1;
+      }
+    }
+    const stepStart = { x: startX - 1, y: -1 };
+    const { depths, universeDepths } = _computeCosts(stepOutCells, width, height, stepStart, stepDoorReqs, stepTeleporterMap, stepCarvedMask);
+    return { depths, universeDepths };
+  }
+
   function rec(fromX, fromY, toX, toY, label) {
     if (!_steps) return;
     // Snapshot every universe's VD so the visualiser can show per-universe exploration.
@@ -247,7 +316,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       if (!target.has(uKey)) target.set(uKey, new Set());
       target.get(uKey).add(item.y * pw + item.x);
     }
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null });
+    // Compute gear depths on the partial grid at this step so the slider shows
+    // depths as they are now, not the final result.
+    const { depths: stepDepths, universeDepths: stepUniverseDepths } = _computeStepDepths();
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, depths: stepDepths, universeDepths: stepUniverseDepths });
   }
 
   // Find a valid teleporter exit: an already-carved G.EMPTY cell far enough from (entryPX,entryPY),
@@ -585,7 +657,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, effectiveCogs, goalDifficulty, depths, difficulties } =
+  const { goal, effectiveCogs, goalDifficulty, depths, difficulties, universeDepths, pathWorldStates } =
     _computeCosts(outCells, width, height, start, doorRequirements, teleporterMap, carvedMask);
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
@@ -600,9 +672,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   return {
     id, width, height, cells: outCells, start, goal,
     effectiveCogs, goalDifficulty,
-    depths, difficulties,
+    depths, difficulties, universeDepths,
     doorRequirements, teleporterMap, seed,
     visitedDirs: visitedDirsOut, useKeyDoor,
+    pathWorldStates,
   };
 }
 
@@ -794,6 +867,10 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
   // buckets[g] holds items at gear count g.  Appending to buckets[g] while iterating
   // over it works because the loop checks bucket.length dynamically.
   const buckets = [];
+  // pred: state key → predecessor key, used to backtrack the optimal path after BFS.
+  const pred = new Map();
+  // Per-universe depth arrays: ws bitmask → Int16Array(n) of minimum gears per cell.
+  const wsDepthArrs = new Map();
 
   function _key(x, y, ws) { return `${x},${y},${ws}`; }
 
@@ -810,16 +887,27 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
     }
   }
 
+  // Update the per-universe depth array for worldState ws.
+  function _recordWs(x, y, ws, gears) {
+    if (y < 0) return;
+    const flat = y * width + x;
+    let arr = wsDepthArrs.get(ws);
+    if (!arr) { arr = new Int16Array(n).fill(-1); wsDepthArrs.set(ws, arr); }
+    if (arr[flat] < 0 || gears < arr[flat]) arr[flat] = gears;
+  }
+
   // Attempt to enqueue (x, y, ws) at the given gear count.
   // Rejected if an equal-or-better path is already known.
-  function _tryEnqueue(x, y, ws, gears, diff, arrivalDir) {
+  function _tryEnqueue(x, y, ws, gears, diff, arrivalDir, prevKey = null) {
     const key      = _key(x, y, ws);
     const existing = wsGears.get(key);
     if (existing !== undefined && existing <= gears) return false;
     wsGears.set(key, gears);
+    if (prevKey !== null) pred.set(key, prevKey); else pred.delete(key);
     while (buckets.length <= gears) buckets.push([]);
     buckets[gears].push({ x, y, ws, gears, diff, arrivalDir, key });
     _recordGlobal(x, y, gears, diff);
+    _recordWs(x, y, ws, gears);
     return true;
   }
 
@@ -861,12 +949,13 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
           const newWS = keyPos?.toggleIdx !== undefined
             ? (item.ws | (1 << keyPos.toggleIdx))
             : item.ws;
-          _tryEnqueue(landing.x, landing.y, newWS, newGears, newDiff, di);
+          _tryEnqueue(landing.x, landing.y, newWS, newGears, newDiff, di, item.key);
 
           // Record every cell the player slid *through* so all carved cells
           // get valid depth/difficulty values for the renderer overlay.
           for (let i = 0; i < path.length - 1; i++) {
             _recordGlobal(path[i].x, path[i].y, newGears, newDiff);
+            _recordWs(path[i].x, path[i].y, item.ws, newGears);
           }
         }
 
@@ -880,7 +969,7 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
           const from      = path.length > 0 ? path[path.length - 1] : { x: item.x, y: item.y };
           const crumGears = path.length > 0 ? newGears : item.gears;
           const crumDi    = path.length > 0 ? di       : item.arrivalDir;
-          _tryEnqueue(from.x, from.y, newWS, crumGears, item.diff + cost, crumDi);
+          _tryEnqueue(from.x, from.y, newWS, crumGears, item.diff + cost, crumDi, item.key);
         }
       }
     }
@@ -911,12 +1000,40 @@ function _computeCosts(cells, width, height, start, doorRequirements, teleporter
   }
 
   const goalFlat = goal.y * width + goal.x;
+
+  // Find the goal state with minimum gears; break ties by preferring the worldState
+  // with the most toggle bits set (most crumbles/keys activated — the harder path
+  // the generator intended).  Then backtrack that single predecessor chain.
+  const pathWorldStates = new Set();
+  {
+    const popcount = w => { let c = 0; let n = w; while (n) { c += n & 1; n >>>= 1; } return c; };
+    let bestGoalKey = null, bestGoalGears = Infinity, bestGoalPop = -1;
+    for (const [k, g] of wsGears) {
+      const parts = k.split(',');
+      if (parseInt(parts[0]) === goal.x && parseInt(parts[1]) === goal.y) {
+        const pop = popcount(parseInt(parts[2]));
+        if (g < bestGoalGears || (g === bestGoalGears && pop > bestGoalPop)) {
+          bestGoalGears = g;
+          bestGoalPop   = pop;
+          bestGoalKey   = k;
+        }
+      }
+    }
+    let bk = bestGoalKey;
+    while (bk) {
+      pathWorldStates.add(parseInt(bk.split(',')[2]));
+      bk = pred.get(bk);
+    }
+  }
+
   return {
     goal,
     effectiveCogs:  Math.max(1, depthArr[goalFlat] >= 0 ? depthArr[goalFlat] : 1),
     goalDifficulty: diffArr[goalFlat] >= 0 ? diffArr[goalFlat] : 0,
     depths:         depthArr,
     difficulties:   diffArr,
+    universeDepths: wsDepthArrs,
+    pathWorldStates,
   };
 }
 
