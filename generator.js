@@ -132,6 +132,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // onewayDir: cellIndex → dirIdx  (the direction index a ONEWAY cell allows)
   const onewayDir        = new Map();
   const paddedTeleporterMap = new Map(); // padded flat idx ↔ padded flat idx
+  const sealedPaddedIdxs  = new Set();  // cells converted UNTOUCHED→EMPTY by sealTeleporterNeighbors
   let   hasTeleporter    = false;
   const branchPosSet     = new Set();   // dedup key: `${universeKey}|${x},${y}`
   const branchQueue      = [];
@@ -268,7 +269,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     for (const d of DIRS) {
       const nx = pX + d.dx, ny = pY + d.dy;
       if (nx < 1 || nx >= pw - 1 || ny < 1 || ny >= ph - 1) continue;
-      if (cells[idx(nx, ny)] === G.UNTOUCHED) cells[idx(nx, ny)] = G.EMPTY;
+      const ni = idx(nx, ny);
+      if (cells[ni] === G.UNTOUCHED) { cells[ni] = G.EMPTY; sealedPaddedIdxs.add(ni); }
     }
   }
 
@@ -506,10 +508,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   // Mark which output cells were explicitly carved (not left UNTOUCHED).
   // Used to prevent placing the goal on accidental open cells the carver never reached.
+  // Sealed teleporter-neighbor cells are excluded: they were never carved by the BFS
+  // and the player may only slide through them without being able to stop there.
   const carvedMask = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      if (cells[idx(x + 1, y + 1)] !== G.UNTOUCHED) carvedMask[y * width + x] = 1;
+      const pi = idx(x + 1, y + 1);
+      if (cells[pi] !== G.UNTOUCHED && !sealedPaddedIdxs.has(pi)) carvedMask[y * width + x] = 1;
     }
   }
 

@@ -79,11 +79,14 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
 
   let goalKey = null;
 
-  outer: while (heap.length > 0) {
+  while (heap.length > 0) {
     const { x, y, di, ws, g, key } = heapPop();
 
     // Lazy-deletion staleness check: a cheaper path to this state was already found.
     if ((best.get(key) ?? Infinity) < g) continue;
+
+    // Break on pop — guarantees optimality. All cheaper states are already processed.
+    if (x === goal.x && y === goal.y) { goalKey = key; break; }
 
     for (let i = 0; i < DIRS4.length; i++) {
       const { dx, dy } = DIRS4[i];
@@ -142,7 +145,6 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
         best.set(nk, newG);
         parent.set(nk, { fromKey: key, di: i });
         heapPush({ x: lx, y: ly, di: i, ws: finalWS, g: newG, key: nk });
-        if (lx === goal.x && ly === goal.y) { goalKey = nk; break outer; }
       }
 
       // ── Virtual one-way landing ─────────────────────────────────────────────
@@ -160,7 +162,6 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
           best.set(vNk, newG);
           parent.set(vNk, { fromKey: key, di: i, virtualLanding: true });
           heapPush({ x: vPos.x, y: vPos.y, di: i, ws, g: newG, key: vNk });
-          if (vPos.x === goal.x && vPos.y === goal.y) { goalKey = vNk; break outer; }
         }
       }
     }

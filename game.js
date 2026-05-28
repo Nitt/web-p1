@@ -1112,7 +1112,7 @@ function _handleWin() {
         `gears ${peakGears}/${state.totalGears}${gearOptimal ? ' ✓' : ` (${gearsLeft2} left)`}`
       );
     }
-    _animateWinRetract(() => _batchAdvanceLevel());
+    _batchAdvanceLevel();
     return;
   }
 
