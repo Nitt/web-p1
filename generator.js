@@ -49,7 +49,7 @@ const DIFFICULTY_WEIGHTS = {
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
  *            depths: Int16Array, doorRequirements: Map }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
   const rng = makeRng(seed);
   // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
   // strip it if present when disabled — so pickType() and useKeyDoor always agree.
@@ -141,6 +141,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   let currentActivatedSet    = new Set();
   // Maps padded door idx → padded key idx, populated as keys are placed.
   const doorToKeyPaddedMap   = new Map();
+  // Number of toggle cells (crumbles + keys) placed so far.
+  let togglesPlaced = 0;
 
   // Direction-index helpers — operate on the CURRENT universe's VD.
   function hasVisited(i, dirIdx) {
@@ -318,7 +320,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
     // Compute gear depths on the partial grid at this step so the slider shows
     // depths as they are now, not the final result.
-    const { depths: stepDepths, universeDepths: stepUniverseDepths } = _computeStepDepths();
+    // Skip when toggle count is high — _computeCosts is O(2^N) per step and becomes
+    // unusably slow beyond ~7 crumbles/keys.
+    const togglesNow = cells.reduce((n, c) => n + (c === G.CRUMBLE || c === G.KEY ? 1 : 0), 0);
+    const { depths: stepDepths, universeDepths: stepUniverseDepths } =
+      togglesNow <= 7 ? _computeStepDepths() : { depths: null, universeDepths: null };
     _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, depths: stepDepths, universeDepths: stepUniverseDepths });
   }
 
@@ -392,6 +398,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
       enqueue(x, y);
     } else if (type === 'crumble') {
+      if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni); return; }
+      togglesPlaced++;
       cells[ni] = G.CRUMBLE;
       rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
@@ -400,7 +408,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       enqueueActivated(ni, x, y);
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
-      if (door) {
+      if (door && togglesPlaced < maxUniverseBits) {
+        togglesPlaced++;
         cells[ni] = G.KEY;
         cells[door.ci] = G.DOOR;
         keyDoorPairs.push({ keyI: ni, doorI: door.ci });
@@ -688,12 +697,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
   let best      = null;
   let bestScore = Infinity;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears, maxUniverseBits });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 
@@ -704,9 +713,10 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
     }
   }
 
-  best.weights       = weights;
-  best.useKeyDoor    = useKeyDoor;
-  best.useTeleporter = useTeleporter;
+  best.weights         = weights;
+  best.useKeyDoor      = useKeyDoor;
+  best.useTeleporter   = useTeleporter;
+  best.maxUniverseBits = maxUniverseBits;
   return best;
 }
 

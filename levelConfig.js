@@ -40,7 +40,7 @@
  *   Useful for tutorial levels that must teach a specific mechanic on entry.
  */
 export const PROGRESSION = [
-  {
+  /*{
     // ── first level ── simple and quick to load
     levels:           1,
     weights:          { sticky: 0.08, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
@@ -81,20 +81,21 @@ export const PROGRESSION = [
     levels:           5,
     weights:          { sticky: 0.06, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
     keyDoor:          false,
-    useTeleporter:    true,
+    useTeleporter:    false,
     difficultyTarget: [22, 30],
     candidates:       35,
     playerGears:      5,
-  },
+  },*/
   {
     // ── everything ── full chaos, key/door cycles
     levels:           Infinity,
     weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
-    keyDoor:          { minInterval: 4, maxInterval: 15 },
-    useTeleporter:    true,
+    keyDoor:          false,
+    useTeleporter:    false,
     difficultyTarget: null,   // pick hardest
     candidates:       40,
     playerGears:      6,
+    maxUniverseBits:  5,      // cap crumbles+keys at 7 total toggles (2^7 = 128 universes max)
   },
 ];
 
@@ -162,5 +163,6 @@ export function getRecipe(levelIndex, levelsSinceKeyDoor, rng = null) {
     candidates:       stage.candidates,
     entrySlide:       stage.entrySlide ?? null,
     playerGears:      stage.playerGears,
+    maxUniverseBits:  stage.maxUniverseBits ?? Infinity,
   };
 }

@@ -110,14 +110,16 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
       // ── No-movement crumble bounce ──────────────────────────────────────────
       // Player tried direction i, hit an intact crumble immediately — no movement.
       // Crumble always activates on contact.  No gear is charged (no movement).
-      // prevDir updates to the attempted direction i.
+      // prevDir does NOT update: the game's pending-cog pop in _onPlayerLanded
+      // restores prevDir to the pre-bounce direction (di), so gear costs for the
+      // next move must be computed against di, not the bounce direction i.
       if (!moved && result.crumble) {
         const crumbleWS = ws | (1 << result.crumble.toggleIdx);
-        const nk = stateKey(x, y, i, crumbleWS);
+        const nk = stateKey(x, y, di, crumbleWS);
         if ((best.get(nk) ?? Infinity) > g) {
           best.set(nk, g);
           parent.set(nk, { fromKey: key, di: i });
-          heapPush({ x, y, di: i, ws: crumbleWS, g, key: nk });
+          heapPush({ x, y, di, ws: crumbleWS, g, key: nk });
         }
         continue;
       }

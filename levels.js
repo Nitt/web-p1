@@ -31,6 +31,7 @@ export const SAMPLE_LEVELS = (() => {
       difficultyTarget:  recipe.difficultyTarget,
       playerGears:       recipe.playerGears,
       playerChainLength: recipe.playerChainLength,
+      maxUniverseBits:   recipe.maxUniverseBits ?? Infinity,
     }),
   ];
 })();

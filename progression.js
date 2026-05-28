@@ -47,8 +47,9 @@ export function pregenNext(seed, id, recipe) {
     useKeyDoor:        recipe.useKeyDoor,
     useTeleporter:     recipe.useTeleporter,
     difficultyTarget:  recipe.difficultyTarget,
-    entrySlide:  recipe.entrySlide ?? null,
-    playerGears: recipe.playerGears,
+    entrySlide:       recipe.entrySlide ?? null,
+    playerGears:      recipe.playerGears,
+    maxUniverseBits:  recipe.maxUniverseBits ?? Infinity,
   });
 }
 

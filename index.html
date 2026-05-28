@@ -159,7 +159,7 @@
         document.getElementById('gen-debug-seed').value = lvl.seed ?? 0;
         document.getElementById('gen-debug-w').value    = lvl.width  ?? 9;
         document.getElementById('gen-debug-h').value    = lvl.height ?? 9;
-        runGenerate(lvl.weights, lvl.useKeyDoor ?? false, lvl.useTeleporter ?? false);
+        runGenerate(lvl.weights, lvl.useKeyDoor ?? false, lvl.useTeleporter ?? false, lvl.maxUniverseBits ?? Infinity);
       }
     });
     document.getElementById('gen-debug-close').addEventListener('click', () => { panel.hidden = true; });
@@ -199,12 +199,12 @@
       if (jumpToEnd) slider.value = +slider.max;
     }
 
-    function runGenerate(weights, useKeyDoor = false, useTeleporter = false) {
+    function runGenerate(weights, useKeyDoor = false, useTeleporter = false, maxUniverseBits = Infinity) {
       const seed = parseInt(document.getElementById('gen-debug-seed').value) || 0;
       const w    = parseInt(document.getElementById('gen-debug-w').value)    || 9;
       const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
       _steps = [];
-      const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, _steps });
+      const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, maxUniverseBits, _steps });
       _depths           = result.depths;
       _difficulties     = result.difficulties;
       _levelW           = w;
@@ -224,7 +224,7 @@
 
     document.getElementById('gen-debug-run').addEventListener('click', () => {
       const lvl = getCurrentLevel();
-      runGenerate(lvl?.weights, lvl?.useKeyDoor ?? false, lvl?.useTeleporter ?? false);
+      runGenerate(lvl?.weights, lvl?.useKeyDoor ?? false, lvl?.useTeleporter ?? false, lvl?.maxUniverseBits ?? Infinity);
     });
 
     slider.addEventListener('input', () => renderStep(parseInt(slider.value)));
