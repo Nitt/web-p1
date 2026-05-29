@@ -233,24 +233,56 @@
       if (jumpToEnd) slider.value = +slider.max;
     }
 
-    // Walk backward through _steps from targetStepIdx, matching toX/toY to fromX/fromY,
-    // to build the ancestor chain from root to the target step.
+    // Walk backward through _steps from targetStepIdx to build the ancestor chain.
+    // Two-pass search per hop:
+    //   Pass 1 — same-universe destination match (normal sliding ancestry).
+    //   Pass 2 — cross-universe transition parent, for when a crumble/key caused a
+    //            universe jump and there is no same-universe ancestor for this position:
+    //              key case    : most-recent step with toX/toY match in a strict sub-universe
+    //              crumble case: most-recent step with fromX/fromY match in a strict sub-universe
+    //            Take the more-recent of the two cross-universe candidates.
     function buildAncestorChain(targetStepIdx) {
       const chain = [targetStepIdx];
       let searchX = _steps[targetStepIdx].fromX;
       let searchY = _steps[targetStepIdx].fromY;
+      let searchU = _steps[targetStepIdx].currentUniverseKey ?? '';
       let searchFrom = targetStepIdx - 1;
+
+      function parseUKey(k) { return k ? new Set(k.split(',').map(Number)) : new Set(); }
 
       while (searchFrom >= 0 && searchX >= 0 && searchY >= 0) {
         let foundIdx = -1;
+
+        // Pass 1: same-universe, destination match
         for (let i = searchFrom; i >= 0; i--) {
           const s = _steps[i];
-          if (s.toX === searchX && s.toY === searchY) { foundIdx = i; break; }
+          if (s.toX === searchX && s.toY === searchY &&
+              (s.currentUniverseKey ?? '') === searchU) { foundIdx = i; break; }
         }
+
+        // Pass 2: cross-universe transition (only when entering a non-base universe)
+        if (foundIdx < 0 && searchU) {
+          const uSet = parseUKey(searchU);
+          let keyCand = -1, crumbleCand = -1;
+          for (let i = searchFrom; i >= 0; i--) {
+            const s = _steps[i];
+            const suSet = parseUKey(s.currentUniverseKey ?? '');
+            if (suSet.size >= uSet.size) continue;
+            let isSub = true;
+            for (const v of suSet) { if (!uSet.has(v)) { isSub = false; break; } }
+            if (!isSub) continue;
+            if (keyCand < 0 && s.toX === searchX && s.toY === searchY)         keyCand = i;
+            if (crumbleCand < 0 && s.fromX === searchX && s.fromY === searchY) crumbleCand = i;
+            if (keyCand >= 0 && crumbleCand >= 0) break;
+          }
+          foundIdx = Math.max(keyCand, crumbleCand);
+        }
+
         if (foundIdx < 0) break;
         chain.unshift(foundIdx);
         searchX = _steps[foundIdx].fromX;
         searchY = _steps[foundIdx].fromY;
+        searchU = _steps[foundIdx].currentUniverseKey ?? '';
         searchFrom = foundIdx - 1;
       }
 
