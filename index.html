@@ -72,6 +72,7 @@
         <button id="gen-debug-run">Generate</button>
         <button id="gen-debug-universes">universes</button>
         <button id="gen-debug-path-only" hidden>path only</button>
+        <button id="gen-debug-isolate">isolate</button>
         <button id="gen-debug-close">✕</button>
       </div>
     </div>
@@ -178,6 +179,32 @@
       renderStep(+slider.value);
     });
 
+    document.getElementById('gen-debug-isolate').addEventListener('click', () => {
+      const btn = document.getElementById('gen-debug-isolate');
+      if (_isolatedPath) {
+        // Toggle off: restore to the original position of the last isolated step
+        const origIdx = _isolatedPath[_isolatedPath.length - 1];
+        _isolatedPath = null;
+        _isolatedUniverseKeys = null;
+        btn.classList.remove('active');
+        _syncSlider();
+        slider.value = origIdx;
+        renderStep(origIdx);
+      } else {
+        // Toggle on: guard then build ancestor chain
+        if (!_steps.length) return;
+        const targetIdx = Math.min(parseInt(slider.value) || 0, _steps.length - 1);
+        const chain = buildAncestorChain(targetIdx);
+        _isolatedPath = chain;
+        _isolatedUniverseKeys = new Set(chain.map(i => _steps[i].currentUniverseKey ?? ''));
+        btn.classList.add('active');
+        _syncSlider();
+        // Jump to step 0 of the chain (earliest ancestor) so the canvas visibly changes
+        slider.value = 0;
+        renderStep(0);
+      }
+    });
+
     let _steps            = [];
     let _depths           = null;   // Int16Array from final generateLevel result
     let _difficulties     = null;   // Float32Array
@@ -193,10 +220,37 @@
     let _pathCellReveal   = null;   // Map<key → stepIndex> when each cell first appears
     let _teleporterMap    = null;   // Map<outputFlatIdx, outputFlatIdx> paired cells
     let _pathWorldStates  = null;   // Set<number> worldState bitmasks on the optimal path
+    let _isolatedPath     = null;   // null = off; array of real _steps indices = isolate mode active
+    let _isolatedUniverseKeys = null; // Set<string> of universe keys touched by the isolated path
 
     function _syncSlider(jumpToEnd = false) {
-      slider.max = Math.max(0, _steps.length - 1);
+      const len = _isolatedPath ? _isolatedPath.length : _steps.length;
+      slider.max = Math.max(0, len - 1);
       if (jumpToEnd) slider.value = +slider.max;
+    }
+
+    // Walk backward through _steps from targetStepIdx, matching toX/toY to fromX/fromY,
+    // to build the ancestor chain from root to the target step.
+    function buildAncestorChain(targetStepIdx) {
+      const chain = [targetStepIdx];
+      let searchX = _steps[targetStepIdx].fromX;
+      let searchY = _steps[targetStepIdx].fromY;
+      let searchFrom = targetStepIdx - 1;
+
+      while (searchFrom >= 0 && searchX >= 0 && searchY >= 0) {
+        let foundIdx = -1;
+        for (let i = searchFrom; i >= 0; i--) {
+          const s = _steps[i];
+          if (s.toX === searchX && s.toY === searchY) { foundIdx = i; break; }
+        }
+        if (foundIdx < 0) break;
+        chain.unshift(foundIdx);
+        searchX = _steps[foundIdx].fromX;
+        searchY = _steps[foundIdx].fromY;
+        searchFrom = foundIdx - 1;
+      }
+
+      return chain;
     }
 
     function runGenerate(weights, useKeyDoor = false, useTeleporter = false, maxUniverseBits = Infinity) {
@@ -204,6 +258,9 @@
       const w    = parseInt(document.getElementById('gen-debug-w').value)    || 9;
       const h    = parseInt(document.getElementById('gen-debug-h').value)    || 9;
       _steps = [];
+      _isolatedPath = null;
+      _isolatedUniverseKeys = null;
+      document.getElementById('gen-debug-isolate').classList.remove('active');
       const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, maxUniverseBits, _steps });
       _depths           = result.depths;
       _difficulties     = result.difficulties;
@@ -243,13 +300,18 @@
 
     function renderStep(sliderPos) {
       if (!_steps.length) return;
-      const step = _steps[Math.min(sliderPos, _steps.length - 1)];
+      const actualIdx = _isolatedPath
+        ? (_isolatedPath[Math.min(sliderPos, _isolatedPath.length - 1)] ?? 0)
+        : Math.min(sliderPos, _steps.length - 1);
+      const step = _steps[actualIdx];
       label.textContent   = step.label;
-      counter.textContent = `${sliderPos + 1} / ${_steps.length}`;
+      counter.textContent = _isolatedPath
+        ? `${sliderPos + 1} / ${_isolatedPath.length}  [orig: ${actualIdx + 1}]`
+        : `${sliderPos + 1} / ${_steps.length}`;
       if (_universeMode) {
-        drawUniverses(step, sliderPos);
+        drawUniverses(step, actualIdx);
       } else {
-        drawStep(step, _depths, _difficulties, sliderPos);
+        drawStep(step, _depths, _difficulties, actualIdx);
       }
     }
 
@@ -440,10 +502,12 @@
         }
       }
 
-      // Filter to only path-relevant universes when "path only" mode is active.
-      const displayUniverses = (_pathOnlyMode && _pathWorldStates && _pathWorldStates.size > 0)
-        ? activeUniverses.filter(({ u }) => _pathWorldStates.has(u))
-        : activeUniverses;
+      // Filter universes: isolate mode takes priority, then path-only mode.
+      const displayUniverses = _isolatedUniverseKeys
+        ? activeUniverses.filter(({ key }) => _isolatedUniverseKeys.has(key))
+        : (_pathOnlyMode && _pathWorldStates && _pathWorldStates.size > 0)
+          ? activeUniverses.filter(({ u }) => _pathWorldStates.has(u))
+          : activeUniverses;
 
       const universeCount = displayUniverses.length || 1;
       const cols          = Math.min(8, universeCount);
