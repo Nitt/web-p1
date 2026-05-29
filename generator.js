@@ -435,13 +435,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       case G.EMPTY:
         currentBranchDiff = accDiff;
         rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff);
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff);
         break;
       case G.CRUMBLE:
         if (currentActivatedSet.has(ni)) {
           currentBranchDiff = accDiff + DIFF.CRUMBLE_TRAVERSE;
           rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.CRUMBLE_TRAVERSE);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.CRUMBLE_TRAVERSE);
         } else {
           currentBranchDiff = accDiff + DIFF.CRUMBLE;
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
@@ -463,7 +463,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (allowedDir === dirIdx) {
           currentBranchDiff = accDiff + DIFF.ONEWAY_TRAVERSE;
           rec(x, y, nx, ny, `slide-oneway-allowed (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.ONEWAY_TRAVERSE);
+          carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.ONEWAY_TRAVERSE);
         } else {
           currentBranchDiff = accDiff + DIFF.ONEWAY_BLOCKED;
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
@@ -475,7 +475,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (currentActivatedSet.has(ni)) {
           currentBranchDiff = accDiff;
           rec(x, y, nx, ny, `slide-key-collected (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff);
         } else {
           currentBranchDiff = accDiff + DIFF.KEY;
           rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
@@ -487,7 +487,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         if (keyPad !== undefined && currentActivatedSet.has(keyPad)) {
           currentBranchDiff = accDiff + DIFF.DOOR_TRAVERSE;
           rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.DOOR_TRAVERSE);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.DOOR_TRAVERSE);
         } else {
           currentBranchDiff = accDiff + DIFF.DOOR_LOCKED;
           rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
@@ -501,7 +501,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           const ex = exitNi % pw, ey = Math.floor(exitNi / pw);
           currentBranchDiff = accDiff + DIFF.TELEPORT;
           rec(x, y, nx, ny, `slide-teleporter (${nx-1},${ny-1}) → (${ex-1},${ey-1})`);
-          carve(dirIdx, ex, ey, arrivalDirIdx, accDiff + DIFF.TELEPORT);
+          carve(dirIdx, ex, ey, dirIdx, accDiff + DIFF.TELEPORT);
         }
         break;
       }
