@@ -167,6 +167,8 @@
 
     document.getElementById('gen-debug-universes').addEventListener('click', () => {
       _universeMode = !_universeMode;
+      if (!_universeMode) { _zoomedUniverseKey = null; canvas.style.cursor = ''; }
+      else canvas.style.cursor = 'zoom-in';
       document.getElementById('gen-debug-universes').classList.toggle('active', _universeMode);
       document.getElementById('gen-debug-path-only').hidden = !_universeMode;
       _syncSlider(true);
@@ -222,6 +224,8 @@
     let _pathWorldStates  = null;   // Set<number> worldState bitmasks on the optimal path
     let _isolatedPath     = null;   // null = off; array of real _steps indices = isolate mode active
     let _isolatedUniverseKeys = null; // Set<string> of universe keys touched by the isolated path
+    let _zoomedUniverseKey  = null;   // null = multi-grid; string key = zoomed to one universe
+    let _universeLayout     = null;   // { cols, gridPixW, gridPixH, GAP, LABEL_H, keys[] } for click hit-test
 
     function _syncSlider(jumpToEnd = false) {
       const len = _isolatedPath ? _isolatedPath.length : _steps.length;
@@ -260,6 +264,7 @@
       _steps = [];
       _isolatedPath = null;
       _isolatedUniverseKeys = null;
+      _zoomedUniverseKey = null;
       document.getElementById('gen-debug-isolate').classList.remove('active');
       const result = generateLevel(w, h, { seed, id: 'dbg', weights, useKeyDoor, useTeleporter, maxUniverseBits, _steps });
       _depths           = result.depths;
@@ -298,13 +303,43 @@
       }
     });
 
+    canvas.addEventListener('click', e => {
+      if (!_universeMode || !_universeLayout) return;
+      if (_zoomedUniverseKey !== null) {
+        _zoomedUniverseKey = null;
+        canvas.style.cursor = 'zoom-in';
+        renderStep(+slider.value);
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width  / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX;
+      const my = (e.clientY - rect.top)  * scaleY;
+      const { cols, gridPixW, gridPixH, GAP, LABEL_H, keys } = _universeLayout;
+      for (let i = 0; i < keys.length; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const ox = GAP + col * (gridPixW + GAP);
+        const oy = GAP + row * (gridPixH + LABEL_H + GAP) + LABEL_H;
+        if (mx >= ox && mx <= ox + gridPixW && my >= oy && my <= oy + gridPixH) {
+          _zoomedUniverseKey = keys[i];
+          canvas.style.cursor = 'zoom-out';
+          renderStep(+slider.value);
+          return;
+        }
+      }
+    });
+
     function renderStep(sliderPos) {
       if (!_steps.length) return;
       const actualIdx = _isolatedPath
         ? (_isolatedPath[Math.min(sliderPos, _isolatedPath.length - 1)] ?? 0)
         : Math.min(sliderPos, _steps.length - 1);
       const step = _steps[actualIdx];
-      label.textContent   = step.label;
+      const pf = step.processingFrom;
+      const pfStr = pf ? `  [from (${pf.x},${pf.y}) ${pf.dir}]` : '';
+      label.textContent   = `g=${step.gearCount}${pfStr}  ${step.label}`;
       counter.textContent = _isolatedPath
         ? `${sliderPos + 1} / ${_isolatedPath.length}  [orig: ${actualIdx + 1}]`
         : `${sliderPos + 1} / ${_steps.length}`;
@@ -349,9 +384,9 @@
           ctx.fillStyle = CELL_COLORS[cell] ?? '#999';
           ctx.fillRect(cx * size, cy * size, size - 1, size - 1);
 
-          // Overlay depth (top-left, blue) and difficulty (bottom-right, red)
-          // only for inner cells (not border padding) and only when data exists.
-          if (size >= 10 && cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1 && stepDepths && cell !== 0) {
+          // Overlay depth (top-left) and difficulty (bottom-right)
+          // for all inner cells, including UNTOUCHED (shown dimmed to reveal dormant values).
+          if (size >= 10 && cx > 0 && cy > 0 && cx < pw - 1 && cy < ph - 1 && stepDepths) {
             const ix = cx - 1, iy = cy - 1;
             const fi = iy * _levelW + ix;
             const d  = stepDepths[fi];
@@ -360,10 +395,11 @@
             ctx.font = `700 ${fontSize}px system-ui, sans-serif`;
 
             if (d !== undefined && d >= 0) {
-              ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#3a6fd8';
+              // Untouched cells: orange so dormant fallback-depth values are visually distinct
+              ctx.fillStyle = cell === 0 ? 'rgba(220,120,0,0.75)' : cell === 3 ? 'rgba(255,255,255,0.25)' : '#3a6fd8';
               ctx.fillText(d, cx * size + 2, cy * size + fontSize + 1);
             }
-            if (df !== undefined && df >= 0) {
+            if (cell !== 0 && df !== undefined && df >= 0) {
               ctx.fillStyle = cell === 3 ? 'rgba(255,255,255,0.25)' : '#c04020';
               const txt = df % 1 === 0 ? df : df.toFixed(1);
               const tw  = ctx.measureText(txt).width;
@@ -503,11 +539,18 @@
       }
 
       // Filter universes: isolate mode takes priority, then path-only mode.
-      const displayUniverses = _isolatedUniverseKeys
+      let displayUniverses = _isolatedUniverseKeys
         ? activeUniverses.filter(({ key }) => _isolatedUniverseKeys.has(key))
         : (_pathOnlyMode && _pathWorldStates && _pathWorldStates.size > 0)
           ? activeUniverses.filter(({ u }) => _pathWorldStates.has(u))
           : activeUniverses;
+
+      // Zoom mode: narrow to a single universe so it fills the canvas.
+      if (_zoomedUniverseKey !== null) {
+        const zi = displayUniverses.find(d => d.key === _zoomedUniverseKey);
+        if (zi) displayUniverses = [zi];
+        else _zoomedUniverseKey = null; // stale key — fall back to multi-grid
+      }
 
       const universeCount = displayUniverses.length || 1;
       const cols          = Math.min(8, universeCount);
@@ -524,6 +567,7 @@
       const uW     = Math.min(maxUWW, maxUWH);
       const gridPixW = pw * uW;
       const gridPixH = ph * uW;
+      _universeLayout = { cols, gridPixW, gridPixH, GAP, LABEL_H, keys: displayUniverses.map(d => d.key) };
 
       canvas.width  = cols * (gridPixW + GAP) + GAP;
       canvas.height = rows * (gridPixH + LABEL_H + GAP) + GAP;

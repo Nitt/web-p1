@@ -136,6 +136,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   let   hasTeleporter    = false;
   const buckets          = [[]];  // buckets[g] = explore entries at gear cost g
   let   currentGearCount = 0;
+  let   currentProcessingFrom = null; // { x, y, dir } of the active bucket item (for debug steps)
   // Active-universe state — updated whenever a branch is dequeued.
   let currentBranchActivated = [];
   let currentActivatedSet    = new Set();
@@ -345,7 +346,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     const togglesNow = cells.reduce((n, c) => n + (c === G.CRUMBLE || c === G.KEY ? 1 : 0), 0);
     const { depths: stepDepths, universeDepths: stepUniverseDepths } =
       togglesNow <= 7 ? _computeStepDepths() : { depths: null, universeDepths: null };
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, depths: stepDepths, universeDepths: stepUniverseDepths });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, gearCount: currentGearCount, processingFrom: currentProcessingFrom, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, depths: stepDepths, universeDepths: stepUniverseDepths });
   }
 
   // Find a valid teleporter exit: an already-carved G.EMPTY cell far enough from (entryPX,entryPY),
@@ -399,7 +400,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     return ok(cells[idx(nnx, nny)]) && ok(cells[idx(nnnx, nnny)]);
   }
 
-  function carveUntouched(dirIdx, x, y, nx, ny, ni, dir) {
+  function carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx = dirIdx) {
     const type = pickType();
     if (type === 'empty') {
       carveEmpty(dirIdx, x, y, nx, ny, ni);
@@ -416,7 +417,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     } else if (type === 'block') {
       cells[ni] = G.BLOCK;
       rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
-      enqueue(x, y, dirIdx);
+      enqueue(x, y, arrivalDirIdx);
     } else if (type === 'crumble') {
       if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni); return; }
       togglesPlaced++;
@@ -425,7 +426,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
       // Bumping a crumble immediately activates it, so there is no game state
       // where the player is at (x,y) with the crumble still intact.
-      enqueueActivated(ni, x, y, dirIdx);
+      enqueueActivated(ni, x, y, arrivalDirIdx);
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door && togglesPlaced < maxUniverseBits) {
@@ -477,7 +478,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   // Carving — slide physics respected: same-direction recursion continues through
   // empty/oneway cells (one slide = one logical step).
-  function carve(dirIdx, x, y) {
+  function carve(dirIdx, x, y, arrivalDirIdx = dirIdx) {
     const i = idx(x, y);
     if (hasVisited(i, dirIdx)) return;
     markVisited(i, dirIdx);
@@ -489,7 +490,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     const cell = cells[ni];
 
     switch (cell) {
-      case G.UNTOUCHED: carveUntouched(dirIdx, x, y, nx, ny, ni, dir); break;
+      case G.UNTOUCHED: carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx); break;
       case G.EMPTY:
         rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
         if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
@@ -500,12 +501,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          enqueueActivated(ni, x, y, dirIdx);
+          enqueueActivated(ni, x, y, arrivalDirIdx);
         }
         break;
       case G.BLOCK:
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
-        enqueue(x, y, dirIdx);
+        enqueue(x, y, arrivalDirIdx);
         break;
       case G.STICKY:
         rec(x, y, nx, ny, `stopped-sticky (${nx-1},${ny-1})`);
@@ -518,7 +519,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
-          enqueue(x, y, dirIdx);
+          enqueue(x, y, arrivalDirIdx);
         }
         break;
       }
@@ -538,7 +539,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
-          enqueue(x, y, dirIdx);
+          enqueue(x, y, arrivalDirIdx);
         }
         break;
       }
@@ -566,8 +567,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   for (let g = 0; g < buckets.length; g++) {
     const bucket = buckets[g];
     for (let head = 0; head < bucket.length; head++) {
-      const { x, y, exploreDir, activated } = bucket[head];
+      const { x, y, arrivalDir, exploreDir, activated } = bucket[head];
       currentGearCount       = g;
+      currentProcessingFrom  = { x: x - 1, y: y - 1, dir: DIRS[exploreDir].key };
       currentBranchActivated = activated ?? [];
       currentActivatedSet    = new Set(currentBranchActivated);
       currentUniverseKey     = currentBranchActivated.join(',');
@@ -577,7 +579,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       currentVD = universeVDs.get(currentUniverseKey);
       const pending = buckets.reduce((n, b) => n + b.length, 0) - head - 1;
       rec(x, y, -1, -1, `▶ processing (${x-1},${y-1}) dir=${DIRS[exploreDir].key} g=${g}  pending: ${pending}`);
-      carve(exploreDir, x, y);
+      carve(exploreDir, x, y, arrivalDir);
     }
   }
 
