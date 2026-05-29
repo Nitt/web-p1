@@ -509,6 +509,13 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   // ── Main generation loop ──
+  // The entry cell (startY, unpadded y=0) is always traversed for free on entry
+  // but is never the start of a carve() call, so rec() only records it if the BFS
+  // later slides UP through it.  A one-way in the entry column can block that, leaving
+  // diffDepthArr=-1 and causing goal selection's default fallback to place the goal there.
+  // Seed it explicitly at g=0/diff=0 so it's always a valid (but lowest-priority) candidate.
+  gearDepthArr[(startY - 1) * width + (startX - 1)] = 0;
+  diffDepthArr[(startY - 1) * width + (startX - 1)] = 0;
   // Begin carving from the second tunnel cell (startY+1), one row below the
   // boat entry.  This ensures the entry cell (startY) is never enqueued as a
   // BFS source and so is never explored laterally — matching the player physics
