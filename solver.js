@@ -12,19 +12,38 @@ const DIRS4 = [
 const OPPOSITE_DI = [1, 0, 3, 2]; // RIGHT↔LEFT, DOWN↔UP
 
 
+// Returns true if the immediately adjacent cell in direction di is an intact CRUMBLE.
+// Crumble bounces cost 0 gears (no movement), so they share b=0 priority with straights.
+function adjacentCrumble(x, y, di, cells, width, height, toggleMap, ws) {
+  const nx = x + DIRS4[di].dx;
+  const ny = y + DIRS4[di].dy;
+  if (nx < 0 || nx >= width || ny < 0 || ny >= height) return false;
+  if (cells[ny * width + nx] !== 7 /* CellType.CRUMBLE */) return false;
+  const tIdx = toggleMap.get(ny * width + nx);
+  return tIdx !== undefined && !(ws & (1 << tIdx));
+}
+
+
 /**
  * Find the optimal move sequence from the given game state to level.goal.
  *
  * Optimality: minimum gears (bends).
  *
- * State key: (x, y, prevDirIndex, worldState) — gear cost is NOT part of
- * the key so Dijkstra pruning works correctly.
+ * State key: (x, y, incomingDir, worldState) — gear cost is NOT part of the
+ * key so Dijkstra pruning works correctly.
  *
- * Reversals are skipped: the game stops the player at gear waypoints during
+ * Each state spawns one heap entry per valid outgoing direction (up to 3),
+ * so the heap always has all pending moves pre-priced.  Priority = g*2 + b,
+ * where b=0 for straight continuations and crumble bounces (free), b=1 for
+ * real bends.  This guarantees free interactions are explored before any
+ * gear-costing move at the same gear level.
+ *
+ * Gear is charged only on actual movement: crumble bounces (no movement)
+ * never consume a gear even if the direction is a bend.
+ *
+ * Reversals are skipped — the game stops the player at gear waypoints during
  * a reversal, not at natural walls, so we cannot accurately model reversal
- * landings.  Virtual one-way landings (slide forward to wall, reverse to the
- * cell just past the last one-way) are synthesised without exploring actual
- * reversal moves.
+ * landings.  Virtual one-way landings are synthesised instead.
  *
  * @param {object} level        - level object (cells, width, height, goal, …)
  * @param {object} startPos     - {x, y} — current player position (may be boat y=-1)
@@ -34,22 +53,29 @@ const OPPOSITE_DI = [1, 0, 3, 2]; // RIGHT↔LEFT, DOWN↔UP
  * @returns {{ moves: {dx,dy}[], gearsUsed: number } | null}
  */
 export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
-  const { cells, width, height, goal, doorRequirements = null, teleporterMap = null } = level;
+  const { cells, width, height, goal } = level;
   const toggleMap = buildToggleMap(cells);
 
-  // State key does NOT include gear cost — proper Dijkstra pruning.
+  if (startPos.x === goal.x && startPos.y === goal.y) {
+    return { moves: [], gearsUsed: 0 };
+  }
+
   const stateKey = (x, y, di, ws) => `${x},${y},${di},${ws}`;
 
   const heap   = [];
   const best   = new Map(); // stateKey → minimum gears seen at this state
   const parent = new Map(); // stateKey → { fromKey, di, virtualLanding? } | null
 
+  // Priority: g*2 + b.  Within the same expected-cost bucket, free interactions (b=0)
+  // are explored before real bends (b=1).
+  const pri = e => e.g * 2 + e.b;
+
   function heapPush(e) {
     heap.push(e);
     let i = heap.length - 1;
     while (i > 0) {
       const p = (i - 1) >> 1;
-      if (heap[p].g <= heap[i].g) break;
+      if (pri(heap[p]) <= pri(heap[i])) break;
       [heap[p], heap[i]] = [heap[i], heap[p]];
       i = p;
     }
@@ -62,8 +88,8 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
       let i = 0;
       while (true) {
         let s = i, l = 2*i+1, r = 2*i+2;
-        if (l < heap.length && heap[l].g < heap[s].g) s = l;
-        if (r < heap.length && heap[r].g < heap[s].g) s = r;
+        if (l < heap.length && pri(heap[l]) < pri(heap[s])) s = l;
+        if (r < heap.length && pri(heap[r]) < pri(heap[s])) s = r;
         if (s === i) break;
         [heap[i], heap[s]] = [heap[s], heap[i]];
         i = s;
@@ -72,110 +98,108 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
     return top;
   }
 
+  // Push one heap entry per valid outgoing direction from (x,y) in worldState ws.
+  // incoming = direction of the last actual slide (or prevDi at start).
+  // Bend directions that lead to an adjacent intact crumble get b=0 (free bounce).
+  function pushOutgoing(x, y, incoming, ws, g, key) {
+    for (let d = 0; d < 4; d++) {
+      if (incoming < 4 && d === OPPOSITE_DI[incoming]) continue; // reversal
+      if (y < 0 && DIRS4[d].dy !== 1) continue;                  // boat: only DOWN
+      const isBend = incoming < 4 && d !== incoming;
+      const b = (isBend && !adjacentCrumble(x, y, d, cells, width, height, toggleMap, ws)) ? 1 : 0;
+      heapPush({ x, y, di: incoming, outgoing: d, ws, g, b, key });
+    }
+  }
+
   const startKey = stateKey(startPos.x, startPos.y, prevDi, worldState);
   best.set(startKey, 0);
   parent.set(startKey, null);
-  heapPush({ x: startPos.x, y: startPos.y, di: prevDi, ws: worldState, g: 0, key: startKey });
+  pushOutgoing(startPos.x, startPos.y, prevDi, worldState, 0, startKey);
 
   let goalKey = null;
+  let finalDi  = -1;
+  let finalG   = 0;
 
   while (heap.length > 0) {
-    const { x, y, di, ws, g, key } = heapPop();
+    const { x, y, di: incoming, outgoing, ws, g, b, key } = heapPop();
 
-    // Lazy-deletion staleness check: a cheaper path to this state was already found.
+    // Lazy-deletion staleness check.
     if ((best.get(key) ?? Infinity) < g) continue;
 
-    // Break on pop — guarantees optimality. All cheaper states are already processed.
-    if (x === goal.x && y === goal.y) { goalKey = key; break; }
+    const { dx, dy } = DIRS4[outgoing];
+    if (y < 0 && dy !== 1) continue; // boat safety
 
-    for (let i = 0; i < DIRS4.length; i++) {
-      const { dx, dy } = DIRS4[i];
+    const result = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws);
+    const moved  = result.x !== x || result.y !== y;
 
-      // From the boat: only allow sliding down into the grid.
-      if (y < 0 && dy !== 1) continue;
-
-      // Skip reversals: we cannot accurately predict where the player stops
-      // (game stops at gear waypoints, not at natural walls).
-      const isReversal = di < 4 && dx === -DIRS4[di].dx && dy === -DIRS4[di].dy;
-      if (isReversal) continue;
-
-      // Gear cost: each direction change (bend) from a known prior direction costs 1.
-      const isBend = di < 4 && i !== di;
-      const newG   = g + (isBend ? 1 : 0);
-
-      const result = slidePlayer(level, { x, y }, dx, dy, toggleMap, ws);
-
-      const moved = result.x !== x || result.y !== y;
-
-      // ── No-movement crumble bounce ──────────────────────────────────────────
-      // Player tried direction i, hit an intact crumble immediately — no movement.
-      // Crumble always activates on contact.  No gear is charged (no movement).
-      // prevDir does NOT update: the game's pending-cog pop in _onPlayerLanded
-      // restores prevDir to the pre-bounce direction (di), so gear costs for the
-      // next move must be computed against di, not the bounce direction i.
-      if (!moved && result.crumble) {
-        const crumbleWS = ws | (1 << result.crumble.toggleIdx);
-        const nk = stateKey(x, y, di, crumbleWS);
-        if ((best.get(nk) ?? Infinity) > g) {
-          best.set(nk, g);
-          parent.set(nk, { fromKey: key, di: i });
-          heapPush({ x, y, di, ws: crumbleWS, g, key: nk });
-        }
-        continue;
+    // ── Crumble bounce: no movement, new universe ─────────────────────────────
+    // No gear is charged.  prevDir is restored to incoming by the game, so gear
+    // costs for subsequent moves continue to be computed against incoming.
+    if (!moved && result.crumble) {
+      const crumbleWS = ws | (1 << result.crumble.toggleIdx);
+      const nk = stateKey(x, y, incoming, crumbleWS);
+      if ((best.get(nk) ?? Infinity) > g) {
+        best.set(nk, g);
+        parent.set(nk, { fromKey: key, di: outgoing });
+        pushOutgoing(x, y, incoming, crumbleWS, g, nk);
       }
+      continue;
+    }
 
-      // No movement and no crumble → wall immediately adjacent; skip.
-      if (!moved) continue;
+    if (!moved) continue;
 
-      // ── Player moved ────────────────────────────────────────────────────────
-      if (newG > gearsLeft) continue;
+    // ── Player moved ──────────────────────────────────────────────────────────
+    // Gear is charged here (b=1 → bend → costs 1 gear; b=0 → free).
+    const actualG = g + b;
+    if (actualG > gearsLeft) continue;
 
-      const lx = result.x, ly = result.y;
+    const lx = result.x, ly = result.y;
 
-      // Build new world state: key collected (if any) + crumble activated (if any).
-      // Crumble always activates when the player stops adjacent to it.
-      const keyWS  = result.keyCollected
-        ? ws | (1 << result.keyCollected.toggleIdx)
-        : ws;
-      const finalWS = result.crumble
-        ? keyWS | (1 << result.crumble.toggleIdx)
-        : keyWS;
+    const keyWS  = result.keyCollected
+      ? ws | (1 << result.keyCollected.toggleIdx)
+      : ws;
+    const finalWS = result.crumble
+      ? keyWS | (1 << result.crumble.toggleIdx)
+      : keyWS;
 
-      // ── Forward landing ─────────────────────────────────────────────────────
-      const nk = stateKey(lx, ly, i, finalWS);
-      if ((best.get(nk) ?? Infinity) > newG) {
-        best.set(nk, newG);
-        parent.set(nk, { fromKey: key, di: i });
-        heapPush({ x: lx, y: ly, di: i, ws: finalWS, g: newG, key: nk });
-      }
+    // ── Goal ──────────────────────────────────────────────────────────────────
+    if (lx === goal.x && ly === goal.y) {
+      goalKey = key;
+      finalDi = outgoing;
+      finalG  = actualG;
+      break;
+    }
 
-      // ── Virtual one-way landing ─────────────────────────────────────────────
-      // The cell just after the last traversable one-way in the slide can be
-      // reached by: slide forward to the wall, then reverse (free — no gear
-      // because it's the same direction index, just opposite).  The reverse
-      // stops at the exit-adjacent cell blocked by the one-way.
-      //
-      // World state for virtual landing uses ws (not finalWS) because the key
-      // and crumble at the actual landing haven't been reached yet.
-      const vPos = result.virtualLanding;
-      if (vPos) {
-        const vNk = stateKey(vPos.x, vPos.y, i, ws);
-        if ((best.get(vNk) ?? Infinity) > newG) {
-          best.set(vNk, newG);
-          parent.set(vNk, { fromKey: key, di: i, virtualLanding: true });
-          heapPush({ x: vPos.x, y: vPos.y, di: i, ws, g: newG, key: vNk });
-        }
+    // ── Forward landing ───────────────────────────────────────────────────────
+    const nk = stateKey(lx, ly, outgoing, finalWS);
+    if ((best.get(nk) ?? Infinity) > actualG) {
+      best.set(nk, actualG);
+      parent.set(nk, { fromKey: key, di: outgoing });
+      pushOutgoing(lx, ly, outgoing, finalWS, actualG, nk);
+    }
+
+    // ── Virtual one-way landing ───────────────────────────────────────────────
+    // The cell just after the last traversable one-way in the slide can be
+    // reached by: slide forward to the wall, then reverse.  Uses ws (not
+    // finalWS) because the key/crumble at the actual landing haven't fired.
+    const vPos = result.virtualLanding;
+    if (vPos) {
+      const vNk = stateKey(vPos.x, vPos.y, outgoing, ws);
+      if ((best.get(vNk) ?? Infinity) > actualG) {
+        best.set(vNk, actualG);
+        parent.set(vNk, { fromKey: key, di: outgoing, virtualLanding: true });
+        pushOutgoing(vPos.x, vPos.y, outgoing, ws, actualG, vNk);
       }
     }
   }
 
   if (goalKey === null) return null;
 
-  // ── Reconstruct move sequence by walking parent pointers ───────────────────
-  // Virtual landings expand to two moves: the forward slide + a reverse that
-  // stops at the exit-adjacent cell.  We walk backwards, so we push the reverse
-  // first, then the forward — after reversing the array the order is correct.
-  const diSeq = [];
+  // ── Reconstruct move sequence ─────────────────────────────────────────────
+  // goalKey is the state we were processing when the goal was reached.
+  // finalDi is the outgoing direction of that last slide.
+  // Walk parent pointers backward, then reverse.
+  const diSeq = [finalDi];
   let cur = goalKey;
   while (true) {
     const entry = parent.get(cur);
@@ -187,5 +211,5 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
   diSeq.reverse();
 
   const moves = diSeq.map(d => ({ dx: DIRS4[d].dx, dy: DIRS4[d].dy }));
-  return { moves, gearsUsed: best.get(goalKey) };
+  return { moves, gearsUsed: finalG };
 }

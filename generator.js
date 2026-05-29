@@ -134,8 +134,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const paddedTeleporterMap = new Map(); // padded flat idx ↔ padded flat idx
   const sealedPaddedIdxs  = new Set();  // cells converted UNTOUCHED→EMPTY by sealTeleporterNeighbors
   let   hasTeleporter    = false;
-  const branchPosSet     = new Set();   // dedup key: `${universeKey}|${x},${y}`
-  const branchQueue      = [];
+  const buckets          = [[]];  // buckets[g] = explore entries at gear cost g
+  let   currentGearCount = 0;
   // Active-universe state — updated whenever a branch is dequeued.
   let currentBranchActivated = [];
   let currentActivatedSet    = new Set();
@@ -151,23 +151,41 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   function markVisited(i, dirIdx) {
     currentVD.set(i, (currentVD.get(i) ?? 0) | (1 << dirIdx));
   }
-  function enqueue(x, y) {
-    const key = `${currentUniverseKey}|${x},${y}`;
-    if (!branchPosSet.has(key)) {
-      branchPosSet.add(key);
-      branchQueue.push({ x, y, activated: currentBranchActivated.slice() });
+  // For each of the 4 directions from (x, y), compute the gear cost and push
+  // an explore entry into the appropriate bucket:
+  //   0 gears — straight continuation or reversal
+  //   0 gears — 90° bend that immediately hits an unactivated crumble
+  //             (player doesn't move → no gear placed)
+  //   1 gear  — any other 90° bend
+  function enqueueExplores(x, y, arrivalDir, activated) {
+    const activatedSet = new Set(activated);
+    const aDir = DIRS[arrivalDir];
+    for (let E = 0; E < 4; E++) {
+      const eDir       = DIRS[E];
+      const isStraight = E === arrivalDir;
+      const isReversal = eDir.dx === -aDir.dx && eDir.dy === -aDir.dy;
+      let   isFree     = isStraight || isReversal;
+      if (!isFree) {
+        // Peek: a 90° bend that bounces off an adjacent unactivated crumble
+        // costs 0 gears because the player never actually moves.
+        const peekNi = idx(x + eDir.dx, y + eDir.dy);
+        isFree = cells[peekNi] === G.CRUMBLE && !activatedSet.has(peekNi);
+      }
+      const g = currentGearCount + (isFree ? 0 : 1);
+      while (buckets.length <= g) buckets.push([]);
+      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated });
     }
   }
 
-  // Push a branch for (queueX, queueY) in the universe where toggleCellIdx is activated.
-  // Deduplicates by (universe, position) so the same branch is never enqueued twice.
-  function enqueueActivated(toggleCellIdx, queueX, queueY) {
+  function enqueue(x, y, arrivalDir) {
+    enqueueExplores(x, y, arrivalDir, currentBranchActivated);
+  }
+
+  // Push explores for (queueX, queueY) in the universe where toggleCellIdx is activated.
+  // The crumble/key activation itself costs 0 gears (currentGearCount unchanged).
+  function enqueueActivated(toggleCellIdx, queueX, queueY, arrivalDir) {
     const activated = [...currentBranchActivated, toggleCellIdx].sort((a, b) => a - b);
-    const bpk = `${activated.join(',')}|${queueX},${queueY}`;
-    if (!branchPosSet.has(bpk)) {
-      branchPosSet.add(bpk);
-      branchQueue.push({ x: queueX, y: queueY, activated });
-    }
+    enqueueExplores(queueX, queueY, arrivalDir, activated);
   }
 
   // Convert cell ni to EMPTY and continue carving in dirIdx from (nx, ny).
@@ -302,21 +320,23 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     // Also surface universes that are queued but not yet dequeued — universeVDs
     // only gets an entry on dequeue, so without this new panels wouldn't appear
     // until the branch is actually processed.
-    for (const item of branchQueue) {
-      const uKey = (item.activated ?? []).join(',');
-      if (!allUniverseVDs.has(uKey)) {
-        allUniverseVDs.set(uKey, item.initialVD ? new Map(item.initialVD) : new Map());
+    for (const bucket of buckets) {
+      for (const item of bucket) {
+        const uKey = (item.activated ?? []).join(',');
+        if (!allUniverseVDs.has(uKey)) {
+          allUniverseVDs.set(uKey, new Map());
+        }
       }
     }
     // Snapshot the frontier grouped by universe key.
-    // doorFrontier = blue dots: cells re-queued because a wall became a door.
     const frontier     = new Map();
     const doorFrontier = new Map();
-    for (const item of branchQueue) {
-      const uKey = (item.activated ?? []).join(',');
-      const target = item.isDoorRequeue ? doorFrontier : frontier;
-      if (!target.has(uKey)) target.set(uKey, new Set());
-      target.get(uKey).add(item.y * pw + item.x);
+    for (const bucket of buckets) {
+      for (const item of bucket) {
+        const uKey = (item.activated ?? []).join(',');
+        if (!frontier.has(uKey)) frontier.set(uKey, new Set());
+        frontier.get(uKey).add(item.y * pw + item.x);
+      }
     }
     // Compute gear depths on the partial grid at this step so the slider shows
     // depths as they are now, not the final result.
@@ -396,7 +416,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     } else if (type === 'block') {
       cells[ni] = G.BLOCK;
       rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
-      enqueue(x, y);
+      enqueue(x, y, dirIdx);
     } else if (type === 'crumble') {
       if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni); return; }
       togglesPlaced++;
@@ -405,7 +425,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
       // Bumping a crumble immediately activates it, so there is no game state
       // where the player is at (x,y) with the crumble still intact.
-      enqueueActivated(ni, x, y);
+      enqueueActivated(ni, x, y, dirIdx);
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door && togglesPlaced < maxUniverseBits) {
@@ -420,7 +440,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         // starts clean — no inherited visited-dirs from before the key was collected.
         // The carver will reach the door naturally from the key side and slide through
         // (door is open), so no extra far-side seeding is needed.
-        enqueueActivated(ni, nx, ny);
+        enqueueActivated(ni, nx, ny, dirIdx);
       } else {
         carveEmpty(dirIdx, x, y, nx, ny, ni);
       }
@@ -451,7 +471,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     } else {
       cells[ni] = G.STICKY;
       rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
-      enqueue(nx, ny);
+      enqueue(nx, ny, dirIdx);
     }
   }
 
@@ -480,16 +500,16 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          enqueueActivated(ni, x, y);
+          enqueueActivated(ni, x, y, dirIdx);
         }
         break;
       case G.BLOCK:
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
-        enqueue(x, y);
+        enqueue(x, y, dirIdx);
         break;
       case G.STICKY:
         rec(x, y, nx, ny, `stopped-sticky (${nx-1},${ny-1})`);
-        enqueue(nx, ny);
+        enqueue(nx, ny, dirIdx);
         break;
       case G.ONEWAY: {
         const allowedDir = onewayDir.get(ni);
@@ -498,7 +518,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
-          enqueue(x, y);
+          enqueue(x, y, dirIdx);
         }
         break;
       }
@@ -508,7 +528,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-          enqueueActivated(ni, nx, ny);
+          enqueueActivated(ni, nx, ny, dirIdx);
         }
         break;
       case G.DOOR: {
@@ -518,7 +538,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
         } else {
           rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
-          enqueue(x, y);
+          enqueue(x, y, dirIdx);
         }
         break;
       }
@@ -540,24 +560,24 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // BFS source and so is never explored laterally — matching the player physics
   // where the first slide always passes through the entry cell.
   carve(3 /* DOWN */, startX, startY + 1);
-  while (branchQueue.length > 0) {
-    const { x, y, resumeDir, activated, initialVD } = branchQueue.shift();
-    currentBranchActivated = activated ?? [];
-    currentActivatedSet    = new Set(currentBranchActivated);
-    currentUniverseKey     = currentBranchActivated.join(',');
-    if (!universeVDs.has(currentUniverseKey)) {
-      universeVDs.set(currentUniverseKey, initialVD ? new Map(initialVD) : new Map());
-    }
-    currentVD = universeVDs.get(currentUniverseKey);
-    if (resumeDir !== undefined) {
-      // Parallel universe branch: un-mark the direction in THIS universe's VD
-      // so carve can slide through the now-passable cell.
-      const ci = idx(x, y);
-      currentVD.set(ci, (currentVD.get(ci) ?? 0) & ~(1 << resumeDir));
-      carve(resumeDir, x, y);
-    } else {
-      rec(x, y, -1, -1, `▶ processing (${x-1},${y-1})  queue: ${branchQueue.length} remaining`);
-      for (let i = 0; i < DIRS.length; i++) carve(i, x, y);
+  // Process explore entries in gear-cost order: bucket[0] (free moves) before
+  // bucket[1] (1-gear bends), etc.  Entries added to the current bucket during
+  // processing are picked up immediately (bucket.length checked dynamically).
+  for (let g = 0; g < buckets.length; g++) {
+    const bucket = buckets[g];
+    for (let head = 0; head < bucket.length; head++) {
+      const { x, y, exploreDir, activated } = bucket[head];
+      currentGearCount       = g;
+      currentBranchActivated = activated ?? [];
+      currentActivatedSet    = new Set(currentBranchActivated);
+      currentUniverseKey     = currentBranchActivated.join(',');
+      if (!universeVDs.has(currentUniverseKey)) {
+        universeVDs.set(currentUniverseKey, new Map());
+      }
+      currentVD = universeVDs.get(currentUniverseKey);
+      const pending = buckets.reduce((n, b) => n + b.length, 0) - head - 1;
+      rec(x, y, -1, -1, `▶ processing (${x-1},${y-1}) dir=${DIRS[exploreDir].key} g=${g}  pending: ${pending}`);
+      carve(exploreDir, x, y);
     }
   }
 
