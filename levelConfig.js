@@ -89,7 +89,7 @@ export const PROGRESSION = [
   {
     // ── everything ── full chaos, key/door cycles
     levels:           Infinity,
-    weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
+    weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.0, empty: 1.0 },
     keyDoor:          false,
     useTeleporter:    false,
     difficultyTarget: null,   // pick hardest

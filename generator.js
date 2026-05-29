@@ -1,5 +1,4 @@
 import { makeRng } from './random.js';
-import { slidePlayer, buildToggleMap } from './puzzle.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
 const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7, TELEPORTER: 8 };
@@ -18,24 +17,19 @@ const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, key: 0
 // Order: LEFT(0)→3, UP(1)→5, RIGHT(2)→4, DOWN(3)→6
 const ONEWAY_OUT = [3, 5, 4, 6];
 
-// The four orthogonal directions — shared across _slidePath, _computeCosts, etc.
-const DIRS4 = [{ dx: -1, dy: 0 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }, { dx: 0, dy: 1 }];
-
-// Cognitive cost weights assigned per move interaction type.
-// Accumulated in _computeCosts to score and rank goal candidates.
-const DIFFICULTY_WEIGHTS = {
-  BASE_MOVE:        1.0,   // flat cost for any non-trivial slide
-  SLIDE_LENGTH:     0.15,  // per cell traveled
-  STICKY:           0.5,   // landing on a sticky cell
-  ONEWAY_TRAVERSE:  1.0,   // passing through a one-way in the allowed direction
-  ONEWAY_BLOCKED:   2.5,   // stopped by a one-way from the wrong direction
-  CRUMBLE:          1.5,   // stopped against an intact crumble
-  CRUMBLE_TRAVERSE: 3.0,   // sliding through an already-broken crumble
-  KEY:              2.5,   // collecting a key
-  DOOR_TRAVERSE:    1.0,   // passing through an open door
-  DOOR_LOCKED:      3.5,   // stopped by a locked door
-  TELEPORT:         2.0,   // teleporting
+// Incremental difficulty contributions per interaction type (accumulated during carving).
+const DIFF = {
+  STICKY:           0.5,
+  ONEWAY_TRAVERSE:  1.0,
+  ONEWAY_BLOCKED:   2.5,
+  CRUMBLE:          1.5,
+  CRUMBLE_TRAVERSE: 3.0,
+  KEY:              2.5,
+  DOOR_TRAVERSE:    1.0,
+  DOOR_LOCKED:      3.5,
+  TELEPORT:         2.0,
 };
+
 
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -137,6 +131,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const buckets          = [[]];  // buckets[g] = explore entries at gear cost g
   let   currentGearCount = 0;
   let   currentProcessingFrom = null; // { x, y, dir } of the active bucket item (for debug steps)
+  let   currentBranchDiff = 0;        // accumulated difficulty of the current carve path (set before rec())
+  const gearDepthArr = new Int16Array(width * height).fill(-1);    // min g when each cell was first carved
+  const diffDepthArr = new Float32Array(width * height).fill(-1);  // accumulated difficulty at min-gear path
   // Active-universe state — updated whenever a branch is dequeued.
   let currentBranchActivated = [];
   let currentActivatedSet    = new Set();
@@ -158,7 +155,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   //   0 gears — 90° bend that immediately hits an unactivated crumble
   //             (player doesn't move → no gear placed)
   //   1 gear  — any other 90° bend
-  function enqueueExplores(x, y, arrivalDir, activated) {
+  function enqueueExplores(x, y, arrivalDir, activated, accDiff = 0) {
     const activatedSet = new Set(activated);
     const aDir = DIRS[arrivalDir];
     for (let E = 0; E < 4; E++) {
@@ -174,27 +171,28 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       }
       const g = currentGearCount + (isFree ? 0 : 1);
       while (buckets.length <= g) buckets.push([]);
-      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated });
+      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff });
     }
   }
 
-  function enqueue(x, y, arrivalDir) {
-    enqueueExplores(x, y, arrivalDir, currentBranchActivated);
+  function enqueue(x, y, arrivalDir, accDiff = 0) {
+    enqueueExplores(x, y, arrivalDir, currentBranchActivated, accDiff);
   }
 
   // Push explores for (queueX, queueY) in the universe where toggleCellIdx is activated.
   // The crumble/key activation itself costs 0 gears (currentGearCount unchanged).
-  function enqueueActivated(toggleCellIdx, queueX, queueY, arrivalDir) {
+  function enqueueActivated(toggleCellIdx, queueX, queueY, arrivalDir, accDiff = 0) {
     const activated = [...currentBranchActivated, toggleCellIdx].sort((a, b) => a - b);
-    enqueueExplores(queueX, queueY, arrivalDir, activated);
+    enqueueExplores(queueX, queueY, arrivalDir, activated, accDiff);
   }
 
   // Convert cell ni to EMPTY and continue carving in dirIdx from (nx, ny).
   // Used as the fallback when a randomly-chosen type can't be placed.
-  function carveEmpty(dirIdx, x, y, nx, ny, ni) {
+  function carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff = 0) {
     cells[ni] = G.EMPTY;
+    currentBranchDiff = accDiff;
     rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
-    carve(dirIdx, nx, ny);
+    carve(dirIdx, nx, ny, dirIdx, accDiff);
   }
 
   // Tracks key→door linkages placed during carving, used to build doorRequirements after output conversion.
@@ -243,75 +241,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   // ── Step recorder (no-op when _steps is null) ──
 
-  // Converts the current partial padded grid to outCells format and runs _computeCosts
-  // so each step snapshot carries its own depth data instead of always showing the final result.
-  function _computeStepDepths() {
-    const stepOutCells = new Uint8Array(width * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const pi   = idx(x + 1, y + 1);
-        const cell = cells[pi];
-        let out;
-        switch (cell) {
-          case G.EMPTY:      out = 0;  break;
-          case G.STICKY:     out = 2;  break;
-          case G.ONEWAY: {
-            const dk = onewayDir.get(pi);
-            out = dk !== undefined ? ONEWAY_OUT[dk] : 0;
-            break;
-          }
-          case G.CRUMBLE:    out = 7;  break;
-          case G.KEY:        out = 8;  break;
-          case G.DOOR:       out = 9;  break;
-          case G.BLOCK:      out = 1;  break;
-          case G.TELEPORTER: out = 10; break;
-          default:           out = 1;  break; // G.UNTOUCHED → wall so it blocks slides in partial grids
-        }
-        stepOutCells[y * width + x] = out;
-      }
-    }
-    // Build toggle index map to resolve key→door linkages.
-    const stepToggleMap = new Map();
-    let tIdx = 0;
-    for (let i = 0; i < stepOutCells.length; i++) {
-      if (stepOutCells[i] === 7 || stepOutCells[i] === 8) stepToggleMap.set(i, tIdx++);
-    }
-    // Build doorRequirements from key-door pairs carved so far.
-    const stepDoorReqs = new Map();
-    for (const { keyI, doorI } of keyDoorPairs) {
-      const kx = (keyI % pw) - 1, ky = Math.floor(keyI / pw) - 1;
-      const dx = (doorI % pw) - 1, dy = Math.floor(doorI / pw) - 1;
-      if (kx >= 0 && kx < width && ky >= 0 && ky < height && dx >= 0 && dx < width && dy >= 0 && dy < height) {
-        const ti = stepToggleMap.get(ky * width + kx);
-        if (ti !== undefined) stepDoorReqs.set(dy * width + dx, ti);
-      }
-    }
-    // Build teleporterMap from pairs placed so far.
-    let stepTeleporterMap = null;
-    if (paddedTeleporterMap.size > 0) {
-      stepTeleporterMap = new Map();
-      for (const [pni1, pni2] of paddedTeleporterMap) {
-        const ox1 = (pni1 % pw) - 1, oy1 = Math.floor(pni1 / pw) - 1;
-        const ox2 = (pni2 % pw) - 1, oy2 = Math.floor(pni2 / pw) - 1;
-        if (ox1 >= 0 && ox1 < width && oy1 >= 0 && oy1 < height && ox2 >= 0 && ox2 < width && oy2 >= 0 && oy2 < height) {
-          stepTeleporterMap.set(oy1 * width + ox1, oy2 * width + ox2);
-        }
-      }
-    }
-    // Carved mask: cells explicitly opened (not UNTOUCHED) and not sealed teleporter neighbours.
-    const stepCarvedMask = new Uint8Array(width * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const pi = idx(x + 1, y + 1);
-        if (cells[pi] !== G.UNTOUCHED && !sealedPaddedIdxs.has(pi)) stepCarvedMask[y * width + x] = 1;
-      }
-    }
-    const stepStart = { x: startX - 1, y: -1 };
-    const { depths, universeDepths } = _computeCosts(stepOutCells, width, height, stepStart, stepDoorReqs, stepTeleporterMap, stepCarvedMask);
-    return { depths, universeDepths };
-  }
+
 
   function rec(fromX, fromY, toX, toY, label) {
+    // Always record depth — needed for goal selection and overlay regardless of debug mode.
+    if (toX >= 1 && toX < pw - 1 && toY >= 1 && toY < ph - 1) {
+      const fi = (toY - 1) * width + (toX - 1);
+      if (gearDepthArr[fi] < 0 || currentGearCount < gearDepthArr[fi]) {
+        gearDepthArr[fi] = currentGearCount;
+        diffDepthArr[fi] = currentBranchDiff;
+      } else if (currentGearCount === gearDepthArr[fi] && currentBranchDiff < diffDepthArr[fi]) {
+        diffDepthArr[fi] = currentBranchDiff;
+      }
+    }
     if (!_steps) return;
     // Snapshot every universe's VD so the visualiser can show per-universe exploration.
     const allUniverseVDs = new Map();
@@ -339,14 +281,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         frontier.get(uKey).add(item.y * pw + item.x);
       }
     }
-    // Compute gear depths on the partial grid at this step so the slider shows
-    // depths as they are now, not the final result.
-    // Skip when toggle count is high — _computeCosts is O(2^N) per step and becomes
-    // unusably slow beyond ~7 crumbles/keys.
-    const togglesNow = cells.reduce((n, c) => n + (c === G.CRUMBLE || c === G.KEY ? 1 : 0), 0);
-    const { depths: stepDepths, universeDepths: stepUniverseDepths } =
-      togglesNow <= 7 ? _computeStepDepths() : { depths: null, universeDepths: null };
-    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, gearCount: currentGearCount, processingFrom: currentProcessingFrom, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, depths: stepDepths, universeDepths: stepUniverseDepths });
+    _steps.push({ grid: new Uint8Array(cells), onewayDir: new Map(onewayDir), allUniverseVDs, frontier, doorFrontier, currentUniverseKey, pw, ph, fromX, fromY, toX, toY, label, gearCount: currentGearCount, processingFrom: currentProcessingFrom, activated: currentBranchActivated.slice(), teleporterPairs: paddedTeleporterMap.size > 0 ? new Map(paddedTeleporterMap) : null, gearDepths: gearDepthArr.slice() });
   }
 
   // Find a valid teleporter exit: an already-carved G.EMPTY cell far enough from (entryPX,entryPY),
@@ -400,10 +335,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     return ok(cells[idx(nnx, nny)]) && ok(cells[idx(nnnx, nnny)]);
   }
 
-  function carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx = dirIdx) {
+  function carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx = dirIdx, accDiff = 0) {
     const type = pickType();
     if (type === 'empty') {
-      carveEmpty(dirIdx, x, y, nx, ny, ni);
+      carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
     } else if (type === 'oneway') {
       if (hasOnewayRoom(nx, ny, dir)) {
         cells[idx(nx + dir.dx, ny + dir.dy)] = G.EMPTY;
@@ -412,21 +347,24 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       } else {
         cells[ni] = G.EMPTY;
       }
+      currentBranchDiff = accDiff + DIFF.ONEWAY_TRAVERSE;
       rec(x, y, nx, ny, `oneway-${dir.key} (${nx-1},${ny-1})`);
-      carve(dirIdx, nx, ny);
+      carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.ONEWAY_TRAVERSE);
     } else if (type === 'block') {
       cells[ni] = G.BLOCK;
+      currentBranchDiff = accDiff;
       rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
-      enqueue(x, y, arrivalDirIdx);
+      enqueue(x, y, arrivalDirIdx, accDiff);
     } else if (type === 'crumble') {
-      if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni); return; }
+      if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff); return; }
       togglesPlaced++;
       cells[ni] = G.CRUMBLE;
+      currentBranchDiff = accDiff + DIFF.CRUMBLE;
       rec(x, y, nx, ny, `crumble (${nx-1},${ny-1})`);
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
       // Bumping a crumble immediately activates it, so there is no game state
       // where the player is at (x,y) with the crumble still intact.
-      enqueueActivated(ni, x, y, arrivalDirIdx);
+      enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE);
     } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
       const door = findDoorCandidate(ni);
       if (door && togglesPlaced < maxUniverseBits) {
@@ -435,15 +373,16 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         cells[door.ci] = G.DOOR;
         keyDoorPairs.push({ keyI: ni, doorI: door.ci });
         doorToKeyPaddedMap.set(door.ci, ni);
+        currentBranchDiff = accDiff + DIFF.KEY;
         rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
         // Queue the key cell in the key-activated universe with a fresh VD.
         // The player lands on the key and immediately collects it, so exploration
         // starts clean — no inherited visited-dirs from before the key was collected.
         // The carver will reach the door naturally from the key side and slide through
         // (door is open), so no extra far-side seeding is needed.
-        enqueueActivated(ni, nx, ny, dirIdx);
+        enqueueActivated(ni, nx, ny, dirIdx, accDiff + DIFF.KEY);
       } else {
-        carveEmpty(dirIdx, x, y, nx, ny, ni);
+        carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
       }
     } else if (type === 'teleporter') {
       if (useTeleporter && !hasTeleporter && hasOnlyOpenNeighbors(nx, ny)) {
@@ -457,28 +396,30 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           hasTeleporter = true;
           sealTeleporterNeighbors(nx, ny);
           sealTeleporterNeighbors(ex, ey);
+          currentBranchDiff = accDiff + DIFF.TELEPORT;
           rec(x, y, nx, ny, `teleporter (${nx-1},${ny-1}) ↔ (${ex-1},${ey-1})`);
           // Player slides through the entry and emerges at the exit.
           // Mark the entry as visited so it's not re-entered from this direction,
           // then continue carving from the exit in the same direction.
           markVisited(ni, dirIdx);
-          if (!hasVisited(exitNi, dirIdx)) carve(dirIdx, ex, ey);
+          if (!hasVisited(exitNi, dirIdx)) carve(dirIdx, ex, ey, dirIdx, accDiff + DIFF.TELEPORT);
         } else {
-          carveEmpty(dirIdx, x, y, nx, ny, ni);
+          carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
         }
       } else {
-        carveEmpty(dirIdx, x, y, nx, ny, ni);
+        carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
       }
     } else {
       cells[ni] = G.STICKY;
+      currentBranchDiff = accDiff + DIFF.STICKY;
       rec(x, y, nx, ny, `sticky (${nx-1},${ny-1})`);
-      enqueue(nx, ny, dirIdx);
+      enqueue(nx, ny, dirIdx, accDiff + DIFF.STICKY);
     }
   }
 
   // Carving — slide physics respected: same-direction recursion continues through
   // empty/oneway cells (one slide = one logical step).
-  function carve(dirIdx, x, y, arrivalDirIdx = dirIdx) {
+  function carve(dirIdx, x, y, arrivalDirIdx = dirIdx, accDiff = 0) {
     const i = idx(x, y);
     if (hasVisited(i, dirIdx)) return;
     markVisited(i, dirIdx);
@@ -490,56 +431,67 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     const cell = cells[ni];
 
     switch (cell) {
-      case G.UNTOUCHED: carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx); break;
+      case G.UNTOUCHED: carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx, accDiff); break;
       case G.EMPTY:
+        currentBranchDiff = accDiff;
         rec(x, y, nx, ny, `slide-empty (${nx-1},${ny-1})`);
-        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+        if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff);
         break;
       case G.CRUMBLE:
         if (currentActivatedSet.has(ni)) {
+          currentBranchDiff = accDiff + DIFF.CRUMBLE_TRAVERSE;
           rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.CRUMBLE_TRAVERSE);
         } else {
+          currentBranchDiff = accDiff + DIFF.CRUMBLE;
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          enqueueActivated(ni, x, y, arrivalDirIdx);
+          enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE);
         }
         break;
       case G.BLOCK:
+        currentBranchDiff = accDiff;
         rec(x, y, nx, ny, `stopped-block (${nx-1},${ny-1})`);
-        enqueue(x, y, arrivalDirIdx);
+        enqueue(x, y, arrivalDirIdx, accDiff);
         break;
       case G.STICKY:
+        currentBranchDiff = accDiff + DIFF.STICKY;
         rec(x, y, nx, ny, `stopped-sticky (${nx-1},${ny-1})`);
-        enqueue(nx, ny, dirIdx);
+        enqueue(nx, ny, dirIdx, accDiff + DIFF.STICKY);
         break;
       case G.ONEWAY: {
         const allowedDir = onewayDir.get(ni);
         if (allowedDir === dirIdx) {
+          currentBranchDiff = accDiff + DIFF.ONEWAY_TRAVERSE;
           rec(x, y, nx, ny, `slide-oneway-allowed (${nx-1},${ny-1})`);
-          carve(dirIdx, nx, ny);
+          carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.ONEWAY_TRAVERSE);
         } else {
+          currentBranchDiff = accDiff + DIFF.ONEWAY_BLOCKED;
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
-          enqueue(x, y, arrivalDirIdx);
+          enqueue(x, y, arrivalDirIdx, accDiff + DIFF.ONEWAY_BLOCKED);
         }
         break;
       }
       case G.KEY:
         if (currentActivatedSet.has(ni)) {
+          currentBranchDiff = accDiff;
           rec(x, y, nx, ny, `slide-key-collected (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff);
         } else {
+          currentBranchDiff = accDiff + DIFF.KEY;
           rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-          enqueueActivated(ni, nx, ny, dirIdx);
+          enqueueActivated(ni, nx, ny, dirIdx, accDiff + DIFF.KEY);
         }
         break;
       case G.DOOR: {
         const keyPad = doorToKeyPaddedMap.get(ni);
         if (keyPad !== undefined && currentActivatedSet.has(keyPad)) {
+          currentBranchDiff = accDiff + DIFF.DOOR_TRAVERSE;
           rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, arrivalDirIdx, accDiff + DIFF.DOOR_TRAVERSE);
         } else {
+          currentBranchDiff = accDiff + DIFF.DOOR_LOCKED;
           rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
-          enqueue(x, y, arrivalDirIdx);
+          enqueue(x, y, arrivalDirIdx, accDiff + DIFF.DOOR_LOCKED);
         }
         break;
       }
@@ -547,8 +499,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         const exitNi = paddedTeleporterMap.get(ni);
         if (exitNi !== undefined && !hasVisited(exitNi, dirIdx)) {
           const ex = exitNi % pw, ey = Math.floor(exitNi / pw);
+          currentBranchDiff = accDiff + DIFF.TELEPORT;
           rec(x, y, nx, ny, `slide-teleporter (${nx-1},${ny-1}) → (${ex-1},${ey-1})`);
-          carve(dirIdx, ex, ey);
+          carve(dirIdx, ex, ey, arrivalDirIdx, accDiff + DIFF.TELEPORT);
         }
         break;
       }
@@ -567,8 +520,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   for (let g = 0; g < buckets.length; g++) {
     const bucket = buckets[g];
     for (let head = 0; head < bucket.length; head++) {
-      const { x, y, arrivalDir, exploreDir, activated } = bucket[head];
+      const { x, y, arrivalDir, exploreDir, activated, accDiff } = bucket[head];
       currentGearCount       = g;
+      currentBranchDiff      = accDiff ?? 0;
       currentProcessingFrom  = { x: x - 1, y: y - 1, dir: DIRS[exploreDir].key };
       currentBranchActivated = activated ?? [];
       currentActivatedSet    = new Set(currentBranchActivated);
@@ -579,7 +533,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       currentVD = universeVDs.get(currentUniverseKey);
       const pending = buckets.reduce((n, b) => n + b.length, 0) - head - 1;
       rec(x, y, -1, -1, `▶ processing (${x-1},${y-1}) dir=${DIRS[exploreDir].key} g=${g}  pending: ${pending}`);
-      carve(exploreDir, x, y, arrivalDir);
+      carve(exploreDir, x, y, arrivalDir, accDiff ?? 0);
     }
   }
 
@@ -688,8 +642,27 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  const { goal, effectiveCogs, goalDifficulty, depths, difficulties, universeDepths, pathWorldStates } =
-    _computeCosts(outCells, width, height, start, doorRequirements, teleporterMap, carvedMask);
+  // Select goal: carved EMPTY/STICKY/TELEPORTER cell with the highest accumulated difficulty,
+  // tie-broken by Manhattan distance from start.
+  let goal = { x: start.x, y: Math.max(start.y, 0) };
+  let _bestDiff = -1, _bestManhattan = 0;
+  for (let flat = 0; flat < width * height; flat++) {
+    if (diffDepthArr[flat] < 0) continue;
+    if (carvedMask && !carvedMask[flat]) continue;
+    const cell = outCells[flat];
+    if (cell === 1 || (cell >= 3 && cell <= 9)) continue; // exclude walls, oneways, crumble, key, door
+    const gx = flat % width, gy = Math.floor(flat / width);
+    const nm = Math.abs(gx - start.x) + Math.abs(gy - start.y);
+    if (diffDepthArr[flat] > _bestDiff || (diffDepthArr[flat] === _bestDiff && nm > _bestManhattan)) {
+      _bestDiff = diffDepthArr[flat]; _bestManhattan = nm; goal = { x: gx, y: gy };
+    }
+  }
+  const goalFlat       = goal.y * width + goal.x;
+  const effectiveCogs  = Math.max(1, gearDepthArr[goalFlat] >= 0 ? gearDepthArr[goalFlat] : 1);
+  const goalDifficulty = diffDepthArr[goalFlat] >= 0 ? diffDepthArr[goalFlat] : 0;
+  const depths         = gearDepthArr;
+  const universeDepths = null;
+  const pathWorldStates = new Set();
 
   // Translate base-universe visitedDirs from padded indices → unpadded flat indices for export
   const visitedDirsOut = new Map();
@@ -703,7 +676,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   return {
     id, width, height, cells: outCells, start, goal,
     effectiveCogs, goalDifficulty,
-    depths, difficulties, universeDepths,
+    depths, difficulties: diffDepthArr, universeDepths,
     doorRequirements, teleporterMap, seed,
     visitedDirs: visitedDirsOut, useKeyDoor,
     pathWorldStates,
@@ -742,330 +715,4 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   return best;
 }
 
-
-// ── Slide-path helper ────────────────────────────────────────────────────────
-//
-// toggleMap       : Map<flatIdx, toggleIdx>   — from buildToggleMap()
-// worldState      : number                    — bitmask of active toggles
-// doorRequirements: Map<flatIdx, toggleIdx>   — which toggle each door cell requires
-//
-// Returns { path, cost, crumblePos, keyPos }
-//   cost: accumulated DIFFICULTY_WEIGHTS score for this one move (0 if no move)
-function _slidePath(cells, width, height, pos, dx, dy, toggleMap, worldState, doorRequirements = null, teleporterMap = null, gearSet = null) {
-  const path = [];
-  let x = pos.x, y = pos.y;
-  let crumblePos   = null;
-  let keyPos       = null;
-  let teleportSeen = null; // Set of entry flatIdx — prevents infinite loops (T1→T2→T1→…)
-
-  // Cost tracking flags
-  let blockedByCrumble  = false;
-  let blockedByOneway   = false;
-  let blockedByDoor     = false;
-  let traversedCrumble  = false;
-  let traversedOneway   = false;
-  let traversedDoor     = false;
-  let didTeleport       = false;
-
-  while (true) {
-    const nx = x + dx, ny = y + dy;
-    if (nx < 0 || nx >= width || ny < 0 || ny >= height) break;
-    const flatIdx = ny * width + nx;
-    const cell    = cells[flatIdx];
-    if (cell === 1) break;                                           // WALL
-
-    if (cell === 7) {                                                // CRUMBLE
-      const tIdx = toggleMap.get(flatIdx);
-      if (tIdx === undefined || !(worldState & (1 << tIdx))) {
-        crumblePos = { x: nx, y: ny, toggleIdx: tIdx };
-        blockedByCrumble = true;
-        break;
-      }
-      // Broken — treat as empty, fall through
-      traversedCrumble = true;
-    }
-
-    if (cell === 8) {                                                // KEY
-      const tIdx = toggleMap.get(flatIdx);
-      const collected = tIdx !== undefined && (worldState & (1 << tIdx)) !== 0;
-      if (!collected) {
-        // Land on key, stop, mark collected
-        x = nx; y = ny;
-        path.push({ x, y, cell });
-        keyPos = { x, y, toggleIdx: tIdx };
-        break;
-      }
-      // Already collected — treat as empty (fall through)
-    }
-
-    if (cell === 9) {                                                // DOOR
-      const req  = doorRequirements?.get(flatIdx);
-      const open = req !== undefined && (worldState & (1 << req)) !== 0;
-      if (!open) { blockedByDoor = true; break; }
-      // Open — treat as empty, fall through
-      traversedDoor = true;
-    }
-
-    if (cell >= 3 && cell <= 6 && !_onewayAllows(cell, dx, dy)) {   // ONEWAY wrong dir
-      blockedByOneway = true;
-      break;
-    }
-    if (cell >= 3 && cell <= 6) traversedOneway = true;             // ONEWAY allowed dir
-
-    // ── TELEPORTER: enter entry, jump to exit, continue sliding ──────────────
-    if (cell === 10 && teleporterMap) {
-      if (!teleportSeen) teleportSeen = new Set();
-      if (teleportSeen.has(flatIdx)) break;                           // loop guard
-      teleportSeen.add(flatIdx);
-      x = nx; y = ny;
-      path.push({ x, y, cell });
-      const exitFlat = teleporterMap.get(flatIdx);
-      if (exitFlat !== undefined) {
-        didTeleport = true;
-        x = exitFlat % width;
-        y = Math.floor(exitFlat / width);
-        const exitCell = cells[exitFlat];
-        if (exitCell === 2) { path.push({ x, y, cell: exitCell }); break; }  // sticky exit
-        if (gearSet && gearSet.has(exitFlat)) { path.push({ x, y, cell: exitCell }); break; }
-        continue;                                                      // continue from exit
-      }
-      break;                                                           // no exit — stop at entry
-    }
-
-    x = nx; y = ny;
-    path.push({ x, y, cell });
-    if (cell === 2) break;                                           // STICKY
-    if (gearSet && gearSet.has(flatIdx)) break;                      // GEAR (acts as sticky)
-  }
-
-  // ── Compute move difficulty cost ─────────────────────────────────────────
-  const isRealMove = path.length > 0 || (blockedByCrumble && crumblePos !== null);
-  let cost = 0;
-  if (isRealMove || blockedByOneway || blockedByDoor) {
-    cost = DIFFICULTY_WEIGHTS.BASE_MOVE + path.length * DIFFICULTY_WEIGHTS.SLIDE_LENGTH;
-    if (path.length > 0 && path[path.length - 1].cell === 2)
-      cost += DIFFICULTY_WEIGHTS.STICKY;
-    if (traversedOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_TRAVERSE;
-    if (blockedByOneway)  cost += DIFFICULTY_WEIGHTS.ONEWAY_BLOCKED;
-    if (blockedByCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE;
-    if (traversedCrumble) cost += DIFFICULTY_WEIGHTS.CRUMBLE_TRAVERSE;
-    if (keyPos)           cost += DIFFICULTY_WEIGHTS.KEY;
-    if (traversedDoor)    cost += DIFFICULTY_WEIGHTS.DOOR_TRAVERSE;
-    if (blockedByDoor)    cost += DIFFICULTY_WEIGHTS.DOOR_LOCKED;
-    if (didTeleport)      cost += DIFFICULTY_WEIGHTS.TELEPORT;
-  }
-
-  return { path, cost, crumblePos, keyPos };
-}
-export { _slidePath as slidePath };
-
-function _onewayAllows(cellType, dx, dy) {
-  // ONEWAY_LEFT=3, RIGHT=4, UP=5, DOWN=6
-  switch (cellType) {
-    case 3: return dx === -1 && dy === 0;
-    case 4: return dx ===  1 && dy === 0;
-    case 5: return dx ===  0 && dy === -1;
-    case 6: return dx ===  0 && dy ===  1;
-    default: return true;
-  }
-}
-
-// ── Per-cell cost BFS ─────────────────────────────────────────────────────────
-//
-// Gear-bucket BFS over (pos, worldState) using slide physics.
-// Finds minimum-gear paths to every reachable cell and tracks the companion
-// chain length and accumulated difficulty for those paths.
-//
-// Uses a bucket-BFS (0-1 BFS variant): straight slides and crumble-bounces
-// share the current bucket (zero extra gears); 90° bends go into bucket+1.
-// Processes all gear=N positions before gear=N+1, so each (pos, ws) is settled
-// on its first dequeue.
-//
-// Universe transitions (key/crumble activation) enqueue the landing/bounce
-// position in the new worldState at the same gear count, which may land in an
-// already-running bucket — these are appended to the live bucket array and
-// processed in the same pass.
-//
-// Returns { goal, effectiveCogs, goalDifficulty, depths, difficulties }
-function _computeCosts(cells, width, height, start, doorRequirements, teleporterMap, carvedMask) {
-  const toggleMap = buildToggleMap(cells);
-  const n         = width * height;
-  // Per-cell arrays; -1 = not yet reached.
-  const depthArr  = new Int16Array(n).fill(-1);    // min gears to reach this cell
-  const diffArr   = new Float32Array(n).fill(-1);  // accumulated difficulty for same path
-
-  // wsGears: `${x},${y},${ws}` → minimum gears seen to reach (x, y) in worldstate ws.
-  const wsGears = new Map();
-  // buckets[g] holds items at gear count g.  Appending to buckets[g] while iterating
-  // over it works because the loop checks bucket.length dynamically.
-  const buckets = [];
-  // pred: state key → predecessor key, used to backtrack the optimal path after BFS.
-  const pred = new Map();
-  // Per-universe depth arrays: ws bitmask → Int16Array(n) of minimum gears per cell.
-  const wsDepthArrs = new Map();
-
-  function _key(x, y, ws) { return `${x},${y},${ws}`; }
-
-  // Update per-cell global arrays with the minimum-gear path to (x, y).
-  // At equal gear counts, keeps the lower-difficulty recording so a precise
-  // landing value can overwrite an earlier over-estimated intermediate value.
-  function _recordGlobal(x, y, gears, diff) {
-    if (y < 0) return; // boat position — not in the output grid
-    const flat = y * width + x;
-    if (depthArr[flat] < 0 || gears < depthArr[flat] ||
-        (gears === depthArr[flat] && diff < diffArr[flat])) {
-      depthArr[flat] = gears;
-      diffArr[flat]  = diff;
-    }
-  }
-
-  // Update the per-universe depth array for worldState ws.
-  function _recordWs(x, y, ws, gears) {
-    if (y < 0) return;
-    const flat = y * width + x;
-    let arr = wsDepthArrs.get(ws);
-    if (!arr) { arr = new Int16Array(n).fill(-1); wsDepthArrs.set(ws, arr); }
-    if (arr[flat] < 0 || gears < arr[flat]) arr[flat] = gears;
-  }
-
-  // Attempt to enqueue (x, y, ws) at the given gear count.
-  // Rejected if an equal-or-better path is already known.
-  function _tryEnqueue(x, y, ws, gears, diff, arrivalDir, prevKey = null) {
-    const key      = _key(x, y, ws);
-    const existing = wsGears.get(key);
-    if (existing !== undefined && existing <= gears) return false;
-    wsGears.set(key, gears);
-    if (prevKey !== null) pred.set(key, prevKey); else pred.delete(key);
-    while (buckets.length <= gears) buckets.push([]);
-    buckets[gears].push({ x, y, ws, gears, diff, arrivalDir, key });
-    _recordGlobal(x, y, gears, diff);
-    _recordWs(x, y, ws, gears);
-    return true;
-  }
-
-  // Seed from the boat (y = -1), arriving via a downward slide.
-  _tryEnqueue(start.x, start.y, 0, 0, 0, 3 /* DOWN */);
-
-  for (let g = 0; g < buckets.length; g++) {
-    const bucket = buckets[g]; // live reference — length may grow during iteration
-    for (let head = 0; head < bucket.length; head++) {
-      const item = bucket[head];
-      // Skip stale items: a better path (fewer gears) was found after this was enqueued.
-      if ((wsGears.get(item.key) ?? Infinity) < item.gears) continue;
-
-      for (let di = 0; di < 4; di++) {
-        const { dx, dy } = DIRS4[di];
-
-        // Gear cost for this direction relative to arrival direction:
-        //   straight continuation → 0 gears
-        //   reversal (180°)       → 0 gears (backtrack, no bend placed)
-        //   any 90° bend          → 1 gear
-        const isStraight  = di === item.arrivalDir;
-        const isReversal  = dx === -DIRS4[item.arrivalDir].dx &&
-                            dy === -DIRS4[item.arrivalDir].dy;
-        const newGears    = item.gears + ((!isStraight && !isReversal) ? 1 : 0);
-
-        const { path, cost, crumblePos, keyPos } = _slidePath(
-          cells, width, height, { x: item.x, y: item.y }, dx, dy,
-          toggleMap, item.ws, doorRequirements, teleporterMap
-        );
-
-        // Nothing happened and no crumble blocked → skip
-        if (path.length === 0 && !crumblePos) continue;
-
-        // ── Normal landing ──────────────────────────────────────────────────
-        if (path.length > 0) {
-          const landing = path[path.length - 1];
-          const newDiff = item.diff + cost;
-          // If a key was collected, activate its toggle in the new worldstate.
-          const newWS = keyPos?.toggleIdx !== undefined
-            ? (item.ws | (1 << keyPos.toggleIdx))
-            : item.ws;
-          _tryEnqueue(landing.x, landing.y, newWS, newGears, newDiff, di, item.key);
-
-          // Record every cell the player slid *through* so all carved cells
-          // get valid depth/difficulty values for the renderer overlay.
-          for (let i = 0; i < path.length - 1; i++) {
-            _recordGlobal(path[i].x, path[i].y, newGears, newDiff);
-            _recordWs(path[i].x, path[i].y, item.ws, newGears);
-          }
-        }
-
-        // ── Crumble activation ──────────────────────────────────────────────
-        // Enqueue the position just before the crumble in the crumble-active
-        // worldstate so the BFS can slide through it in future moves.
-        if (crumblePos?.toggleIdx !== undefined) {
-          const newWS = item.ws | (1 << crumblePos.toggleIdx);
-          // If the player slid some cells before hitting the crumble, they're
-          // now at the last path cell; otherwise they didn't move.
-          const from      = path.length > 0 ? path[path.length - 1] : { x: item.x, y: item.y };
-          const crumGears = path.length > 0 ? newGears : item.gears;
-          const crumDi    = path.length > 0 ? di       : item.arrivalDir;
-          _tryEnqueue(from.x, from.y, newWS, crumGears, item.diff + cost, crumDi, item.key);
-        }
-      }
-    }
-  }
-
-  // ── Select goal ───────────────────────────────────────────────────────────
-  // Choose the reachable, explicitly carved EMPTY/STICKY cell with the highest
-  // accumulated difficulty (tie-broken by Manhattan distance from start).
-  let goal        = { x: start.x, y: Math.max(start.y, 0) };
-  let bestDiff    = -Infinity;
-  let bestManhattan = 0;
-
-  for (let flat = 0; flat < n; flat++) {
-    if (diffArr[flat] < 0) continue;                        // unreachable
-    if (carvedMask && !carvedMask[flat]) continue;          // not explicitly carved
-    const cell = cells[flat];
-    // Exclude walls, interactive objects, and one-way cells as goal candidates.
-    if (cell === 1 || cell === 7 || cell === 8 || cell === 9) continue;
-    if (cell >= 3 && cell <= 6) continue;
-    const x  = flat % width;
-    const y  = Math.floor(flat / width);
-    const nm = Math.abs(x - start.x) + Math.abs(y - start.y);
-    if (diffArr[flat] > bestDiff || (diffArr[flat] === bestDiff && nm > bestManhattan)) {
-      bestDiff      = diffArr[flat];
-      bestManhattan = nm;
-      goal          = { x, y };
-    }
-  }
-
-  const goalFlat = goal.y * width + goal.x;
-
-  // Find the goal state with minimum gears; break ties by preferring the worldState
-  // with the most toggle bits set (most crumbles/keys activated — the harder path
-  // the generator intended).  Then backtrack that single predecessor chain.
-  const pathWorldStates = new Set();
-  {
-    const popcount = w => { let c = 0; let n = w; while (n) { c += n & 1; n >>>= 1; } return c; };
-    let bestGoalKey = null, bestGoalGears = Infinity, bestGoalPop = -1;
-    for (const [k, g] of wsGears) {
-      const parts = k.split(',');
-      if (parseInt(parts[0]) === goal.x && parseInt(parts[1]) === goal.y) {
-        const pop = popcount(parseInt(parts[2]));
-        if (g < bestGoalGears || (g === bestGoalGears && pop > bestGoalPop)) {
-          bestGoalGears = g;
-          bestGoalPop   = pop;
-          bestGoalKey   = k;
-        }
-      }
-    }
-    let bk = bestGoalKey;
-    while (bk) {
-      pathWorldStates.add(parseInt(bk.split(',')[2]));
-      bk = pred.get(bk);
-    }
-  }
-
-  return {
-    goal,
-    effectiveCogs:  Math.max(1, depthArr[goalFlat] >= 0 ? depthArr[goalFlat] : 1),
-    goalDifficulty: diffArr[goalFlat] >= 0 ? diffArr[goalFlat] : 0,
-    depths:         depthArr,
-    difficulties:   diffArr,
-    universeDepths: wsDepthArrs,
-    pathWorldStates,
-  };
-}
 

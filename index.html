@@ -409,7 +409,7 @@
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const stepDepths = step.depths ?? depths;
+      const stepDepths = step.gearDepths ?? null;
       for (let cy = 0; cy < ph; cy++) {
         for (let cx = 0; cx < pw; cx++) {
           const cell = grid[cy * pw + cx];
