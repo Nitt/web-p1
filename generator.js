@@ -152,26 +152,63 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // For each of the 4 directions from (x, y), compute the gear cost and push
   // an explore entry into the appropriate bucket:
   //   0 gears — straight continuation or reversal
-  //   0 gears — 90° bend that immediately hits an unactivated crumble
-  //             (player doesn't move → no gear placed)
-  //   1 gear  — any other 90° bend
+  //   1 gear  — any 90° bend
+  // Before enqueuing, 90° adjacent UNTOUCHED cells are pre-carved to a definite type.
+  // If left UNTOUCHED, they could be carved as crumbles after the bend entry is enqueued,
+  // causing that crumble's universe to open at the wrong (higher) gear cost.
+  // Straight/reversal directions are never UNTOUCHED: straight is either what stopped us
+  // (already carved) or a sticky we landed on (sticky handled by carve); reversal is
+  // where we came from (already carved).
+  // After the direction loop, each adjacent unactivated crumble is hit for free,
+  // opening its universe at the same gear cost. Multi-crumble chains use recursion.
   function enqueueExplores(x, y, arrivalDir, activated, accDiff = 0) {
     const activatedSet = new Set(activated);
     const aDir = DIRS[arrivalDir];
+
+    // Pre-carve 90° adjacent untouched cells to a definite type.
+    for (let E = 0; E < 4; E++) {
+      const eDir = DIRS[E];
+      if (E === arrivalDir || (eDir.dx === -aDir.dx && eDir.dy === -aDir.dy)) continue;
+      const nx = x + eDir.dx, ny = y + eDir.dy;
+      if (nx < 1 || nx >= pw - 1 || ny < 1 || ny >= ph - 1) continue;
+      const ni = idx(nx, ny);
+      if (cells[ni] !== G.UNTOUCHED) continue;
+      const type = pickType();
+      if (type === 'crumble' && togglesPlaced < maxUniverseBits) {
+        togglesPlaced++;
+        cells[ni] = G.CRUMBLE;
+      } else if (type === 'sticky') {
+        cells[ni] = G.STICKY;
+      } else if (type === 'oneway' && hasOnewayRoom(nx, ny, eDir)) {
+        if (cells[idx(nx + eDir.dx, ny + eDir.dy)] === G.UNTOUCHED)
+          cells[idx(nx + eDir.dx, ny + eDir.dy)] = G.EMPTY;
+        cells[ni] = G.ONEWAY;
+        onewayDir.set(ni, E);
+      } else if (type === 'block' || type === 'crumble') {
+        cells[ni] = G.BLOCK;
+      } else {
+        cells[ni] = G.EMPTY;
+      }
+    }
+
     for (let E = 0; E < 4; E++) {
       const eDir       = DIRS[E];
+      const ni         = idx(x + eDir.dx, y + eDir.dy);
+      // Unactivated adjacent crumbles are handled exclusively by the hit loop below.
+      if (cells[ni] === G.CRUMBLE && !activatedSet.has(ni)) continue;
       const isStraight = E === arrivalDir;
       const isReversal = eDir.dx === -aDir.dx && eDir.dy === -aDir.dy;
-      let   isFree     = isStraight || isReversal;
-      if (!isFree) {
-        // Peek: a 90° bend that bounces off an adjacent unactivated crumble
-        // costs 0 gears because the player never actually moves.
-        const peekNi = idx(x + eDir.dx, y + eDir.dy);
-        isFree = cells[peekNi] === G.CRUMBLE && !activatedSet.has(peekNi);
-      }
+      const isFree     = isStraight || isReversal;
       const g = currentGearCount + (isFree ? 0 : 1);
       while (buckets.length <= g) buckets.push([]);
       buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff });
+    }
+    for (let E = 0; E < 4; E++) {
+      const eDir = DIRS[E];
+      const ni   = idx(x + eDir.dx, y + eDir.dy);
+      if (cells[ni] === G.CRUMBLE && !activatedSet.has(ni)) {
+        enqueueExplores(x, y, arrivalDir, [...activated, ni].sort((a, b) => a - b), accDiff + DIFF.CRUMBLE);
+      }
     }
   }
 
