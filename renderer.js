@@ -49,6 +49,8 @@ let _playerInTeleport = false;
 // keeps the teleporter visually connected until the player finishes fading in at the exit.
 let _flashRetraceBridge = null;
 let _jerkAnchorPx = null;  // extra chain point held fixed during jerk, cleared when jerk ends
+let _jerkAvatarOnly = false; // when true, jerk moves the sprite only and leaves chain drawing to the retract anim
+export function setJerkAvatarOnly(v) { _jerkAvatarOnly = v; }
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
@@ -414,20 +416,20 @@ function _animateChainJerk(endPx, { dx, dy }, level, token) {
   const cellSize = gridEl.getBoundingClientRect().width / level.width;
   const A        = cellSize * 0.35;
   const startTime = performance.now();
-  _jerkAnchorPx = endPx;
+  if (!_jerkAvatarOnly) _jerkAnchorPx = endPx;
 
   function frame(now) {
     if (token !== _playerAnimToken) { _jerkAnchorPx = null; return; }
     const t      = Math.min((now - startTime) / JERK_MS, 1);
     const offset = A * Math.exp(-5 * t) * Math.sin(Math.PI * 2 * 1.2 * t);
     _setOverlayPixel(playerEl, endPx.x + dx * offset, endPx.y + dy * offset);
-    if (_chainState) _redrawChain(endPx.x + dx * offset, endPx.y + dy * offset);
+    if (!_jerkAvatarOnly && _chainState) _redrawChain(endPx.x + dx * offset, endPx.y + dy * offset);
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
       _jerkAnchorPx = null;
       _setOverlayPixel(playerEl, endPx.x, endPx.y);
-      if (_chainState) _redrawChain(endPx.x, endPx.y);
+      if (!_jerkAvatarOnly && _chainState) _redrawChain(endPx.x, endPx.y);
     }
   }
   requestAnimationFrame(frame);

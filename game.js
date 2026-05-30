@@ -1,6 +1,6 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
 import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -553,10 +553,13 @@ function _executeBacktrack(gearIdx) {
 
   // Walk the player back through bend waypoints only — teleport crossings are not
   // physical positions the player animates to.
-  // waypoints: freed REAL gears in reverse + backtrack target. e.g. [D, C, B]
+  // waypoints: freed REAL gears in reverse + backtrack target. e.g. [E, D, C, B]
+  // Include the nearest freed gear (E) so the player retraces the last segment
+  // P→E before navigating the bend waypoints; omitting it caused the player to
+  // jump diagonally from P to D while the chain snapped to match.
   const freedBend = freedGears.filter(g => !g.isTeleport);
   const waypoints = [
-    ...freedBend.slice(0, -1).reverse(),
+    ...freedBend.slice().reverse(),
     backtrackPos,
   ];
 
@@ -565,14 +568,6 @@ function _executeBacktrack(gearIdx) {
   function step(waypointIdx, fromPos) {
     if (moveToken !== _moveToken) return;
 
-    // Drop a freed gear before animating so the chain tail never extends past the
-    // player toward a gear they have already left.  Guard against dropping below
-    // the permanent chain length (state.gears) — when there are no freed gears
-    // (e.g. backtracking directly to the only cog with nothing above it), the
-    // backtrack target must stay visible throughout the animation.
-    if (displayGears.length > state.gears.length) {
-      displayGears = displayGears.slice(0, displayGears.length - 1);
-    }
     drawChain(displayGears, fromPos, state.gearsLeft, state.totalGears, state.level);
 
     const toPos = waypoints[waypointIdx];
@@ -603,6 +598,12 @@ function _executeBacktrack(gearIdx) {
         setChainSpinning(false);
         _flushQueuedMove();
       } else {
+        // Drop the gear the player just arrived at — only now that they've left
+        // it is it safe to remove it from the display without a visible snap.
+        // Guard against dropping below the permanent chain length (state.gears).
+        if (displayGears.length > state.gears.length) {
+          displayGears = displayGears.slice(0, displayGears.length - 1);
+        }
         step(waypointIdx + 1, toPos);
       }
     });
@@ -1109,7 +1110,9 @@ function _onPlayerLanded(target, dx, dy, ctx) {
 
   if (needsRetractAnim) {
     state.isMoving = true;
+    setJerkAvatarOnly(true);
     _animateChainRetract(gearsBeforeUpdate, retractTarget, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
+      setJerkAvatarOnly(false);
       state.isMoving = false;
       setChainSpinning(false);
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
