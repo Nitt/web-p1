@@ -180,15 +180,16 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
 
     // ── Virtual one-way landing ───────────────────────────────────────────────
     // The cell just after the last traversable one-way in the slide can be
-    // reached by: slide forward to the wall, then reverse.  Uses ws (not
-    // finalWS) because the key/crumble at the actual landing haven't fired.
+    // reached by: slide forward to the actual landing (firing any crumble/key),
+    // then reverse.  Uses finalWS because the forward slide already activated
+    // any crumble or key before the backtrack happens.
     const vPos = result.virtualLanding;
     if (vPos) {
-      const vNk = stateKey(vPos.x, vPos.y, outgoing, ws);
+      const vNk = stateKey(vPos.x, vPos.y, outgoing, finalWS);
       if ((best.get(vNk) ?? Infinity) > actualG) {
         best.set(vNk, actualG);
         parent.set(vNk, { fromKey: key, di: outgoing, virtualLanding: true });
-        pushOutgoing(vPos.x, vPos.y, outgoing, ws, actualG, vNk);
+        pushOutgoing(vPos.x, vPos.y, outgoing, finalWS, actualG, vNk);
       }
     }
   }
