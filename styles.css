@@ -6,7 +6,7 @@
   --color-wall:      #2b2926;
   --color-player:    #3a6fd8;
   --color-goal:      #e8a020;
-  --color-grid-gap:  #c8c4be;
+  --color-grid-gap:  rgba(255,255,255,0.15);
   --color-dpad-btn:  #2b2926;
   --color-dpad-text: #f0ede8;
 
@@ -150,7 +150,7 @@ html, body {
   position: relative;
   display: grid;
   grid-template-columns: repeat(var(--cols), 1fr);
-  gap: 3px;
+  gap: 0;
   border-radius: 6px;
   overflow: hidden;
 
@@ -168,8 +168,9 @@ html, body {
 
 .cell {
   position: relative;
-  background: var(--color-empty);
+  background: transparent;
   aspect-ratio: 1;
+  border: 1.5px solid rgba(255, 255, 255, 0.5);
 }
 
 .cell-coord,

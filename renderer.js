@@ -15,6 +15,14 @@ let _speedMult = 1;
 export function setSpeedMultiplier(m) { _speedMult = Math.max(0.1, m); }
 export function getSpeedMultiplier()  { return _speedMult; }
 
+export function toggleWaveDebug() {
+  _waveDebugOn = !_waveDebugOn;
+  if (!_waveDebugOn && _waveDebugDots) {
+    _waveDebugDots.forEach(d => d.remove());
+    _waveDebugDots = null;
+  }
+}
+
 // ms per grid cell of travel (base value × multiplier)
 const SPEED_MS_PER_CELL_BASE = 80;
 const speedMs = () => SPEED_MS_PER_CELL_BASE * _speedMult;
@@ -28,6 +36,12 @@ let boatEl = null;
 let waterlineEl = null;
 let skyEl = null;
 let _waveAnimHandle = null;
+let _waveFnSmall    = null;   // (xn, t) → dy in SVG units; set in _loadAndAnimateWaterline
+let _waveFnBig      = null;   // (xn, t) → dy in SVG units; set in _loadAndAnimateWaterline
+let _waveLayout     = null;   // boat/waterline layout dims; set in _updateBoatAndWaterline
+let _waveChainOffset = { dx: 0, dy: 0 }; // chain start offset driven by wave each frame
+let _waveDebugOn   = false;
+let _waveDebugDots = null; // three DOM elements when debug is active
 let containerEl = null;
 let diveIndicatorEl = null;
 let moveHintEl = null;
@@ -775,7 +789,11 @@ function _redrawChain(px, py) {
   // ── Build chain segments ───────────────────────────────────────────────────
   // Teleporter crossings split the chain into solid segments connected by bridges.
   // Each segment: array of pixel points.  Bridges: {from, to} pixel pairs.
-  const startPx = _cellPixel(level.start.x, level.start.y, level);
+  const startPxBase = _cellPixel(level.start.x, level.start.y, level);
+  const startPx = {
+    x: startPxBase.x + _waveChainOffset.dx,
+    y: (_waveLayout ? _waveLayout.chainStartBaseY : startPxBase.y) + _waveChainOffset.dy,
+  };
   const segments = [];
   const bridges  = [];     // { from:{x,y}, to:{x,y} } in pixels
   let   curSeg   = [startPx];
@@ -1168,9 +1186,17 @@ function _updateBoatAndWaterline(level) {
   // Hull deck line is at y≈34 out of viewBox height 60
   // Align that line with the waterline (gTop)
   boatEl.style.left   = (startCx - boatW / 2) + 'px';
-  boatEl.style.top    = (gTop - boatH * (34 / 60)) + 'px';
   boatEl.style.width  = boatW + 'px';
   boatEl.style.height = boatH + 'px';
+  const s2px = waterH / 30;
+  // Boat center y in chain-SVG (grid-client) coords.
+  // boatTopBase = gTop - boatH*(20/60); boat center = boatTopBase + boatH/2.
+  // Chain SVG origin is at gTop + gridEl.clientTop.
+  const chainStartBaseY = boatH * (0.5 - 20 / 60) - gridEl.clientTop;
+  _waveLayout = { wlW, waterH, boatW, boatH, s2px, chainStartBaseY,
+    boatTopBase: gTop - boatH * (25 / 60),
+    wlLeft: startCx - wlW / 2,
+    wlTop:  gTop - wlH * 0.5 + cellH * 0.5 };
 
   // ── Sky gradient ──────────────────────────────────────────────────────
   if (skyEl) {
@@ -1200,6 +1226,7 @@ function _loadAndAnimateWaterline() {
 
   const NS = 'http://www.w3.org/2000/svg';
   waterlineEl.innerHTML = '';
+  if (_waveDebugDots) { _waveDebugDots.forEach(d => d.remove()); _waveDebugDots = null; }
   waterlineEl.setAttribute('viewBox', '0 0 100 30');
   waterlineEl.setAttribute('preserveAspectRatio', 'none');
   waterlineEl.setAttribute('overflow', 'visible');
@@ -1242,6 +1269,15 @@ function _loadAndAnimateWaterline() {
   strokePath.setAttribute('mask', 'url(#wl-mask)');
   waterlineEl.appendChild(strokePath);
 
+  _waveFnBig = (xn, t) =>
+    0.6 * Math.sin(xn * 5  - t * 1.5) +
+    0.1 * Math.sin(xn * 18  - t * 3) +
+    -4.0;
+
+  _waveFnSmall = (xn, t) =>
+    0.1 * Math.sin(xn * 12 + t * -7.5) +
+    0.05 * Math.sin(xn * 30 + t * 7.5);
+
   const N = 60, vbW = 100, baseY = 6;
   const basePts = Array.from({ length: N }, (_, i) => ({ x: i * vbW / (N - 1), y: baseY }));
   const t0 = performance.now();
@@ -1251,15 +1287,52 @@ function _loadAndAnimateWaterline() {
     if (waterlineEl !== capturedEl) return;
     const t = (now - t0) * 0.001;
 
-    const pts = basePts.map(({ x, y }) => {
-      const xn = x / vbW;
-      return { x, y: y +
-        0.9 * Math.sin(xn * 7  - t * 2) +
-        0.2 * Math.sin(xn * 14 + t * 6) +
-        0.1 * Math.sin(xn * 16 + t * 9) };
-    });
-
+    const pts = basePts.map(({ x, y }) => ({ x, y: y + _waveFnBig(x / vbW, t) + _waveFnSmall(x / vbW, t) }));
     strokePath.setAttribute('d', 'M ' + pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L '));
+
+    // Bob and tilt the boat by sampling the wave at left, centre, right of the hull
+    if (boatEl && _waveLayout) {
+      const { wlW, waterH, boatW, boatH, boatTopBase, s2px } = _waveLayout;
+      const boatWaveSampleWidth = 140;
+      const xnL  = (1 - boatWaveSampleWidth / wlW) / 2;
+      const xnR  = (1 + boatWaveSampleWidth / wlW) / 2;
+      const boatDelay = -0.3;
+      const dyL  = _waveFnBig(xnL, t+boatDelay) * s2px;
+      const dyC  = _waveFnBig(0.5,  t+boatDelay) * s2px;
+      const dyR  = _waveFnBig(xnR,  t+boatDelay) * s2px;
+      const sampleDistPx = (xnR - xnL) * wlW;
+      const deg  = Math.atan2(dyR - dyL, sampleDistPx) * 180 / Math.PI;
+      boatEl.style.top             = (boatTopBase + dyC * 0.8).toFixed(1) + 'px';
+      boatEl.style.transform       = `rotate(${deg.toFixed(2)*0.8}deg)`;
+      //boatEl.style.transformOrigin = '100% 100%';
+
+      // Chain start tracks the boat center — same dy as the boat, no horizontal sway
+      _waveChainOffset.dy = dyC;
+      _waveChainOffset.dx = deg*0.85;
+
+      // Redraw chain every wave frame so the start point visibly tracks the boat
+      if (_chainState) _redrawChain(playerPx.x, playerPx.y);
+
+      // Debug: show the three sample points as coloured dots
+      if (_waveDebugOn && containerEl) {
+        if (!_waveDebugDots) {
+          const colors = ['#f44', '#4f4', '#44f'];
+          _waveDebugDots = colors.map(c => {
+            const el = document.createElement('div');
+            el.style.cssText = `position:absolute;width:7px;height:7px;border-radius:50%;`
+              + `pointer-events:none;z-index:200;transform:translate(-50%,-50%);background:${c}`;
+            containerEl.appendChild(el);
+            return el;
+          });
+        }
+        const { wlLeft, wlTop } = _waveLayout;
+        const s2px = waterH / 30;
+        [[xnL, dyL], [0.5, dyC], [xnR, dyR]].forEach(([xn, dy], i) => {
+          _waveDebugDots[i].style.left = (wlLeft + xn * wlW).toFixed(1) + 'px';
+          _waveDebugDots[i].style.top  = (wlTop + (6 + _waveFn(xn, t)) * s2px).toFixed(1) + 'px';
+        });
+      }
+    }
 
     _waveAnimHandle = requestAnimationFrame(frame);
   }

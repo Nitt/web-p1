@@ -55,6 +55,7 @@
     <button id="chain-debug-btn" class="btn-ghost">chain</button>
     <button id="gen-debug-open-btn" class="btn-ghost">gen</button>
     <button id="batch-test-btn" class="btn-ghost">∞</button>
+    <button id="wave-debug-btn" class="btn-ghost">wave</button>
     <label id="speed-control">
       <span id="speed-label">1×</span>
       <input id="speed-slider" type="range" min="0.125" max="8" step="0.125" value="1">
@@ -108,13 +109,16 @@
 
   <script type="module">
     import { init, skipLevel, jumpToLevel, startBatchTest } from './game.js';
-    import { setSpeedMultiplier } from './renderer.js';
+    import { setSpeedMultiplier, toggleWaveDebug } from './renderer.js';
 
     document.getElementById('debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('debug'));
 
     document.getElementById('chain-debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('chain-debug'));
+
+    document.getElementById('wave-debug-btn')
+      .addEventListener('click', () => toggleWaveDebug());
 
     document.getElementById('skip-btn')
       .addEventListener('click', () => skipLevel());
