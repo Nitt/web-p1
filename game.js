@@ -6,7 +6,6 @@ import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
 import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin } from './sounds.js';
-import { solve } from './solver.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
@@ -69,14 +68,6 @@ let _batchRunning = false;
 let _batchTotal   = 0;
 let _batchFails   = 0;
 
-// Matches DIRS4 ordering in solver.js: RIGHT=0, LEFT=1, DOWN=2, UP=3, none=4.
-function _prevDirToIndex(prevDir) {
-  if (!prevDir)          return 4;
-  if (prevDir.dx ===  1) return 0;
-  if (prevDir.dx === -1) return 1;
-  if (prevDir.dy ===  1) return 2;
-  return 3;
-}
 
 function _moveArrow({ dx, dy }) {
   return dx === 1 ? '→' : dx === -1 ? '←' : dy === 1 ? '↓' : '↑';
@@ -189,7 +180,7 @@ function _dispatchNextAutoMove() {
         cb();
         return;
       }
-      _logAutoSolveFailure('solver path exhausted without reaching goal (chain mismatch?)');
+      _logAutoSolveFailure('path exhausted without reaching goal');
     }
     _cancelAutoSolve();
     return;
@@ -211,27 +202,15 @@ function _autoSolve() {
   _solverStartPos   = { ...state.playerPos };
   _solverStartGears = state.gearsLeft;
 
-  // ── Run Dijkstra from the current player position ─────────────────────────
-  const result = solve(
-    state.level, state.playerPos, state.worldState,
-    state.gearsLeft, _prevDirToIndex(state.prevDir)
-  );
-
-  const btn = document.getElementById('auto-solve-btn');
-  if (result && result.moves.length > 0) {
-    _solverInitialMoves = [...result.moves];
+  const moves = state.level.solutionPath;
+  const btn   = document.getElementById('auto-solve-btn');
+  if (moves && moves.length > 0) {
+    _solverInitialMoves = [...moves];
     _solverMoveIdx      = 0;
     _autoSolving        = true;
-    _autoMoveQueue      = [...result.moves];
+    _autoMoveQueue      = [...moves];
     btn?.classList.add('active');
     _dispatchNextAutoMove();
-    return;
-  }
-
-  // No direct path — for key+door levels try navigating to the goal first (in case
-  // there's a route without the key), then fall back to key-first.
-  if (state.level.doorRequirements?.size > 0 && _findUncollectedKeyCell()) {
-    _tryKeyFirstStrategy();
     return;
   }
 
@@ -239,134 +218,10 @@ function _autoSolve() {
   setTimeout(() => btn?.classList.remove('no-path'), 500);
   _solverInitialMoves = [];
   _solverMoveIdx      = 0;
-  _logAutoSolveFailure('solver found no path');
+  _logAutoSolveFailure('no solution path');
 }
 
-// Returns the position of the first uncollected KEY cell, or null.
-function _findUncollectedKeyCell() {
-  const { cells, width } = state.level;
-  for (let flat = 0; flat < cells.length; flat++) {
-    if (cells[flat] === CellType.KEY) {
-      const ti = state.toggleMap?.get(flat);
-      if (ti === undefined || !(state.worldState & (1 << ti))) {
-        return { x: flat % width, y: Math.floor(flat / width) };
-      }
-    }
-  }
-  return null;
-}
 
-// Direction index (0–3, or 4=none) the player would have after backtracking to gears[gearIdx].
-function _prevDiAtGearIdx(gearIdx) {
-  if (gearIdx < 0) return 4;
-  const g        = state.gears[gearIdx];
-  const prevGear = gearIdx > 0 ? state.gears[gearIdx - 1] : null;
-  const prev     = prevGear
-    ? (prevGear.isTeleport ? { x: prevGear.exitX, y: prevGear.exitY } : prevGear)
-    : state.level.start;
-  const dx = Math.sign(g.x - prev.x), dy = Math.sign(g.y - prev.y);
-  if (dx ===  1) return 0;
-  if (dx === -1) return 1;
-  if (dy ===  1) return 2;
-  if (dy === -1) return 3;
-  return 4;
-}
-
-// Phase 1: try goal directly first; if that fails, navigate to the key.
-function _tryKeyFirstStrategy() {
-  const keyCell = _findUncollectedKeyCell();
-  // Try goal directly from current position (ignoring door, in case there's a path around it).
-  const goalOnly = { ...state.level, doorRequirements: null };
-  const directResult = solve(goalOnly, state.playerPos, state.worldState,
-    state.gearsLeft, _prevDirToIndex(state.prevDir));
-
-  if (directResult && directResult.moves.length > 0) {
-    _solverInitialMoves = [...directResult.moves];
-    _solverMoveIdx      = 0;
-    _autoSolving        = true;
-    _autoMoveQueue      = [...directResult.moves];
-    document.getElementById('auto-solve-btn')?.classList.add('active');
-    _dispatchNextAutoMove();
-    return;
-  }
-
-  const keyLevel  = { ...state.level, goal: keyCell };
-  const keyResult = solve(keyLevel, state.playerPos, state.worldState,
-    state.gearsLeft, _prevDirToIndex(state.prevDir));
-
-  if (!keyResult || keyResult.moves.length === 0) {
-    console.log('[auto-solve] phase 1 — cannot reach key either, giving up');
-    const btn = document.getElementById('auto-solve-btn');
-    btn?.classList.add('no-path');
-    setTimeout(() => btn?.classList.remove('no-path'), 500);
-    _solverInitialMoves = [];
-    _solverMoveIdx      = 0;
-    _logAutoSolveFailure('solver found no path');
-    return;
-  }
-
-  _solverInitialMoves = [...keyResult.moves];
-  _solverMoveIdx      = 0;
-  _autoSolving        = true;
-  _autoMoveQueue      = [...keyResult.moves];
-  _autoPhaseCallback  = _planGoalAfterKey;
-  document.getElementById('auto-solve-btn')?.classList.add('active');
-  _dispatchNextAutoMove();
-}
-
-// Phase 2: key collected — try to solve to goal; if stuck, try backtracking through gears.
-function _planGoalAfterKey() {
-  const result = solve(state.level, state.playerPos, state.worldState,
-    state.gearsLeft, _prevDirToIndex(state.prevDir));
-
-  if (result && result.moves.length > 0) {
-    _solverInitialMoves = [...result.moves];
-    _solverMoveIdx      = 0;
-    _autoMoveQueue      = [...result.moves];
-    _dispatchNextAutoMove();
-    return;
-  }
-
-  _tryBacktrackForGoal();
-}
-
-// Phase 3: can't reach goal from current position after collecting key — walk back through
-// each gear waypoint (in reverse) until we find one from which the goal is reachable,
-// then animate the backtrack and execute the solution.
-function _tryBacktrackForGoal() {
-  const gears = state.gears;
-
-  for (let i = gears.length - 1; i >= -1; i--) {
-    if (i >= 0 && gears[i].isTeleport) continue;
-
-    const pos = i < 0 ? state.level.start : { x: gears[i].x, y: gears[i].y };
-    // Backtracking to gears[i] frees gears[i..N-1] (via _executeBacktrack) plus the
-    // pending-pop of gears[i] itself, so total freed = gears.slice(i) non-teleport count.
-    const gearsFreed = gears.slice(Math.max(0, i)).filter(g => !g.isTeleport).length;
-    const gearsAvail = state.gearsLeft + gearsFreed;
-
-    const result = solve(state.level, pos, state.worldState,
-      gearsAvail, _prevDiAtGearIdx(i));
-
-    if (result && result.moves.length > 0) {
-      _autoSolveUsedBacktrack = true;
-      const goalMoves = [...result.moves];
-      _autoPhaseCallback = () => {
-        _solverInitialMoves = [...goalMoves];
-        _solverMoveIdx      = 0;
-        _autoMoveQueue      = [...goalMoves];
-        _autoPhaseCallback  = null;
-        _dispatchNextAutoMove();
-      };
-      _executeBacktrack(i);
-      return;
-    }
-  }
-
-  console.log('[auto-solve] phase 3 — all backtrack positions exhausted, no path found');
-  _logAutoSolveFailure('solver found no path (key+door: cannot reach goal after backtracking through all gears)');
-  _cancelAutoSolve();
-}
 
 // ─── teleporter test level (?tp in URL) ──────────────────────────────────────
 //
@@ -1190,6 +1045,21 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       freedOnRevisit   = freed.filter(g => !g.isTeleport).length; // only bend gears cost budget
       state.gears      = state.gears.slice(0, revisitIdx + 1);
       state.gearsLeft += freedOnRevisit;
+
+      // The BFS path doesn't model gear waypoints. If this revisit stopped us before
+      // the BFS-expected destination, re-inject the same direction so we continue.
+      // Exception: sticky cells are stop cells in the BFS too, so landing on one here
+      // is already the expected destination — no extra press needed.
+      if (_autoSolving) {
+        const flat = state.playerPos.y * state.level.width + state.playerPos.x;
+        const isSticky = state.level.cells[flat] === CellType.STICKY;
+        if (!isSticky) {
+          const continueTarget = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState);
+          if (continueTarget.x !== state.playerPos.x || continueTarget.y !== state.playerPos.y) {
+            _autoMoveQueue.unshift({ dx, dy });
+          }
+        }
+      }
     }
   } else {
     state.gearsLeft += state.gears.filter(g => !g.isTeleport).length;

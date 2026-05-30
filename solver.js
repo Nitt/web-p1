@@ -183,13 +183,19 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
     // reached by: slide forward to the actual landing (firing any crumble/key),
     // then reverse.  Uses finalWS because the forward slide already activated
     // any crumble or key before the backtrack happens.
+    //
+    // After the two-move sequence [forward, back], the player's prevDir is the
+    // backtrack direction (OPPOSITE_DI[outgoing]), NOT the forward direction.
+    // Using outgoing as incoming was wrong: it allowed the forward direction as
+    // a free straight and blocked the backtrack as a reversal — exactly backwards.
     const vPos = result.virtualLanding;
     if (vPos) {
-      const vNk = stateKey(vPos.x, vPos.y, outgoing, finalWS);
+      const vIncoming = OPPOSITE_DI[outgoing];
+      const vNk = stateKey(vPos.x, vPos.y, vIncoming, finalWS);
       if ((best.get(vNk) ?? Infinity) > actualG) {
         best.set(vNk, actualG);
         parent.set(vNk, { fromKey: key, di: outgoing, virtualLanding: true });
-        pushOutgoing(vPos.x, vPos.y, outgoing, finalWS, actualG, vNk);
+        pushOutgoing(vPos.x, vPos.y, vIncoming, finalWS, actualG, vNk);
       }
     }
   }

@@ -91,7 +91,7 @@ export const PROGRESSION = [
     levels:           Infinity,
     weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
     keyDoor:          false,
-    useTeleporter:    false,
+    useTeleporter:    true,
     difficultyTarget: null,   // pick hardest
     candidates:       40,
     playerGears:      6,

@@ -131,9 +131,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const buckets          = [[]];  // buckets[g] = explore entries at gear cost g
   let   currentGearCount = 0;
   let   currentProcessingFrom = null; // { x, y, dir } of the active bucket item (for debug steps)
-  let   currentBranchDiff = 0;        // accumulated difficulty of the current carve path (set before rec())
+  let   currentBranchDiff  = 0;        // accumulated difficulty of the current carve path (set before rec())
+  let   currentBranchMoves = [];       // move sequence (from boat) to reach the current carving position
   const gearDepthArr = new Int16Array(width * height).fill(-1);    // min g when each cell was first carved
   const diffDepthArr = new Float32Array(width * height).fill(-1);  // accumulated difficulty at min-gear path
+  const cellMoves    = new Array(width * height).fill(null);       // optimal move sequence to reach each cell
   // Active-universe state — updated whenever a branch is dequeued.
   let currentBranchActivated = [];
   let currentActivatedSet    = new Set();
@@ -201,13 +203,19 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       const isFree     = isStraight || isReversal;
       const g = currentGearCount + (isFree ? 0 : 1);
       while (buckets.length <= g) buckets.push([]);
-      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff });
+      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff, moves: currentBranchMoves.slice() });
     }
     for (let E = 0; E < 4; E++) {
       const eDir = DIRS[E];
       const ni   = idx(x + eDir.dx, y + eDir.dy);
       if (cells[ni] === G.CRUMBLE && !activatedSet.has(ni)) {
+        // Hitting an adjacent crumble is one button press (in direction E) that breaks it.
+        // Temporarily extend currentBranchMoves with that press so the recursive enqueue
+        // and all subsequent explores from the crumble universe include it in their path.
+        const savedMoves = currentBranchMoves;
+        currentBranchMoves = [...currentBranchMoves, { dx: eDir.dx, dy: eDir.dy }];
         enqueueExplores(x, y, arrivalDir, [...activated, ni].sort((a, b) => a - b), accDiff + DIFF.CRUMBLE);
+        currentBranchMoves = savedMoves;
       }
     }
   }
@@ -287,8 +295,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       if (gearDepthArr[fi] < 0 || currentGearCount < gearDepthArr[fi]) {
         gearDepthArr[fi] = currentGearCount;
         diffDepthArr[fi] = currentBranchDiff;
+        cellMoves[fi]    = currentBranchMoves.slice();
       } else if (currentGearCount === gearDepthArr[fi] && currentBranchDiff < diffDepthArr[fi]) {
         diffDepthArr[fi] = currentBranchDiff;
+        cellMoves[fi]    = currentBranchMoves.slice();
       }
     }
     if (!_steps) return;
@@ -558,6 +568,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // boat entry.  This ensures the entry cell (startY) is never enqueued as a
   // BFS source and so is never explored laterally — matching the player physics
   // where the first slide always passes through the entry cell.
+  currentBranchMoves = [{ dx: 0, dy: 1 }]; // initial DOWN press from boat
   carve(3 /* DOWN */, startX, startY + 1);
   // Process explore entries in gear-cost order: bucket[0] (free moves) before
   // bucket[1] (1-gear bends), etc.  Entries added to the current bucket during
@@ -565,9 +576,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   for (let g = 0; g < buckets.length; g++) {
     const bucket = buckets[g];
     for (let head = 0; head < bucket.length; head++) {
-      const { x, y, arrivalDir, exploreDir, activated, accDiff } = bucket[head];
+      const { x, y, arrivalDir, exploreDir, activated, accDiff, moves } = bucket[head];
       currentGearCount       = g;
       currentBranchDiff      = accDiff ?? 0;
+      currentBranchMoves     = [...(moves ?? []), { dx: DIRS[exploreDir].dx, dy: DIRS[exploreDir].dy }];
       currentProcessingFrom  = { x: x - 1, y: y - 1, dir: DIRS[exploreDir].key };
       currentBranchActivated = activated ?? [];
       currentActivatedSet    = new Set(currentBranchActivated);
@@ -725,6 +737,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     doorRequirements, teleporterMap, seed,
     visitedDirs: visitedDirsOut, useKeyDoor,
     pathWorldStates,
+    solutionPath: cellMoves[goalFlat] ?? null,
   };
 }
 
