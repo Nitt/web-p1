@@ -139,16 +139,14 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
     const flatIdx = ny * width + nx;
     const cell    = cells[flatIdx];
 
-    // ── SKIP re-entry into the teleport entry we just exited ──────────────
-    // Prevents an infinite loop when exit is positioned so that continuing
-    // the slide in the same direction would immediately re-enter the entry.
+    // ── STOP before re-entering the teleport entry we just came from ────────
+    // After A→B teleport, continuing in direction X may loop back toward A.
+    // Break WITHOUT stepping onto A — landing on a teleporter cell would let
+    // the solver use it as a bend point (90° turn at a teleporter), which is
+    // physically impossible since entering a teleporter always teleports you.
     if (flatIdx === skipTeleportEntry) {
       skipTeleportEntry = -1;
-      x = nx; y = ny;
-      if (level.goal && x === level.goal.x && y === level.goal.y) break;
-      if (cell === CellType.STICKY) break;
-      if (gearSet && gearSet.has(flatIdx)) break;
-      continue;
+      break;
     }
 
     // ── WALL ──────────────────────────────────────────────────────────────

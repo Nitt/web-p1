@@ -438,7 +438,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           // Player slides through the entry and emerges at the exit.
           // Mark the entry as visited so it's not re-entered from this direction,
           // then continue carving from the exit in the same direction.
-          markVisited(ni, dirIdx);
           if (!hasVisited(exitNi, dirIdx)) carve(dirIdx, ex, ey, dirIdx, accDiff + DIFF.TELEPORT);
         } else {
           carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
@@ -459,7 +458,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   function carve(dirIdx, x, y, arrivalDirIdx = dirIdx, accDiff = 0) {
     const i = idx(x, y);
     if (hasVisited(i, dirIdx)) return;
-    markVisited(i, dirIdx);
+    if (cells[i] !== G.TELEPORTER) markVisited(i, dirIdx);
 
     const dir  = DIRS[dirIdx];
     const nx   = x + dir.dx;
