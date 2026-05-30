@@ -559,6 +559,7 @@ const FAST_RETRACT_MS_PER_CELL = 50; // retraction speed when player is standing
 let _retractToken = 0;
 let _moveToken    = 0;
 function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, totalGears, level, onDone, tailEndOverride = null, tailStartOverride = null, suppressTailSpin = false, msPerCell = MOVE_MS_PER_CELL) {
+  if (_batchRunning) { onDone(); return; }
   const token = ++_retractToken;
 
   // Build ordered waypoints: tailStart → fromGears[last] → … → tailEnd.
@@ -745,7 +746,26 @@ function _executeBacktrack(gearIdx) {
     });
   }
 
-  step(0, state.playerPos);
+  if (_batchRunning) {
+    state.playerPos = { x: backtrackPos.x, y: backtrackPos.y };
+    state.isMoving  = false;
+    if (gearIdx < 0) state.prevDir = null;
+    if (gearIdx >= 0 && state.gears.length > 0) {
+      const last = state.gears[state.gears.length - 1];
+      if (!last.isTeleport && last.x === state.playerPos.x && last.y === state.playerPos.y) {
+        const prev = state.gears.length > 1
+          ? _gearOutPos(state.gears[state.gears.length - 2])
+          : state.level.start;
+        state.gears.pop();
+        state.gearsLeft++;
+        state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
+      }
+    }
+    setChainSpinning(false);
+    _flushQueuedMove();
+  } else {
+    step(0, state.playerPos);
+  }
 }
 
 /** Skip to the next level (debug/test shortcut). */
@@ -1305,15 +1325,21 @@ function _executeMove(dx, dy) {
 
   const _comingFromBoat = state.playerPos.y < 0;
 
-  animatePlayer(state.playerPos, target, state.level, () => {
-    if (moveToken !== _moveToken) return;
+  if (_batchRunning) {
+    if (teleportInfo) teleportInfo.onTeleportCrossing();
     state.playerPos = { x: target.x, y: target.y };
     state.isMoving  = false;
-    playLand();
     _onPlayerLanded(target, dx, dy, ctx);
-    // If the player just dived AND needed the hint, schedule an inactivity nudge.
-    if (_comingFromBoat && _diveHintShown) {
-      _moveHintTimer = setTimeout(showMoveHint, 3500);
-    }
-  }, teleportInfo, !tc ? { dx, dy } : null);
+  } else {
+    animatePlayer(state.playerPos, target, state.level, () => {
+      if (moveToken !== _moveToken) return;
+      state.playerPos = { x: target.x, y: target.y };
+      state.isMoving  = false;
+      playLand();
+      _onPlayerLanded(target, dx, dy, ctx);
+      if (_comingFromBoat && _diveHintShown) {
+        _moveHintTimer = setTimeout(showMoveHint, 3500);
+      }
+    }, teleportInfo, !tc ? { dx, dy } : null);
+  }
 }
