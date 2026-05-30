@@ -249,6 +249,8 @@ body.debug .cell-dir[data-dir="right"] { right: 1px;  top: 50%;  transform: tran
 #cog-debug[data-overrun="1"] { color: #f4a; }
 #cog-debug[hidden] { display: none; }
 
+#debug-btns[hidden] { display: none; }
+
 #debug-btns {
   position: fixed;
   bottom: 0.5rem;

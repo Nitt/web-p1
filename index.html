@@ -16,7 +16,7 @@
 <h1 id="level-label">Level 1</h1>
       <div class="header-actions">
         <button class="btn-ghost" id="skip-btn" aria-label="Skip level" hidden>Skip</button>
-        <button class="btn-ghost" id="auto-solve-btn" aria-label="Auto-solve">Auto</button>
+        <button class="btn-ghost" id="auto-solve-btn" aria-label="Auto-solve" hidden>Auto</button>
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
         <input id="level-jump-input" type="number" min="1" step="1" placeholder="#">
         <button class="btn-ghost" id="level-jump-btn" aria-label="Jump to level">Go</button>
@@ -100,8 +100,9 @@
 
   <script>
     if (new URLSearchParams(location.search).has('debug')) {
-      document.getElementById('debug-btns').hidden = false;
-      document.getElementById('skip-btn').hidden   = false;
+      document.getElementById('debug-btns').hidden    = false;
+      document.getElementById('skip-btn').hidden      = false;
+      document.getElementById('auto-solve-btn').hidden = false;
     }
   </script>
 
