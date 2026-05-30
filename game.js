@@ -291,7 +291,13 @@ export function init() {
   }).observe(gridContainer);
 
   const urlParams = new URLSearchParams(window.location.search);
-  loadLevel(urlParams.has('tp') ? _makeTeleporterTestLevel() : SAMPLE_LEVELS[0]);
+  if (urlParams.has('tp')) {
+    loadLevel(_makeTeleporterTestLevel());
+  } else if (urlParams.has('level')) {
+    jumpToLevel(parseInt(urlParams.get('level'), 10));
+  } else {
+    loadLevel(SAMPLE_LEVELS[0]);
+  }
 }
 
 // ─── level loading ────────────────────────────────────────────────────────────
@@ -320,6 +326,7 @@ function loadLevel(level) {
   state.peakGearsUsed = 0;
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
+  history.replaceState(null, '', `?level=${level.id}`);
 
   // Debug: show cog budget breakdown when a key requires more gears than the direct goal path.
   const cogDebugEl = document.getElementById('cog-debug');
