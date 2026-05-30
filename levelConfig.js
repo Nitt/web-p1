@@ -40,7 +40,7 @@
  *   Useful for tutorial levels that must teach a specific mechanic on entry.
  */
 export const PROGRESSION = [
-  /*{
+  {
     // ── first level ── simple and quick to load
     levels:           1,
     weights:          { sticky: 0.08, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
@@ -85,7 +85,7 @@ export const PROGRESSION = [
     difficultyTarget: [22, 30],
     candidates:       35,
     playerGears:      5,
-  },*/
+  },
   {
     // ── everything ── full chaos, key/door cycles
     levels:           Infinity,
