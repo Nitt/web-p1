@@ -27,6 +27,7 @@ let counterSpan = null;
 let boatEl = null;
 let waterlineEl = null;
 let skyEl = null;
+let _waveAnimHandle = null;
 let containerEl = null;
 let diveIndicatorEl = null;
 let moveHintEl = null;
@@ -217,6 +218,7 @@ export function buildGrid(container, level) {
   waterlineEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   waterlineEl.setAttribute('class', 'waterline-svg');
   container.appendChild(waterlineEl);
+  _loadAndAnimateWaterline();
 
   boatEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   boatEl.setAttribute('class', 'boat-svg');
@@ -1147,22 +1149,24 @@ function _updateBoatAndWaterline(level) {
   const cellW = gridRect.width  / level.width;
   const cellH = gridRect.height / level.height;
 
+  const boatW   = cellW * 5.7;
+  const boatH   = cellH * 3.0;
+  const startCx = gLeft + (level.start.x + 0.5) * cellW;
+
   // ── Waterline ────────────────────────────────────────────────────────
-  // Wave band height + extends 2.5 cells into the grid for water effect
-  const wlH    = Math.max(8, cellH * 0.18);
-  const waterH = wlH + cellH * 2.5;
-  waterlineEl.style.left   = gLeft + 'px';
+  // Spans the boat footprint plus a small margin; nothing renders outside that.
+  const wlH      = Math.max(8, cellH * 0.18);
+  const waterH   = wlH + cellH * 2.5;
+  const wlMargin = cellW * 0.6;
+  const wlW      = boatW + wlMargin * 2;
+  waterlineEl.style.left   = (startCx - wlW / 2) + 'px';
   waterlineEl.style.top    = (gTop - wlH * 0.5 + cellH * 0.5) + 'px';
-  waterlineEl.style.width  = gW    + 'px';
+  waterlineEl.style.width  = wlW   + 'px';
   waterlineEl.style.height = waterH + 'px';
-  _drawWaterline(gW, wlH, waterH);
 
   // ── Boat ─────────────────────────────────────────────────────────────
   // Hull deck line is at y≈34 out of viewBox height 60
   // Align that line with the waterline (gTop)
-  const boatW   = cellW * 5.7;
-  const boatH   = cellH * 3.0;
-  const startCx = gLeft + (level.start.x + 0.5) * cellW;
   boatEl.style.left   = (startCx - boatW / 2) + 'px';
   boatEl.style.top    = (gTop - boatH * (34 / 60)) + 'px';
   boatEl.style.width  = boatW + 'px';
@@ -1190,73 +1194,77 @@ function _drawBoat() {
     });
 }
 
-function _drawWaterline(W, wlH, totalH) {
+function _loadAndAnimateWaterline() {
   if (!waterlineEl) return;
+  if (_waveAnimHandle) { cancelAnimationFrame(_waveAnimHandle); _waveAnimHandle = null; }
+
   const NS = 'http://www.w3.org/2000/svg';
   waterlineEl.innerHTML = '';
-  waterlineEl.setAttribute('viewBox', `0 0 ${W} ${totalH}`);
+  waterlineEl.setAttribute('viewBox', '0 0 100 30');
+  waterlineEl.setAttribute('preserveAspectRatio', 'none');
+  waterlineEl.setAttribute('overflow', 'visible');
 
-  const amp    = wlH * 0.38;
-  const cy     = wlH * 0.55;
-  const period = Math.max(30, W / 5);
-  const cp     = period / 4;
-
-  // Wave scrolls LEFT (natural ocean motion).
-  // At t=0 visible area is x=[0,W]; at t=1 (translate=-period) visible is x=[period, W+period].
-  // So wave path must cover x=[0, W + period*2] to always fill the visible window.
-  const coverW   = W + period * 2;
-  const nPeriods = Math.ceil(coverW / period) + 1;
-
-  let waveLine = `M 0 ${cy}`;
-  for (let i = 0; i < nPeriods; i++) {
-    const x0 = i * period;
-    waveLine += ` C ${x0 + cp} ${cy - amp}, ${x0 + period - cp} ${cy + amp}, ${x0 + period} ${cy}`;
-  }
-  const waveRight = nPeriods * period;
-  const waveFill  = waveLine + ` L ${waveRight} ${totalH} L 0 ${totalH} Z`;
-
-  const g = document.createElementNS(NS, 'g');
-
-  // Gradient fill: solid water colour at the wave, fades to transparent lower
   const defs = document.createElementNS(NS, 'defs');
-  const grad = document.createElementNS(NS, 'linearGradient');
-  grad.setAttribute('id', 'wlFade');
-  grad.setAttribute('x1', '0'); grad.setAttribute('y1', '0');
-  grad.setAttribute('x2', '0'); grad.setAttribute('y2', '1');
-  const s0 = document.createElementNS(NS, 'stop');
-  s0.setAttribute('offset', '0%');    s0.setAttribute('stop-color', 'rgba(70,145,210,0.45)');
-  const s1 = document.createElementNS(NS, 'stop');
-  s1.setAttribute('offset', '55%');   s1.setAttribute('stop-color', 'rgba(50,120,185,0.20)');
-  const s2 = document.createElementNS(NS, 'stop');
-  s2.setAttribute('offset', '100%');  s2.setAttribute('stop-color', 'rgba(50,120,185,0)');
-  grad.appendChild(s0); grad.appendChild(s1); grad.appendChild(s2);
-  defs.appendChild(grad);
+  // Horizontal mask fades the ends.
+  // gradientUnits + maskUnits both use userSpaceOnUse so the mask covers the
+  // full viewBox rather than the default objectBoundingBox, which hugs the
+  // tight path bounds and clips the stroke-width at the top and bottom.
+  const maskGrad = document.createElementNS(NS, 'linearGradient');
+  maskGrad.setAttribute('id', 'wl-mask-grad');
+  maskGrad.setAttribute('gradientUnits', 'userSpaceOnUse');
+  maskGrad.setAttribute('x1', '0');   maskGrad.setAttribute('y1', '0');
+  maskGrad.setAttribute('x2', '100'); maskGrad.setAttribute('y2', '0');
+  [['0%', '#000'], ['15%', '#fff'], ['85%', '#fff'], ['100%', '#000']].forEach(([off, color]) => {
+    const s = document.createElementNS(NS, 'stop');
+    s.setAttribute('offset', off); s.setAttribute('stop-color', color);
+    maskGrad.appendChild(s);
+  });
+  const mask = document.createElementNS(NS, 'mask');
+  mask.setAttribute('id', 'wl-mask');
+  mask.setAttribute('maskUnits', 'userSpaceOnUse');
+  mask.setAttribute('x', '0'); mask.setAttribute('y', '-10');
+  mask.setAttribute('width', '100'); mask.setAttribute('height', '50');
+  const maskRect = document.createElementNS(NS, 'rect');
+  maskRect.setAttribute('x', '0');    maskRect.setAttribute('y', '-10');
+  maskRect.setAttribute('width', '100'); maskRect.setAttribute('height', '50');
+  maskRect.setAttribute('fill', 'url(#wl-mask-grad)');
+  mask.appendChild(maskRect);
+  defs.appendChild(maskGrad);
+  defs.appendChild(mask);
   waterlineEl.appendChild(defs);
 
-  const fill = document.createElementNS(NS, 'path');
-  fill.setAttribute('d', waveFill);
-  fill.setAttribute('fill', 'url(#wlFade)');
-  g.appendChild(fill);
+  const strokePath = document.createElementNS(NS, 'path');
+  strokePath.setAttribute('fill', 'none');
+  strokePath.setAttribute('stroke', 'rgba(70,140,200,0.80)');
+  strokePath.setAttribute('stroke-width', '1.5');
+  strokePath.setAttribute('stroke-linecap', 'round');
+  strokePath.setAttribute('stroke-linejoin', 'round');
+  strokePath.setAttribute('mask', 'url(#wl-mask)');
+  waterlineEl.appendChild(strokePath);
 
-  const stroke = document.createElementNS(NS, 'path');
-  stroke.setAttribute('d', waveLine);
-  stroke.setAttribute('fill', 'none');
-  stroke.setAttribute('stroke', 'rgba(70,140,200,0.80)');
-  stroke.setAttribute('stroke-width', '1.5');
-  stroke.setAttribute('stroke-linecap', 'round');
-  g.appendChild(stroke);
+  const N = 60, vbW = 100, baseY = 6;
+  const basePts = Array.from({ length: N }, (_, i) => ({ x: i * vbW / (N - 1), y: baseY }));
+  const t0 = performance.now();
+  const capturedEl = waterlineEl;
 
-  // Scroll left by one period — seamless because wave covers extra width to the right
-  const anim = document.createElementNS(NS, 'animateTransform');
-  anim.setAttribute('attributeName', 'transform');
-  anim.setAttribute('type', 'translate');
-  anim.setAttribute('from', '0 0');
-  anim.setAttribute('to', `-${period} 0`);
-  anim.setAttribute('dur', '2.5s');
-  anim.setAttribute('repeatCount', 'indefinite');
-  g.appendChild(anim);
+  function frame(now) {
+    if (waterlineEl !== capturedEl) return;
+    const t = (now - t0) * 0.001;
 
-  waterlineEl.appendChild(g);
+    const pts = basePts.map(({ x, y }) => {
+      const xn = x / vbW;
+      return { x, y: y +
+        0.9 * Math.sin(xn * 7  - t * 2) +
+        0.2 * Math.sin(xn * 14 + t * 6) +
+        0.1 * Math.sin(xn * 16 + t * 9) };
+    });
+
+    strokePath.setAttribute('d', 'M ' + pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L '));
+
+    _waveAnimHandle = requestAnimationFrame(frame);
+  }
+
+  _waveAnimHandle = requestAnimationFrame(frame);
 }
 
 function _cellPixel(x, y, level) {
