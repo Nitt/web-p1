@@ -688,7 +688,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
 
-  // Select goal: carved EMPTY/STICKY/TELEPORTER cell with the highest accumulated difficulty,
+  // Select goal: carved EMPTY cell with the highest accumulated difficulty,
   // tie-broken by Manhattan distance from start.
   let goal = { x: start.x, y: Math.max(start.y, 0) };
   let _bestDiff = -1, _bestManhattan = 0;
@@ -696,7 +696,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     if (diffDepthArr[flat] < 0) continue;
     if (carvedMask && !carvedMask[flat]) continue;
     const cell = outCells[flat];
-    if (cell === 1 || (cell >= 3 && cell <= 9)) continue; // exclude walls, oneways, crumble, key, door
+    if (cell !== 0) continue; // goal must land on an empty cell only
     const gx = flat % width, gy = Math.floor(flat / width);
     const nm = Math.abs(gx - start.x) + Math.abs(gy - start.y);
     if (diffDepthArr[flat] > _bestDiff || (diffDepthArr[flat] === _bestDiff && nm > _bestManhattan)) {
