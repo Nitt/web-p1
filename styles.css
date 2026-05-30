@@ -170,7 +170,6 @@ html, body {
   position: relative;
   background: transparent;
   aspect-ratio: 1;
-  border: 1.5px solid rgba(255, 255, 255, 0.5);
 }
 
 .cell-coord,

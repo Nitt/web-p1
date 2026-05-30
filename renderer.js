@@ -35,6 +35,7 @@ let counterSpan = null;
 let boatEl = null;
 let waterlineEl = null;
 let skyEl = null;
+let _gridHighlightCanvas = null;
 let _waveAnimHandle = null;
 let _waveFnSmall    = null;   // (xn, t) → dy in SVG units; set in _loadAndAnimateWaterline
 let _waveFnBig      = null;   // (xn, t) → dy in SVG units; set in _loadAndAnimateWaterline
@@ -134,6 +135,7 @@ export function buildGrid(container, level) {
   _currentLevel = level;
   _gearHeartsEl = document.getElementById('gear-hearts');
 
+  _gridHighlightCanvas = null;
   gridEl = document.createElement('div');
   gridEl.className = 'grid';
   container.appendChild(gridEl);
@@ -1152,6 +1154,70 @@ function _gearPath(cx, cy, outerR, innerR, teeth = 8) {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+function _drawGridHighlight() {
+  if (!gridEl || !_currentLevel || !containerEl) return;
+  const gridRect      = gridEl.getBoundingClientRect();
+  const containerRect = containerEl.getBoundingClientRect();
+  const W = Math.round(gridRect.width);
+  const H = Math.round(gridRect.height);
+  if (!W || !H) return;
+
+  if (!_gridHighlightCanvas) {
+    _gridHighlightCanvas = document.createElement('canvas');
+    _gridHighlightCanvas.style.cssText = 'position:absolute;pointer-events:none;';
+    // Insert before the grid so it renders behind it without affecting gridEl.children
+    containerEl.insertBefore(_gridHighlightCanvas, gridEl);
+  }
+  const left = gridRect.left - containerRect.left;
+  const top  = gridRect.top  - containerRect.top;
+  _gridHighlightCanvas.style.left = left + 'px';
+  _gridHighlightCanvas.style.top  = top  + 'px';
+
+  // Skip redraw if the grid size hasn't changed
+  if (_gridHighlightCanvas.width === W && _gridHighlightCanvas.height === H) return;
+
+  _gridHighlightCanvas.width  = W;
+  _gridHighlightCanvas.height = H;
+
+  const level = _currentLevel;
+  const ctx   = _gridHighlightCanvas.getContext('2d');
+  const cW    = W / level.width;
+  const cH    = H / level.height;
+  const blurPx = Math.min(cW, cH) * 0.52;
+  const margin = Math.max(1.5, Math.min(cW, cH) * 0.01);
+
+  // Clip everything to rows 1+ so nothing renders above the waterline
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, cH, W, H - cH);
+  ctx.clip();
+
+  // Blurred blob at each non-empty cell
+  ctx.save();
+  ctx.filter = `blur(${blurPx}px)`;
+  ctx.fillStyle = 'rgba(0, 0, 0, 1.7)';
+  for (let y = 0; y < level.height; y++) {
+    for (let x = 0; x < level.width; x++) {
+      const isGoal = level.goal && x === level.goal.x && y === level.goal.y;
+      if (level.cells[y * level.width + x] === CellType.EMPTY && !isGoal) continue;
+      if (y === 0) continue;
+      ctx.fillRect(x * cW, y * cH, cW, cH);
+    }
+  }
+  ctx.restore();
+
+  // Punch out every cell's interior, leaving only a thin glow ring at each edge
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = 'rgba(0,0,0,1)';
+  for (let y = 1; y < level.height; y++) {
+    for (let x = 0; x < level.width; x++) {
+      ctx.fillRect(x * cW + margin, y * cH + margin, cW - margin * 2, cH - margin * 2);
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
 /**
  * Position and draw the boat SVG above the start cell,
  * and the waterline SVG at the top edge of the grid.
@@ -1208,6 +1274,7 @@ function _updateBoatAndWaterline(level) {
     skyEl.style.background = 'linear-gradient(to bottom, #3a7abd 0%, #6aaee0 45%, #a8d4f0 80%, rgba(168,212,240,0.3) 100%)';
   }
   if (diveIndicatorEl) _updateDiveIndicator(level);
+  _drawGridHighlight();
 }
 
 function _drawBoat() {
