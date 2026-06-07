@@ -16,22 +16,20 @@ import { getRecipe } from './levelConfig.js';
  * CellType values (see puzzle.js):
  *   0 = EMPTY, 1 = WALL, 2 = STICKY,
  *   3 = ONEWAY_LEFT, 4 = ONEWAY_RIGHT, 5 = ONEWAY_UP, 6 = ONEWAY_DOWN,
- *   7 = CRUMBLE, 8 = KEY, 9 = DOOR
+ *   7 = CRUMBLE, 10 = TELEPORTER
  */
 
 export const SAMPLE_LEVELS = (() => {
   const recipe = getRecipe(1, 0);
   return [
     generateHardestLevel(9, 9, {
-      seed:              0,
-      id:                1,
-      candidates:        recipe.candidates,
-      weights:           recipe.weights,
-      useKeyDoor:        false,
-      difficultyTarget:  recipe.difficultyTarget,
-      playerGears:       recipe.playerGears,
-      playerChainLength: recipe.playerChainLength,
-      maxUniverseBits:   recipe.maxUniverseBits ?? Infinity,
+      seed:            0,
+      id:              1,
+      candidates:      recipe.candidates,
+      weights:         recipe.weights,
+      difficultyTarget: recipe.difficultyTarget,
+      playerGears:     recipe.playerGears,
+      maxUniverseBits: recipe.maxUniverseBits ?? Infinity,
     }),
   ];
 })();

@@ -88,21 +88,6 @@ export function playCrumble() {
   osc('sawtooth', 80, 0.18, t, 0.20, 35);
 }
 
-/** Key collected — bright ascending pop. */
-export function playKeyCollect() {
-  const t  = now();
-  const notes = [523, 659, 784, 1047]; // C5–E5–G5–C6
-  notes.forEach((f, i) => osc('sine', f, 0.22, t + i * 0.055, 0.18));
-}
-
-/** Door unlocks — low mechanical click. */
-export function playDoorOpen() {
-  const t = now();
-  osc('square', 180, 0.14, t,        0.06, 120);
-  osc('sine',   95,  0.20, t + 0.05, 0.12, 60);
-  noise(0.08, t, 0.10, 500);
-}
-
 /** Level complete — rising fanfare. */
 export function playWin() {
   const t = now();

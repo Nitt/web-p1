@@ -1,7 +1,7 @@
 import { makeRng } from './random.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, KEY: 6, DOOR: 7, TELEPORTER: 8 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, TELEPORTER: 6 };
 
 const DIRS = [
   { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
@@ -11,7 +11,7 @@ const DIRS = [
 ];
 
 // Probability weights for choosing a cell type when carving into UNTOUCHED — used as defaults
-const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, key: 0.05, empty: 1.00 };
+const WEIGHTS = { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.00 };
 
 // Maps a ONEWAY direction index (matching DIRS .idx) → the CellType value used in the output level
 // Order: LEFT(0)→3, UP(1)→5, RIGHT(2)→4, DOWN(3)→6
@@ -19,15 +19,14 @@ const ONEWAY_OUT = [3, 5, 4, 6];
 
 // Incremental difficulty contributions per interaction type (accumulated during carving).
 const DIFF = {
-  STICKY:           0.5,
-  ONEWAY_TRAVERSE:  1.0,
-  ONEWAY_BLOCKED:   2.5,
-  CRUMBLE:          1.5,
-  CRUMBLE_TRAVERSE: 3.0,
-  KEY:              2.5,
-  DOOR_TRAVERSE:    1.0,
-  DOOR_LOCKED:      3.5,
-  TELEPORT:         2.0,
+  STICKY:           0.2,
+  BLOCK:            0.5,
+  ONEWAY_TRAVERSE:  0.1,
+  ONEWAY_BLOCKED:   3.5,
+  CRUMBLE:                   2.5,
+  CRUMBLE_TRAVERSE:          1.0,
+  CRUMBLE_STRAIGHT_TRAVERSE: 0.5,
+  TELEPORT:         3.0,
 };
 
 
@@ -41,14 +40,10 @@ const DIFF = {
  * @param {number} height  - inner row count
  * @param {{ seed?: number, id?: number|string }} [opts]
  * @returns {{ id, width, height, cells: Uint8Array, start: {x,y}, goal: {x,y},
- *            depths: Int16Array, doorRequirements: Map }}
+ *            depths: Int16Array }}
  */
-export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
+export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGHTS, useTeleporter = false, _steps = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
   const rng = makeRng(seed);
-  // Sync the 'key' weight with useKeyDoor: inject a default if missing when enabled,
-  // strip it if present when disabled — so pickType() and useKeyDoor always agree.
-  if (useKeyDoor && !('key' in weights)) weights = { ...weights, key: 0.05 };
-  else if (!useKeyDoor && 'key' in weights) { weights = { ...weights }; delete weights.key; }
   if (useTeleporter && !('teleporter' in weights)) weights = { ...weights, teleporter: 0.06 };
   else if (!useTeleporter && 'teleporter' in weights) { weights = { ...weights }; delete weights.teleporter; }
   const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
@@ -137,11 +132,10 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   const diffDepthArr = new Float32Array(width * height).fill(-1);  // accumulated difficulty at min-gear path
   const cellMoves    = new Array(width * height).fill(null);       // optimal move sequence to reach each cell
   // Active-universe state — updated whenever a branch is dequeued.
-  let currentBranchActivated = [];
-  let currentActivatedSet    = new Set();
-  // Maps padded door idx → padded key idx, populated as keys are placed.
-  const doorToKeyPaddedMap   = new Map();
-  // Number of toggle cells (crumbles + keys) placed so far.
+  let currentBranchActivated  = [];
+  let currentActivatedSet     = new Set();
+  let currentJustHitCrumble   = null; // padded ni of the crumble hit in the immediately preceding move, or null
+  // Number of toggle cells (crumbles) placed so far.
   let togglesPlaced = 0;
 
   // Direction-index helpers — operate on the CURRENT universe's VD.
@@ -163,7 +157,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // where we came from (already carved).
   // After the direction loop, each adjacent unactivated crumble is hit for free,
   // opening its universe at the same gear cost. Multi-crumble chains use recursion.
-  function enqueueExplores(x, y, arrivalDir, activated, accDiff = 0) {
+  function enqueueExplores(x, y, arrivalDir, activated, accDiff = 0, justHitCrumble = null) {
     const activatedSet = new Set(activated);
     const aDir = DIRS[arrivalDir];
 
@@ -203,7 +197,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       const isFree     = isStraight || isReversal;
       const g = currentGearCount + (isFree ? 0 : 1);
       while (buckets.length <= g) buckets.push([]);
-      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff, moves: currentBranchMoves.slice() });
+      buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff, moves: currentBranchMoves.slice(), justHitCrumble });
     }
     for (let E = 0; E < 4; E++) {
       const eDir = DIRS[E];
@@ -214,7 +208,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         // and all subsequent explores from the crumble universe include it in their path.
         const savedMoves = currentBranchMoves;
         currentBranchMoves = [...currentBranchMoves, { dx: eDir.dx, dy: eDir.dy }];
-        enqueueExplores(x, y, arrivalDir, [...activated, ni].sort((a, b) => a - b), accDiff + DIFF.CRUMBLE);
+        enqueueExplores(x, y, arrivalDir, [...activated, ni].sort((a, b) => a - b), accDiff + DIFF.CRUMBLE, ni);
         currentBranchMoves = savedMoves;
       }
     }
@@ -226,9 +220,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
 
   // Push explores for (queueX, queueY) in the universe where toggleCellIdx is activated.
   // The crumble/key activation itself costs 0 gears (currentGearCount unchanged).
-  function enqueueActivated(toggleCellIdx, queueX, queueY, arrivalDir, accDiff = 0) {
+  function enqueueActivated(toggleCellIdx, queueX, queueY, arrivalDir, accDiff = 0, justHitCrumble = null) {
     const activated = [...currentBranchActivated, toggleCellIdx].sort((a, b) => a - b);
-    enqueueExplores(queueX, queueY, arrivalDir, activated, accDiff);
+    enqueueExplores(queueX, queueY, arrivalDir, activated, accDiff, justHitCrumble);
   }
 
   // Convert cell ni to EMPTY and continue carving in dirIdx from (nx, ny).
@@ -238,27 +232,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     currentBranchDiff = accDiff;
     rec(x, y, nx, ny, `empty (${nx-1},${ny-1})`);
     carve(dirIdx, nx, ny, dirIdx, accDiff);
-  }
-
-  // Tracks key→door linkages placed during carving, used to build doorRequirements after output conversion.
-  const keyDoorPairs = [];
-
-  // Find a random BLOCK cell adjacent to at least one EMPTY cell — candidate for conversion to DOOR.
-  function findDoorCandidate(excludeI) {
-    const candidates = [];
-    for (let py = startY + 1; py < ph - 1; py++) {
-      for (let px = 1; px < pw - 1; px++) {
-        const ci = idx(px, py);
-        if (ci === excludeI || cells[ci] !== G.BLOCK) continue;
-        for (const dir of DIRS) {
-          if (cells[idx(px + dir.dx, py + dir.dy)] === G.EMPTY) {
-            candidates.push({ px, py, ci });
-            break;
-          }
-        }
-      }
-    }
-    return candidates.length ? candidates[Math.floor(rng() * candidates.length)] : null;
   }
 
   // For exporting/snapshotting visitedDirs in the Set<string> format expected
@@ -399,9 +372,9 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.ONEWAY_TRAVERSE);
     } else if (type === 'block') {
       cells[ni] = G.BLOCK;
-      currentBranchDiff = accDiff;
+      currentBranchDiff = accDiff + DIFF.BLOCK;
       rec(x, y, nx, ny, `block (${nx-1},${ny-1})`);
-      enqueue(x, y, arrivalDirIdx, accDiff);
+      enqueue(x, y, arrivalDirIdx, accDiff + DIFF.BLOCK);
     } else if (type === 'crumble') {
       if (togglesPlaced >= maxUniverseBits) { carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff); return; }
       togglesPlaced++;
@@ -411,26 +384,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       // Queue (x,y) only in the crumble-activated universe with a fresh VD.
       // Bumping a crumble immediately activates it, so there is no game state
       // where the player is at (x,y) with the crumble still intact.
-      enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE);
-    } else if (type === 'key' && useKeyDoor && keyDoorPairs.length === 0) {
-      const door = findDoorCandidate(ni);
-      if (door && togglesPlaced < maxUniverseBits) {
-        togglesPlaced++;
-        cells[ni] = G.KEY;
-        cells[door.ci] = G.DOOR;
-        keyDoorPairs.push({ keyI: ni, doorI: door.ci });
-        doorToKeyPaddedMap.set(door.ci, ni);
-        currentBranchDiff = accDiff + DIFF.KEY;
-        rec(x, y, nx, ny, `key (${nx-1},${ny-1})`);
-        // Queue the key cell in the key-activated universe with a fresh VD.
-        // The player lands on the key and immediately collects it, so exploration
-        // starts clean — no inherited visited-dirs from before the key was collected.
-        // The carver will reach the door naturally from the key side and slide through
-        // (door is open), so no extra far-side seeding is needed.
-        enqueueActivated(ni, nx, ny, dirIdx, accDiff + DIFF.KEY);
-      } else {
-        carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
-      }
+      enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE, ni);
     } else if (type === 'teleporter') {
       if (useTeleporter && !hasTeleporter && hasOnlyOpenNeighbors(nx, ny)) {
         const exitNi = findTeleporterExit(nx, ny);
@@ -485,13 +439,14 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         break;
       case G.CRUMBLE:
         if (currentActivatedSet.has(ni)) {
-          currentBranchDiff = accDiff + DIFF.CRUMBLE_TRAVERSE;
+          const traverseScore = currentJustHitCrumble === ni ? DIFF.CRUMBLE_STRAIGHT_TRAVERSE : DIFF.CRUMBLE_TRAVERSE;
+          currentBranchDiff = accDiff + traverseScore;
           rec(x, y, nx, ny, `slide-crumble-gone (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.CRUMBLE_TRAVERSE);
+          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff + traverseScore);
         } else {
           currentBranchDiff = accDiff + DIFF.CRUMBLE;
           rec(x, y, nx, ny, `stopped-crumble (${nx-1},${ny-1})`);
-          enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE);
+          enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE, ni);
         }
         break;
       case G.BLOCK:
@@ -514,30 +469,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           currentBranchDiff = accDiff + DIFF.ONEWAY_BLOCKED;
           rec(x, y, nx, ny, `stopped-oneway-blocked (${nx-1},${ny-1})`);
           enqueue(x, y, arrivalDirIdx, accDiff + DIFF.ONEWAY_BLOCKED);
-        }
-        break;
-      }
-      case G.KEY:
-        if (currentActivatedSet.has(ni)) {
-          currentBranchDiff = accDiff;
-          rec(x, y, nx, ny, `slide-key-collected (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff);
-        } else {
-          currentBranchDiff = accDiff + DIFF.KEY;
-          rec(x, y, nx, ny, `stopped-key (${nx-1},${ny-1})`);
-          enqueueActivated(ni, nx, ny, dirIdx, accDiff + DIFF.KEY);
-        }
-        break;
-      case G.DOOR: {
-        const keyPad = doorToKeyPaddedMap.get(ni);
-        if (keyPad !== undefined && currentActivatedSet.has(keyPad)) {
-          currentBranchDiff = accDiff + DIFF.DOOR_TRAVERSE;
-          rec(x, y, nx, ny, `slide-door-open (${nx-1},${ny-1})`);
-          if (!hasVisited(ni, dirIdx)) carve(dirIdx, nx, ny, dirIdx, accDiff + DIFF.DOOR_TRAVERSE);
-        } else {
-          currentBranchDiff = accDiff + DIFF.DOOR_LOCKED;
-          rec(x, y, nx, ny, `stopped-door-locked (${nx-1},${ny-1})`);
-          enqueue(x, y, arrivalDirIdx, accDiff + DIFF.DOOR_LOCKED);
         }
         break;
       }
@@ -576,13 +507,14 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   for (let g = 0; g < buckets.length; g++) {
     const bucket = buckets[g];
     for (let head = 0; head < bucket.length; head++) {
-      const { x, y, arrivalDir, exploreDir, activated, accDiff, moves } = bucket[head];
+      const { x, y, arrivalDir, exploreDir, activated, accDiff, moves, justHitCrumble } = bucket[head];
       currentGearCount       = g;
       currentBranchDiff      = accDiff ?? 0;
       currentBranchMoves     = [...(moves ?? []), { dx: DIRS[exploreDir].dx, dy: DIRS[exploreDir].dy }];
       currentProcessingFrom  = { x: x - 1, y: y - 1, dir: DIRS[exploreDir].key };
       currentBranchActivated = activated ?? [];
       currentActivatedSet    = new Set(currentBranchActivated);
+      currentJustHitCrumble  = justHitCrumble ?? null;
       currentUniverseKey     = currentBranchActivated.join(',');
       if (!universeVDs.has(currentUniverseKey)) {
         universeVDs.set(currentUniverseKey, new Map());
@@ -610,8 +542,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           break;
         }
         case G.CRUMBLE:    out = 7;  break;   // CellType.CRUMBLE
-        case G.KEY:        out = 8;  break;   // CellType.KEY
-        case G.DOOR:       out = 9;  break;   // CellType.DOOR
         case G.BLOCK:      out = 1;  break;   // CellType.WALL
         case G.TELEPORTER: out = 10; break;   // CellType.TELEPORTER
         default:           out = 0;  break;   // CellType.EMPTY  (UNTOUCHED — never carved)
@@ -633,24 +563,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   const start = { x: startX - 1, y: -1 };
-
-  // Build doorRequirements from key-door pairs placed during carving.
-  // Toggle indices match buildToggleMap: sequential over all CRUMBLE(7) and KEY(8) cells
-  // in flat scan order.
-  const toggleMapForDoors = new Map();
-  let tIdx = 0;
-  for (let i = 0; i < outCells.length; i++) {
-    if (outCells[i] === 7 || outCells[i] === 8) toggleMapForDoors.set(i, tIdx++);
-  }
-  const doorRequirements = new Map();
-  for (const { keyI, doorI } of keyDoorPairs) {
-    const kx = (keyI % pw) - 1, ky = Math.floor(keyI / pw) - 1;
-    const dx = (doorI % pw) - 1, dy = Math.floor(doorI / pw) - 1;
-    if (kx >= 0 && kx < width && ky >= 0 && ky < height && dx >= 0 && dx < width && dy >= 0 && dy < height) {
-      const ti = toggleMapForDoors.get(ky * width + kx);
-      if (ti !== undefined) doorRequirements.set(dy * width + dx, ti);
-    }
-  }
 
   // Fallback: if useTeleporter but the BFS weight never fired (early or unlucky),
   // place a teleporter pair now in `cells` and record a final step for it.
@@ -734,8 +646,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     id, width, height, cells: outCells, start, goal,
     effectiveCogs, goalDifficulty,
     depths, difficulties: diffDepthArr, universeDepths,
-    doorRequirements, teleporterMap, seed,
-    visitedDirs: visitedDirsOut, useKeyDoor,
+    teleporterMap, seed,
+    visitedDirs: visitedDirsOut,
     pathWorldStates,
     solutionPath: cellMoves[goalFlat] ?? null,
   };
@@ -750,12 +662,12 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
  * @param {number} height
  * @param {{ seed?: number, id?: number|string, candidates?: number }} [opts]
  */
-export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useKeyDoor = true, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
+export function generateHardestLevel(width, height, { seed = 0, id = 1, candidates = 300, weights = WEIGHTS, useTeleporter = false, difficultyTarget = null, entrySlide = null, playerGears = Infinity, maxUniverseBits = Infinity } = {}) {
   let best      = null;
   let bestScore = Infinity;
 
   for (let i = 0; i < candidates; i++) {
-    const level = generateLevel(width, height, { seed: seed + i, id, weights, useKeyDoor, useTeleporter, entrySlide, playerGears, maxUniverseBits });
+    const level = generateLevel(width, height, { seed: seed + i, id, weights, useTeleporter, entrySlide, playerGears, maxUniverseBits });
     const d = level.goalDifficulty;
     const score = difficultyTarget !== null ? Math.abs(d - difficultyTarget) : -d;
 
@@ -767,7 +679,6 @@ export function generateHardestLevel(width, height, { seed = 0, id = 1, candidat
   }
 
   best.weights         = weights;
-  best.useKeyDoor      = useKeyDoor;
   best.useTeleporter   = useTeleporter;
   best.maxUniverseBits = maxUniverseBits;
   return best;

@@ -33,12 +33,11 @@ function eq(a, b) {
 // ── Level builder ─────────────────────────────────────────────────────────────
 // Build a level from an array of strings. Character map:
 //   .  EMPTY       W  WALL        S  STICKY      C  CRUMBLE
-//   K  KEY         D  DOOR        <  ONEWAY_LEFT  >  ONEWAY_RIGHT
+//   <  ONEWAY_LEFT  >  ONEWAY_RIGHT
 //   ^  ONEWAY_UP   v  ONEWAY_DOWN
 //   @  start pos (cell stays EMPTY)   G  goal pos (cell stays EMPTY)
 // opts.start / opts.goal override the @ / G markers.
-// opts.doorRequirements: Map<flatIndex, toggleIndex>
-function makeLevel(rows, { start, goal, doorRequirements } = {}) {
+function makeLevel(rows, { start, goal } = {}) {
   const height = rows.length;
   const width  = rows[0].length;
   const cells  = new Uint8Array(width * height);
@@ -47,7 +46,6 @@ function makeLevel(rows, { start, goal, doorRequirements } = {}) {
   const charMap = {
     '.': CellType.EMPTY,        'W': CellType.WALL,
     'S': CellType.STICKY,       'C': CellType.CRUMBLE,
-    'K': CellType.KEY,          'D': CellType.DOOR,
     '<': CellType.ONEWAY_LEFT,  '>': CellType.ONEWAY_RIGHT,
     '^': CellType.ONEWAY_UP,    'v': CellType.ONEWAY_DOWN,
     '@': CellType.EMPTY,        'G': CellType.EMPTY,
@@ -63,7 +61,7 @@ function makeLevel(rows, { start, goal, doorRequirements } = {}) {
   // Default start: boat above mid-column (off-grid at y=-1, won't interfere with tests)
   if (!s) s = { x: Math.floor(width / 2), y: -1 };
   if (!g) g = { x: 0, y: 0 };
-  return { width, height, cells, start: s, goal: g, doorRequirements: doorRequirements ?? null };
+  return { width, height, cells, start: s, goal: g };
 }
 
 // ── random.js ─────────────────────────────────────────────────────────────────
@@ -114,8 +112,6 @@ test('isOneway: false for non-oneway types', () => {
   assert(!isOneway(CellType.WALL),    'WALL');
   assert(!isOneway(CellType.STICKY),  'STICKY');
   assert(!isOneway(CellType.CRUMBLE), 'CRUMBLE');
-  assert(!isOneway(CellType.KEY),     'KEY');
-  assert(!isOneway(CellType.DOOR),    'DOOR');
 });
 
 test('onewayAllows: LEFT only accepts dx=-1', () => {
@@ -185,7 +181,7 @@ test('slides until stopped before a wall', () => {
   const level = makeLevel(['..W..']);
   const r = slidePlayer(level, { x: 0, y: 0 }, 1, 0);
   eq(r.x, 1); eq(r.y, 0);
-  eq(r.crumble, null); eq(r.keyCollected, null);
+  eq(r.crumble, null);
 });
 
 test('slides to grid boundary when nothing stops it', () => {
@@ -251,44 +247,6 @@ test('broken crumble (toggle active) is treated as empty', () => {
   eq(r.crumble, null);
 });
 
-test('player stops on uncollected key; keyCollected is set', () => {
-  // . . K .  — key at col 2
-  const level = makeLevel(['..K.']);
-  const tm = buildToggleMap(level.cells);
-  const r = slidePlayer(level, { x: 0, y: 0 }, 1, 0, tm, 0);
-  eq(r.x, 2); eq(r.y, 0);
-  assert(r.keyCollected !== null, 'keyCollected should be set');
-  eq(r.keyCollected.x, 2); eq(r.keyCollected.y, 0);
-  eq(r.keyCollected.toggleIdx, 0);
-});
-
-test('already-collected key is treated as empty', () => {
-  // . . K .  — key at col 2, toggle 0 already active
-  const level = makeLevel(['..K.']);
-  const tm = buildToggleMap(level.cells);
-  const r = slidePlayer(level, { x: 0, y: 0 }, 1, 0, tm, 0b1);
-  eq(r.x, 3); eq(r.y, 0);
-  eq(r.keyCollected, null);
-});
-
-test('locked door blocks slide', () => {
-  // . . D .  — door at flat index 2, requires toggle 0 which is inactive
-  const doorRequirements = new Map([[2, 0]]);
-  const level = makeLevel(['..D.'], { doorRequirements });
-  const tm = buildToggleMap(level.cells);
-  const r = slidePlayer(level, { x: 0, y: 0 }, 1, 0, tm, 0b0);
-  eq(r.x, 1); eq(r.y, 0);
-});
-
-test('open door is passable', () => {
-  // . . D .  — door at flat index 2, toggle 0 active (key collected)
-  const doorRequirements = new Map([[2, 0]]);
-  const level = makeLevel(['..D.'], { doorRequirements });
-  const tm = buildToggleMap(level.cells);
-  const r = slidePlayer(level, { x: 0, y: 0 }, 1, 0, tm, 0b1);
-  eq(r.x, 3); eq(r.y, 0);
-});
-
 test('gear waypoint (gearSet) acts as sticky — player stops on it', () => {
   // . . . .  — gear placed at col 2 (flat index 2)
   const level = makeLevel(['....']);
@@ -342,8 +300,8 @@ test('start is above the grid at y = -1 with a valid column', () => {
   }
 });
 
-test('goal cell is not a wall, crumble, key, or door', () => {
-  const forbidden = new Set([CellType.WALL, CellType.CRUMBLE, CellType.KEY, CellType.DOOR]);
+test('goal cell is not a wall or crumble', () => {
+  const forbidden = new Set([CellType.WALL, CellType.CRUMBLE]);
   for (const seed of [0, 42, 100, 200, 500]) {
     const { cells, goal, width } = generateLevel(9, 9, { seed });
     const cell = cells[goal.y * width + goal.x];

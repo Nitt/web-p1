@@ -1,11 +1,10 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
-import { makeRng } from './random.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, removeKey, openDoor, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
-import { playSlide, playLand, playBlocked, playCrumble, playKeyCollect, playDoorOpen, playWin } from './sounds.js';
+import { playSlide, playLand, playBlocked, playCrumble, playWin } from './sounds.js';
 
 // ─── DOM refs (set in init) ───────────────────────────────────────────────────
 let gridContainer    = null;
@@ -36,14 +35,12 @@ const state = {
   gears:                [],     // [{x,y}] cog positions (bends/reversals only)
   gearsLeft:            0,      // remaining gear budget
   totalGears:           0,      // starting budget (used for display/scoring)
-  peakGearsUsed:        0,      // highest (totalGears - gearsLeft) seen this level (recorded at key)
   prevDir:              null,   // {dx, dy} of last completed move, for bend detection
   // Parallel-universe / world-state system.
   worldState:           0,
   toggleMap:            null,
   // Progression tracking.
   levelIndex:           1,      // 1-indexed number of the level currently being played
-  levelsSinceKeyDoor:   0,      // levels elapsed since last key/door level appeared
   // One-way double-press backtrack.
   pendingOnewayBreak:   null,   // { dx, dy, owx, owy } — set after first blocked-by-oneway press
   // True while the player is in the boat waiting to dive; cleared on first downward move.
@@ -76,7 +73,7 @@ function _moveArrow({ dx, dy }) {
 function _renderLevelGrid() {
   const { level, playerPos, gears, worldState, toggleMap } = state;
   const { width, height, goal } = level;
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', 'K', 'D', 'T'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', '?', '?', 'T'];
 
   const gearNums = new Map();
   gears.filter(g => !g.isTeleport).forEach((g, i) => gearNums.set(g.y * width + g.x, (i + 1) % 10));
@@ -100,10 +97,7 @@ function _renderLevelGrid() {
         const ct = level.cells[flat];
         const ti = toggleMap?.get(flat);
         if (ti !== undefined && ((worldState >> ti) & 1)) {
-          row += '.';  // crumble broken or key collected
-        } else if (ct === 9 && level.doorRequirements) {
-          const reqTi = level.doorRequirements.get(flat);
-          row += (reqTi !== undefined && ((worldState >> reqTi) & 1)) ? 'd' : 'D';
+          row += '.';  // crumble broken
         } else {
           row += GLYPHS[ct] ?? '?';
         }
@@ -121,9 +115,8 @@ function _logAutoSolveFailure(reason) {
   const remaining  = _solverInitialMoves.slice(_solverMoveIdx);
 
   const features = [];
-  if (level.toggleMap?.size)        features.push(`${level.toggleMap.size} crumble/key toggles`);
-  if (level.doorRequirements?.size) features.push(`${level.doorRequirements.size} door(s)`);
-  if (level.teleporterMap?.size)    features.push('teleporters');
+  if (level.toggleMap?.size)     features.push(`${level.toggleMap.size} crumble toggle(s)`);
+  if (level.teleporterMap?.size) features.push('teleporters');
 
   console.group(`%cLevel ${level.id} — ${reason}`, 'color:#e04060;font-weight:bold');
   console.log(`Size: ${level.width}×${level.height}  |  seed: ${level.seed ?? '?'}  |  features: ${features.join(', ') || 'none'}`);
@@ -138,13 +131,6 @@ function _logAutoSolveFailure(reason) {
     console.log(`Planned moves (${_solverInitialMoves.length}): ${_solverInitialMoves.map(_moveArrow).join(' ')}`);
     if (_solverMoveIdx > 0)        console.log(`  executed (${executed.length}):  ${executed.map(_moveArrow).join(' ')}`);
     if (remaining.length > 0)      console.log(`  remaining (${remaining.length}): ${remaining.map(_moveArrow).join(' ')}`);
-  }
-  if (level.doorRequirements?.size) {
-    const pairs = [...level.doorRequirements.entries()].map(([flatIdx, ti]) => {
-      const dx = flatIdx % level.width, dy = Math.floor(flatIdx / level.width);
-      return `door(${dx},${dy})↔toggle${ti}`;
-    });
-    console.log(`Door requirements: ${pairs.join('  ')}`);
   }
   console.log('Grid:\n' + _renderLevelGrid());
   const levelJSON = JSON.parse(JSON.stringify(level, (k, v) => {
@@ -320,35 +306,20 @@ function loadLevel(level) {
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
   const budget = (level.effectiveCogs ?? goalDepth) > 0 ? (level.effectiveCogs ?? goalDepth) : 1;
-  state.gears         = [];
-  state.gearsLeft     = budget;
-  state.totalGears    = budget;
-  state.peakGearsUsed = 0;
+  state.gears      = [];
+  state.gearsLeft  = budget;
+  state.totalGears = budget;
 
   if (levelLabel) levelLabel.textContent = `Level ${level.id}`;
   history.replaceState(null, '', `?level=${level.id}`);
-
-  // Debug: show cog budget breakdown when a key requires more gears than the direct goal path.
-  const cogDebugEl = document.getElementById('cog-debug');
-  if (cogDebugEl) {
-    if (level.keyDepths && level.keyDepths.length > 0) {
-      const hasOverrun = level.keyDepths.some(k => k.depth > goalDepth);
-      const keyParts   = level.keyDepths.map(k => `K(${k.x},${k.y})=${k.depth >= 0 ? k.depth : '?'}`).join(' ');
-      cogDebugEl.textContent = `goal=${goalDepth} ${keyParts} → budget=${budget}${hasOverrun ? '  ⚠ key>goal' : ''}`;
-      cogDebugEl.dataset.overrun = hasOverrun ? '1' : '';
-      cogDebugEl.hidden = false;
-    } else {
-      cogDebugEl.hidden = true;
-    }
-  }
-  winBanner.hidden     = true;
+  winBanner.hidden = true;
 
   buildGrid(gridContainer, level);
   placePlayer(state.playerPos, level);
   drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, level);
 
   // Kick off background generation of the next level immediately.
-  const nextRecipe = getRecipe(state.nextId, state.levelsSinceKeyDoor);
+  const nextRecipe = getRecipe(state.nextId);
   pregenNext(state.nextSeed, state.nextId, nextRecipe);
 
   // Show the dive indicator and wait for the player to manually dive in.
@@ -365,16 +336,13 @@ function _nextLevel() {
   state.nextSeed += getPendingRecipe()?.candidates ?? 300;
   state.nextId   += 1;
 
-  // Update progression counters before loading so loadLevel's pre-gen is accurate.
   state.levelIndex += 1;
-  const hadKeyDoor = state.level?.doorRequirements?.size > 0;
-  state.levelsSinceKeyDoor = hadKeyDoor ? 0 : state.levelsSinceKeyDoor + 1;
 
   // Use the pre-generated level if ready; otherwise generate synchronously with
   // a reduced candidate count to avoid blocking the main thread too long.
   Promise.resolve(takePendingLevel()).then(level => {
     if (!level) {
-      const recipe = getRecipe(id, state.levelsSinceKeyDoor);
+      const recipe = getRecipe(id);
       level = generateFallback(seed, id, recipe);
     }
     loadLevel(level);
@@ -649,13 +617,11 @@ function _batchAdvanceLevel() {
   state.nextSeed += getPendingRecipe()?.candidates ?? 300;
   state.nextId   += 1;
   state.levelIndex += 1;
-  const hadKeyDoor = state.level?.doorRequirements?.size > 0;
-  state.levelsSinceKeyDoor = hadKeyDoor ? 0 : state.levelsSinceKeyDoor + 1;
 
   Promise.resolve(takePendingLevel()).then(level => {
     if (!_batchRunning) return;
     if (!level) {
-      const recipe = getRecipe(id, state.levelsSinceKeyDoor);
+      const recipe = getRecipe(id);
       level = generateFallback(seed, id, recipe);
     }
     loadLevel(level);
@@ -688,47 +654,40 @@ export function startBatchTest() {
 }
 
 /**
- * Deterministically compute the seed and levelsSinceKeyDoor at level n by
- * simulating the full progression from level 2, using the level seed itself
- * as the RNG source for key/door decisions so the result is always the same.
+ * Deterministically compute the seed at level n by simulating the full
+ * progression from level 2.
  */
 function _computeProgressionForLevel(n) {
-  let seed         = 300;
-  let sinceKeyDoor = 0;
+  let seed = 300;
   for (let i = 2; i < n; i++) {
-    const recipe  = getRecipe(i, sinceKeyDoor, makeRng(seed));
-    sinceKeyDoor  = recipe.useKeyDoor ? 0 : sinceKeyDoor + 1;
-    seed         += recipe.candidates;
+    const recipe = getRecipe(i);
+    seed += recipe.candidates;
   }
-  return { seed, sinceKeyDoor };
+  return { seed };
 }
 
 /**
  * Jump directly to any level number.  Always produces the same level for a
- * given n: seed and key/door decisions are computed deterministically from
- * the level index, and generateFallback provides a fixed candidate count.
+ * given n: seed is computed deterministically from the level index.
  */
 export function jumpToLevel(n) {
   n = Math.max(1, Math.floor(n));
 
   if (n === 1) {
-    state.levelIndex         = 1;
-    state.nextId             = 2;
-    state.nextSeed           = 300;
-    state.levelsSinceKeyDoor = 0;
+    state.levelIndex = 1;
+    state.nextId     = 2;
+    state.nextSeed   = 300;
     loadLevel(SAMPLE_LEVELS[0]);
     return;
   }
 
-  const { seed, sinceKeyDoor } = _computeProgressionForLevel(n);
-  const recipe = getRecipe(n, sinceKeyDoor, makeRng(seed));
+  const { seed } = _computeProgressionForLevel(n);
+  const recipe = getRecipe(n);
   const level  = generateFallback(seed, n, recipe);
 
-  // Set progression state before loadLevel so it pregens the right next level.
-  state.levelIndex         = n;
-  state.nextId             = n + 1;
-  state.nextSeed           = seed + recipe.candidates;
-  state.levelsSinceKeyDoor = level.doorRequirements?.size > 0 ? 0 : sinceKeyDoor + 1;
+  state.levelIndex = n;
+  state.nextId     = n + 1;
+  state.nextSeed   = seed + recipe.candidates;
 
   loadLevel(level);
 }
@@ -892,23 +851,6 @@ function _applyCollectibles(target) {
     removeCrumble(cx, cy, state.level);
     playCrumble();
   }
-  if (target.keyCollected) {
-    const { x: kx, y: ky, toggleIdx } = target.keyCollected;
-    state.peakGearsUsed = Math.max(state.peakGearsUsed, state.totalGears - state.gearsLeft);
-    if (toggleIdx !== undefined) {
-      state.worldState |= (1 << toggleIdx);
-      if (state.level.doorRequirements) {
-        for (const [flatIdx, reqToggle] of state.level.doorRequirements) {
-          if (reqToggle === toggleIdx) {
-            openDoor(flatIdx % state.level.width, Math.floor(flatIdx / state.level.width), state.level);
-            playDoorOpen();
-          }
-        }
-      }
-    }
-    removeKey(kx, ky, state.level);
-    playKeyCollect();
-  }
 }
 
 function _animateWinRetract(onDone) {
@@ -982,17 +924,15 @@ function _handleWin() {
   state.queuedMove = null;
 
   const gearsUsed   = state.totalGears - state.gearsLeft;
-  const peakGears   = Math.max(gearsUsed, state.peakGearsUsed);
-  const gearOptimal = peakGears === state.totalGears;
+  const gearOptimal = gearsUsed === state.totalGears;
   if (_batchRunning) {
     _batchTotal++;
     if (gearOptimal) {
       console.log(`✓ Level ${state.level.id}`);
     } else {
-      const gearsLeft2 = state.totalGears - peakGears;
       console.warn(
         `Level ${state.level.id} — budget mismatch: ` +
-        `gears ${peakGears}/${state.totalGears}${gearOptimal ? ' ✓' : ` (${gearsLeft2} left)`}`
+        `gears ${gearsUsed}/${state.totalGears} (${state.gearsLeft} left)`
       );
     }
     _batchAdvanceLevel();
@@ -1004,7 +944,7 @@ function _handleWin() {
   } else {
     console.log(
       `Level ${state.level.id} — ` +
-      `gears: ${peakGears}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.totalGears - peakGears} left)`}`
+      `gears: ${gearsUsed}/${state.totalGears} ${gearOptimal ? '✓' : `(${state.gearsLeft} left)`}`
     );
   }
 

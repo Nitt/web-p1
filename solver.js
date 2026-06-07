@@ -155,12 +155,9 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
 
     const lx = result.x, ly = result.y;
 
-    const keyWS  = result.keyCollected
-      ? ws | (1 << result.keyCollected.toggleIdx)
-      : ws;
     const finalWS = result.crumble
-      ? keyWS | (1 << result.crumble.toggleIdx)
-      : keyWS;
+      ? ws | (1 << result.crumble.toggleIdx)
+      : ws;
 
     // ── Goal ──────────────────────────────────────────────────────────────────
     if (lx === goal.x && ly === goal.y) {

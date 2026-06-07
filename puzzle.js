@@ -8,8 +8,6 @@ export const CellType = {
   ONEWAY_UP:    5,   // passable only when moving up    (dy=-1)
   ONEWAY_DOWN:  6,   // passable only when moving down  (dy=+1)
   CRUMBLE:      7,   // acts like a wall, but crumbles when the player stops against it
-  KEY:          8,   // player stops on it and collects it (activates its toggle)
-  DOOR:         9,   // blocks like a wall; passable once the paired key's toggle is active
   TELEPORTER:  10,   // paired cells; player slides into entry and continues from paired exit
 };
 
@@ -34,14 +32,11 @@ export function onewayAllows(type, dx, dy) {
 
 // ── World-state / toggle system ───────────────────────────────────────────────
 //
-// Topological changes to a level (crumble breaks, key collection, door opening,
-// …) are modelled as "toggles".  Each toggle has an index (0–30) and a bit in a
-// 31-bit integer called the worldState.  A set bit means the toggle is "active"
-// (e.g. the crumble broke, or the key was collected).
+// Topological changes to a level (crumble breaks) are modelled as "toggles".
+// Each toggle has an index (0–30) and a bit in a 31-bit integer called the
+// worldState.  A set bit means the toggle is "active" (e.g. the crumble broke).
 //
-// Cells that ACTIVATE a toggle: CRUMBLE (auto-breaks when stopped against),
-//                               KEY (collected when player lands on it).
-// Cells that REQUIRE a toggle:  DOOR (passable only after paired key collected).
+// Cells that ACTIVATE a toggle: CRUMBLE (auto-breaks when stopped against).
 //
 // Adding new types of topological change only requires:
 //   1. Assigning toggle indices in buildToggleMap
@@ -49,7 +44,7 @@ export function onewayAllows(type, dx, dy) {
 
 /**
  * Scan a level's cells and assign a toggle index to every activating cell.
- * Currently: CRUMBLE and KEY cells (in flat scan order).
+ * Currently: CRUMBLE cells only (in flat scan order).
  *
  * @param {Uint8Array} cells
  * @returns {Map<number, number>}  flatIndex → toggleIndex
@@ -58,10 +53,9 @@ export function buildToggleMap(cells) {
   const map = new Map();
   let count = 0;
   for (let i = 0; i < cells.length; i++) {
-    if (cells[i] === CellType.CRUMBLE || cells[i] === CellType.KEY) {
+    if (cells[i] === CellType.CRUMBLE) {
       map.set(i, count++);
     }
-    // Future: alternating blocks, switches, etc.
   }
   return map;
 }
@@ -85,14 +79,10 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  *   WALL        — stop before the cell
  *   CRUMBLE     — stop before the cell when solid; pass through when its toggle
  *                 is active in worldState (i.e. already broken)
- *   KEY         — move onto it and stop (collecting it) when its toggle is NOT
- *                 active; treat as empty (slide through) when already collected
- *   DOOR        — stop before it when its required toggle is NOT active (locked);
- *                 treat as empty when the required toggle IS active (open)
  *   ONEWAY_*    — stop before the cell if moving in the wrong direction
  *   STICKY      — move onto the cell, then stop
  *
- * @param {object} level      - { width, height, cells, goal?, doorRequirements? }
+ * @param {object} level      - { width, height, cells, goal? }
  * @param {{x,y}}  pos
  * @param {number} dx
  * @param {number} dy
@@ -103,20 +93,16 @@ export function isToggleActive(toggleMap, worldState, flatIndex) {
  * @returns {{
  *   x: number,
  *   y: number,
- *   crumble:      { x, y, toggleIdx } | null,
- *   keyCollected: { x, y, toggleIdx } | null,
+ *   crumble: { x, y, toggleIdx } | null,
  * }}
- *   crumble      — non-null when the slide stopped before a solid crumble.
- *   keyCollected — non-null when the player landed on an uncollected key.
- *   In both cases the caller computes the new worldState:
- *     newWS = worldState | (1 << toggleIdx)
+ *   crumble — non-null when the slide stopped before a solid crumble.
+ *   Caller computes the new worldState: newWS = worldState | (1 << toggleIdx)
  */
 export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0, gearSet = null) {
   const { width, height, cells } = level;
   let x = pos.x;
   let y = pos.y;
   let crumble          = null;
-  let keyCollected     = null;
   let blockedByOneway  = null;
   let teleportCrossing    = null;
   let virtualLanding      = null; // cell just past the last traversable one-way on this slide
@@ -162,28 +148,6 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
         break;
       }
       // Broken — treat as empty, continue sliding
-    }
-
-    // ── KEY: collect on first landing; treat as empty once collected ───────
-    if (cell === CellType.KEY) {
-      const toggleIdx = toggleMap ? toggleMap.get(flatIdx) : undefined;
-      const collected = toggleIdx !== undefined && (worldState & (1 << toggleIdx)) !== 0;
-      if (!collected) {
-        x = nx; y = ny;
-        keyCollected = { x, y, toggleIdx };
-        break;
-      }
-      // Already collected — treat as empty, fall through to normal move
-    }
-
-    // ── DOOR: locked until its required toggle is active ──────────────────
-    if (cell === CellType.DOOR) {
-      const req = level.doorRequirements?.get(flatIdx);
-      const open = req !== undefined && (worldState & (1 << req)) !== 0;
-      if (!open) {
-        break;
-      }
-      // Open — treat as empty, fall through
     }
 
     // ── ONEWAY: stop if approaching from the wrong direction ──────────────
@@ -239,5 +203,5 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
 
   // Discard virtual landing if it coincides with the actual landing (redundant node).
   if (virtualLanding && virtualLanding.x === x && virtualLanding.y === y) virtualLanding = null;
-  return { x, y, crumble, keyCollected, blockedByOneway, teleportCrossing, virtualLanding };
+  return { x, y, crumble, blockedByOneway, teleportCrossing, virtualLanding };
 }
