@@ -14,6 +14,11 @@ const CHAIN_STOPS = [
   { upTo: Infinity, r: 65,  g: 85,  b: 130 },
 ];
 
+const LINK_LINE = 5;   // px of thin connector between links
+const LINK_RECT = 5;   // px of link rectangle (equal to LINK_LINE)
+const LINK_TOT  = LINK_LINE + LINK_RECT;   // 10 px period
+const LINK_LEAN = 2;   // px offset from gear centre to the correct side
+
 // ── speed ─────────────────────────────────────────────────────────────────────
 let _speedMult = 1;
 export function setSpeedMultiplier(m) { _speedMult = Math.max(0.1, m); }
@@ -396,49 +401,199 @@ function _drawArrow(ctx, cx, cy, type) {
 // Chain
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Build lean-offset polyline for one chain segment (boat/teleport-exit → player).
+// At each interior gear (bend) the chain is offset LINK_LEAN px to the
+// CW or CCW side so it visually runs along the outer face of the gear.
+function _buildLeanPoints(rawPoints) {
+  const N = rawPoints.length;
+  if (N < 2) return rawPoints.map(p => ({ ...p }));
+  const R = LINK_LEAN;
+
+  const dirs = [];
+  for (let i = 1; i < N; i++) {
+    const dx = rawPoints[i].x - rawPoints[i - 1].x;
+    const dy = rawPoints[i].y - rawPoints[i - 1].y;
+    const l  = Math.hypot(dx, dy);
+    dirs.push(l > 0.01 ? { x: dx / l, y: dy / l } : { x: 1, y: 0 });
+  }
+
+  // +1 = CW visual turn (screen y-down) → chain on right of travel direction
+  // -1 = CCW visual turn → chain on left
+  const lds = new Array(N).fill(1);
+  if (N >= 3) {
+    let prevLD = 1;
+    for (let i = 1; i < N - 1; i++) {
+      const cross = dirs[i - 1].x * dirs[i].y - dirs[i - 1].y * dirs[i].x;
+      const ld = cross !== 0 ? Math.sign(cross) : prevLD;
+      prevLD = ld;
+      lds[i] = ld;
+    }
+    lds[0]     = lds[1];
+    lds[N - 1] = lds[N - 2];
+  }
+
+  const sideOff = (d, ld) => ld > 0
+    ? { x: d.y * R,  y: -d.x * R }   // right of direction
+    : { x: -d.y * R, y:  d.x * R };  // left of direction
+
+  const out = [{ ...rawPoints[0] }];
+  for (let i = 1; i < N - 1; i++) {
+    const di  = dirs[i - 1];
+    const do_ = dirs[i];
+    const ld  = lds[i];
+    const cross = di.x * do_.y - di.y * do_.x;
+    const dot   = di.x * do_.x + di.y * do_.y;
+    if (Math.abs(cross) < 0.01 && dot > 0) {
+      out.push({ ...rawPoints[i] });
+    } else {
+      const c  = rawPoints[i];
+      const oi = sideOff(di,  ld);
+      const oo = sideOff(do_, ld);
+      out.push({ x: c.x + oi.x, y: c.y + oi.y });
+      out.push({ x: c.x + oo.x, y: c.y + oo.y });
+    }
+  }
+  out.push({ ...rawPoints[N - 1] });
+  return out;
+}
+
+// Darker version of chain colour for the gap pixels between links.
+function _chainDimColor(cellDist) {
+  for (const { upTo, r, g, b } of CHAIN_STOPS) {
+    if (cellDist < upTo) return `rgb(${Math.round(r*0.85)},${Math.round(g*0.85)},${Math.round(b*0.85)})`;
+  }
+  const { r, g, b } = CHAIN_STOPS[CHAIN_STOPS.length - 1];
+  return `rgb(${Math.round(r*0.85)},${Math.round(g*0.85)},${Math.round(b*0.85)})`;
+}
+
+// Draw one lean polyline segment as chain links.
+// Pass 1 – hollow rectangular link bodies (holes stay empty — nothing drawn inside).
+// Pass 2 – thin 1 px connector line on top, overlapping the rect edges on both sides.
+function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
+  if (pts.length < 2) return;
+
+  // Build sub-segment list for position sampling
+  const segs = [];
+  let totalLen = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dy = pts[i].y - pts[i - 1].y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.01) {
+      segs.push({ x0: pts[i-1].x, y0: pts[i-1].y, dx, dy, len, cumLen: totalLen });
+      totalLen += len;
+    }
+  }
+  if (!segs.length) return;
+
+  function sampleAt(d) {
+    d = Math.max(0, Math.min(d, totalLen));
+    for (const s of segs) {
+      if (d <= s.cumLen + s.len + 0.001) {
+        const t = s.len > 0 ? (d - s.cumLen) / s.len : 0;
+        return { x: s.x0 + s.dx * t, y: s.y0 + s.dy * t,
+                 isHoriz: Math.abs(s.dx) >= Math.abs(s.dy) };
+      }
+    }
+    const s = segs[segs.length - 1];
+    return { x: s.x0 + s.dx, y: s.y0 + s.dy,
+             isHoriz: Math.abs(s.dx) >= Math.abs(s.dy) };
+  }
+
+  // ── Pass 1: hollow link rectangles (drawn first so holes stay empty) ───────
+  // Link k centre sits at distFromBoat = (LINK_LINE + LINK_RECT/2) + k*LINK_TOT from boat.
+  // In terms of position d along this segment (player-side = 0):
+  //   d = totalChainLen - distFromTailPx - (LINK_LINE + LINK_RECT/2) - k*LINK_TOT
+  const base = totalChainLen - distFromTailPx - (LINK_LINE + LINK_RECT / 2);
+  const kMin = Math.ceil((base - totalLen) / LINK_TOT);
+  const kMax = Math.floor(base / LINK_TOT);
+
+  for (let k = kMin; k <= kMax; k++) {
+    const d = base - k * LINK_TOT;
+    if (d < 0 || d > totalLen) continue;
+
+    const pt  = sampleAt(d);
+    const col = _chainColor((distFromTailPx + d) / TILE);
+    const cx  = Math.round(pt.x);
+    const cy  = Math.round(pt.y);
+
+    ctx.fillStyle = col;
+    if (pt.isHoriz) {
+      // 5 wide × 3 tall — hole is 3×1 in the middle
+      ctx.fillRect(cx - 2, cy - 1, 5, 1);  // top edge
+      ctx.fillRect(cx - 2, cy + 1, 5, 1);  // bottom edge
+      ctx.fillRect(cx - 2, cy - 1, 1, 3);  // left edge
+      ctx.fillRect(cx + 2, cy - 1, 1, 3);  // right edge
+    } else {
+      // 3 wide × 5 tall — hole is 1×3 in the middle
+      ctx.fillRect(cx - 1, cy - 2, 3, 1);  // top edge
+      ctx.fillRect(cx - 1, cy + 2, 3, 1);  // bottom edge
+      ctx.fillRect(cx - 1, cy - 2, 1, 5);  // left edge
+      ctx.fillRect(cx + 1, cy - 2, 1, 5);  // right edge
+    }
+  }
+
+  // ── Pass 2: thin 1 px connector on top ─────────────────────────────────────
+  // Drawn only in the connector zone + 1 px overlap into each rect edge.
+  // Pixels inside the rect interior are skipped so the hole stays empty.
+  let cumLen = 0;
+  for (const s of segs) {
+    const steps = Math.ceil(s.len);
+    for (let st = 0; st <= steps; st++) {
+      const t = s.len > 0 ? st / steps : 0;
+      const distFromPlayer = distFromTailPx + cumLen + t * s.len;
+      const distFromBoat   = totalChainLen - distFromPlayer;
+      const phase          = ((distFromBoat % LINK_TOT) + LINK_TOT) % LINK_TOT;
+      // Skip the rect interior (phases LINK_LINE+1 … LINK_TOT-2); keep the
+      // 1 px on each rect edge so the wire visibly overlaps the rectangle.
+      if (phase > LINK_LINE && phase < LINK_TOT - 1) continue;
+      ctx.fillStyle = _chainDimColor(distFromPlayer / TILE);
+      ctx.fillRect(Math.round(s.x0 + s.dx * t), Math.round(s.y0 + s.dy * t), 1, 1);
+    }
+    cumLen += s.len;
+  }
+}
+
 function _renderChain(ctx) {
   if (!_level) return;
   const tailPx = _chainTailPx ?? _playerPx;
   const boatPx = _cellCanvasPx(_level.start.x, -1);
 
-  // Build segments and bridges splitting at teleporter crossings
-  const segs    = [];
+  // Build full point arrays per segment (split at teleporter crossings)
+  const rawSegs = [];
   const bridges = [];
-  let cur = boatPx;
+  let cur = [boatPx];
 
   for (const g of _chainGears) {
     if (g.isTeleport) {
-      const entryPx = _cellCanvasPx(g.x,     g.y);
-      const exitPx  = _cellCanvasPx(g.exitX, g.exitY);
-      segs.push({ from: cur, to: entryPx });
-      bridges.push({ from: entryPx, to: exitPx });
-      cur = exitPx;
+      cur.push(_cellCanvasPx(g.x, g.y));
+      rawSegs.push(cur);
+      const exitPx = _cellCanvasPx(g.exitX, g.exitY);
+      bridges.push({ from: cur[cur.length - 1], to: exitPx });
+      cur = [exitPx];
     } else {
-      const gp = _cellCanvasPx(g.x, g.y);
-      segs.push({ from: cur, to: gp });
-      cur = gp;
+      cur.push(_cellCanvasPx(g.x, g.y));
     }
   }
-  segs.push({ from: cur, to: tailPx });
+  cur.push(tailPx);
+  rawSegs.push(cur);
 
-  // Compute per-segment lengths for colour mapping
-  for (const seg of segs) {
-    seg.dist = Math.hypot(seg.to.x - seg.from.x, seg.to.y - seg.from.y);
-  }
+  // Segment lengths for distance-from-player accumulation
+  const segLens = rawSegs.map(pts => {
+    let l = 0;
+    for (let i = 1; i < pts.length; i++)
+      l += Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y);
+    return l;
+  });
 
-  // Draw segments coloured by distance from player
-  ctx.lineWidth = 2;
-  ctx.lineCap = 'square';
+  // Total length used to phase-lock dashes to the boat end
+  const totalChainLen = segLens.reduce((a, b) => a + b, 0);
+
+  // Draw chain, player-end segment first (distFromTail = 0 there)
   let distFromTail = 0;
-  for (let i = segs.length - 1; i >= 0; i--) {
-    const { from, to, dist } = segs[i];
-    const midDist = distFromTail + dist / 2;
-    ctx.strokeStyle = _chainColor(midDist / TILE);
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.stroke();
-    distFromTail += dist;
+  for (let si = rawSegs.length - 1; si >= 0; si--) {
+    _drawChainSegment(ctx, _buildLeanPoints(rawSegs[si]), distFromTail, totalChainLen);
+    distFromTail += segLens[si];
   }
 
   // Teleporter bridges (dashed)
@@ -476,7 +631,6 @@ function _renderChain(ctx) {
 function _drawGearSquare(ctx, { x, y }) {
   ctx.fillStyle = '#1e2d4a';
   ctx.fillRect(x - 3, y - 3, 6, 6);
-  // highlight corner
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.fillRect(x - 3, y - 3, 3, 1);
   ctx.fillRect(x - 3, y - 3, 1, 3);
