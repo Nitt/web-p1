@@ -20,6 +20,7 @@
         <button class="btn-ghost" id="restart-btn" aria-label="Restart level">Restart</button>
         <input id="level-jump-input" type="number" min="1" step="1" placeholder="#">
         <button class="btn-ghost" id="level-jump-btn" aria-label="Jump to level">Go</button>
+        <button class="btn-ghost" id="toggle-debug-btn" aria-label="Toggle debug UI">debug</button>
       </div>
     </header>
     <div id="cog-debug" hidden></div>
@@ -104,12 +105,21 @@
       document.getElementById('debug-btns').hidden    = false;
       document.getElementById('skip-btn').hidden      = false;
       document.getElementById('auto-solve-btn').hidden = false;
+      document.getElementById('toggle-debug-btn').classList.add('active');
     }
   </script>
 
   <script type="module">
     import { init, skipLevel, jumpToLevel, startBatchTest } from './game.js';
     import { setSpeedMultiplier, toggleWaveDebug } from './renderer.js';
+
+    document.getElementById('toggle-debug-btn').addEventListener('click', () => {
+      const on = document.getElementById('debug-btns').hidden;
+      document.getElementById('debug-btns').hidden     = !on;
+      document.getElementById('skip-btn').hidden       = !on;
+      document.getElementById('auto-solve-btn').hidden = !on;
+      document.getElementById('toggle-debug-btn').classList.toggle('active', on);
+    });
 
     document.getElementById('debug-btn')
       .addEventListener('click', () => document.body.classList.toggle('debug'));

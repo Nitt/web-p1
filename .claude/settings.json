@@ -22,7 +22,16 @@
       "Bash(node --input-type=module --experimental-vm-modules)",
       "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 3ee7d9a --stat)",
       "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 3ee7d9a -- index.html)",
-      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 55c3eef -- game.js)"
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 show 55c3eef -- game.js)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(git stash *)",
+      "Bash(git apply *)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 status)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 diff renderer.js)",
+      "Bash(git -C /Users/emil/Documents/GitHub/web-p1 log --oneline -5)"
     ]
   }
 }
