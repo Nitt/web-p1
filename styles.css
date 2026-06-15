@@ -584,6 +584,14 @@ body.chain-debug .player {
   background-color: #a8d0e8;
 }
 
+/* ─── pixel art canvas ───────────────────────────────────────────────────── */
+
+.pixel-canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
 /* ─── chain SVG overlay ──────────────────────────────────────────────────── */
 
 .chain-svg {
