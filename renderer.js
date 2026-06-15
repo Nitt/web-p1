@@ -10,14 +10,14 @@ const FLASH_MS   = 180; // teleport flash duration (scaled by speedMult)
 const CHAIN_STOPS = [
   { upTo: 2,        r: 196, g: 164, b: 147 },
   { upTo: 6,        r: 186, g: 167, b: 63  },
-  { upTo: 12,       r: 84,  g: 123, b: 64  },
-  { upTo: Infinity, r: 65,  g: 85,  b: 130 },
+  { upTo: 12,       r: 170,  g: 143, b: 64  },
+  { upTo: Infinity, r: 140,  g: 123,  b: 130 },
 ];
 
-const LINK_LINE = 5;   // px of thin connector between links
+const LINK_LINE = 4;   // px of thin connector between links
 const LINK_RECT = 5;   // px of link rectangle (equal to LINK_LINE)
 const LINK_TOT  = LINK_LINE + LINK_RECT;   // 10 px period
-const LINK_LEAN = 2;   // px offset from gear centre to the correct side
+const LINK_LEAN = 5;   // px offset from gear centre to the correct side
 
 // ── speed ─────────────────────────────────────────────────────────────────────
 let _speedMult = 1;
@@ -432,27 +432,35 @@ function _buildLeanPoints(rawPoints) {
     lds[N - 1] = lds[N - 2];
   }
 
-  const sideOff = (d, ld) => ld > 0
-    ? { x: d.y * R,  y: -d.x * R }   // right of direction
-    : { x: -d.y * R, y:  d.x * R };  // left of direction
+  const off = (d, ld) => ld > 0
+    ? { x: d.y * R,  y: -d.x * R }
+    : { x: -d.y * R, y:  d.x * R };
 
+  // Boat endpoint stays at center — chain exits straight from the boat.
   const out = [{ ...rawPoints[0] }];
+
   for (let i = 1; i < N - 1; i++) {
-    const di  = dirs[i - 1];
-    const do_ = dirs[i];
-    const ld  = lds[i];
-    const cross = di.x * do_.y - di.y * do_.x;
-    const dot   = di.x * do_.x + di.y * do_.y;
-    if (Math.abs(cross) < 0.01 && dot > 0) {
-      out.push({ ...rawPoints[i] });
+    const oi = off(dirs[i - 1], lds[i]);  // end of incoming segment
+    const oo = off(dirs[i],     lds[i]);  // start of outgoing segment
+    const ep = { x: rawPoints[i].x + oi.x, y: rawPoints[i].y + oi.y };
+    const xp = { x: rawPoints[i].x + oo.x, y: rawPoints[i].y + oo.y };
+
+    if (Math.abs(ep.x - xp.x) < 0.5 && Math.abs(ep.y - xp.y) < 0.5) {
+      out.push(ep);
     } else {
+      // L-corner: pick the outer corner (farther from the gear centre).
       const c  = rawPoints[i];
-      const oi = sideOff(di,  ld);
-      const oo = sideOff(do_, ld);
-      out.push({ x: c.x + oi.x, y: c.y + oi.y });
-      out.push({ x: c.x + oo.x, y: c.y + oo.y });
+      const ca = { x: xp.x, y: ep.y };
+      const cb = { x: ep.x, y: xp.y };
+      const corner = Math.hypot(ca.x - c.x, ca.y - c.y) >= Math.hypot(cb.x - c.x, cb.y - c.y)
+        ? ca : cb;
+      out.push(ep);
+      out.push(corner);
+      out.push(xp);
     }
   }
+
+  // Player/tail endpoint stays at center — chain arrives straight at the player.
   out.push({ ...rawPoints[N - 1] });
   return out;
 }
@@ -513,7 +521,7 @@ function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
     if (d < 0 || d > totalLen) continue;
 
     const pt  = sampleAt(d);
-    const col = _chainColor((distFromTailPx + d) / TILE);
+    const col = _chainColor((distFromTailPx + totalLen - d) / TILE);
     const cx  = Math.round(pt.x);
     const cy  = Math.round(pt.y);
 
@@ -524,12 +532,22 @@ function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
       ctx.fillRect(cx - 2, cy + 1, 5, 1);  // bottom edge
       ctx.fillRect(cx - 2, cy - 1, 1, 3);  // left edge
       ctx.fillRect(cx + 2, cy - 1, 1, 3);  // right edge
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(cx - 2, cy - 1, 1, 1);  // top-left corner
+      ctx.fillRect(cx + 2, cy - 1, 1, 1);  // top-right corner
+      ctx.fillRect(cx - 2, cy + 1, 1, 1);  // bottom-left corner
+      ctx.fillRect(cx + 2, cy + 1, 1, 1);  // bottom-right corner
     } else {
       // 3 wide × 5 tall — hole is 1×3 in the middle
       ctx.fillRect(cx - 1, cy - 2, 3, 1);  // top edge
       ctx.fillRect(cx - 1, cy + 2, 3, 1);  // bottom edge
       ctx.fillRect(cx - 1, cy - 2, 1, 5);  // left edge
       ctx.fillRect(cx + 1, cy - 2, 1, 5);  // right edge
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(cx - 1, cy - 2, 1, 1);  // top-left corner
+      ctx.fillRect(cx + 1, cy - 2, 1, 1);  // top-right corner
+      ctx.fillRect(cx - 1, cy + 2, 1, 1);  // bottom-left corner
+      ctx.fillRect(cx + 1, cy + 2, 1, 1);  // bottom-right corner
     }
   }
 
@@ -540,14 +558,16 @@ function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
   for (const s of segs) {
     const steps = Math.ceil(s.len);
     for (let st = 0; st <= steps; st++) {
-      const t = s.len > 0 ? st / steps : 0;
-      const distFromPlayer = distFromTailPx + cumLen + t * s.len;
-      const distFromBoat   = totalChainLen - distFromPlayer;
-      const phase          = ((distFromBoat % LINK_TOT) + LINK_TOT) % LINK_TOT;
+      const t      = s.len > 0 ? st / steps : 0;
+      const dSeg   = cumLen + t * s.len;   // distance from boat-end of this segment
+      // Phase must stay boat-anchored (same reference as rect placement in Pass 1).
+      const distFromBoat = totalChainLen - distFromTailPx - dSeg;
+      const phase        = ((distFromBoat % LINK_TOT) + LINK_TOT) % LINK_TOT;
       // Skip the rect interior (phases LINK_LINE+1 … LINK_TOT-2); keep the
       // 1 px on each rect edge so the wire visibly overlaps the rectangle.
       if (phase > LINK_LINE && phase < LINK_TOT - 1) continue;
-      ctx.fillStyle = _chainDimColor(distFromPlayer / TILE);
+      // Color uses distance from player end (totalLen - dSeg from player-end of segment).
+      ctx.fillStyle = _chainDimColor((distFromTailPx + totalLen - dSeg) / TILE);
       ctx.fillRect(Math.round(s.x0 + s.dx * t), Math.round(s.y0 + s.dy * t), 1, 1);
     }
     cumLen += s.len;
@@ -578,21 +598,21 @@ function _renderChain(ctx) {
   cur.push(tailPx);
   rawSegs.push(cur);
 
-  // Segment lengths for distance-from-player accumulation
-  const segLens = rawSegs.map(pts => {
+  // Pre-build lean paths and measure their actual lengths for phase-locking.
+  // Using lean lengths (not raw) keeps rect positions and wire phases in sync.
+  const leanSegs = rawSegs.map(_buildLeanPoints);
+  const segLens  = leanSegs.map(pts => {
     let l = 0;
     for (let i = 1; i < pts.length; i++)
       l += Math.hypot(pts[i].x - pts[i-1].x, pts[i].y - pts[i-1].y);
     return l;
   });
-
-  // Total length used to phase-lock dashes to the boat end
   const totalChainLen = segLens.reduce((a, b) => a + b, 0);
 
   // Draw chain, player-end segment first (distFromTail = 0 there)
   let distFromTail = 0;
-  for (let si = rawSegs.length - 1; si >= 0; si--) {
-    _drawChainSegment(ctx, _buildLeanPoints(rawSegs[si]), distFromTail, totalChainLen);
+  for (let si = leanSegs.length - 1; si >= 0; si--) {
+    _drawChainSegment(ctx, leanSegs[si], distFromTail, totalChainLen);
     distFromTail += segLens[si];
   }
 
