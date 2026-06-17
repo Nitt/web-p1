@@ -1,5 +1,6 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint, setSprites } from './renderer.js';
+import { loadSprites } from './sprites.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -249,6 +250,8 @@ function _makeTeleporterTestLevel() {
 
 // ─── entry point ─────────────────────────────────────────────────────────────
 export function init() {
+  loadSprites().then(setSprites);
+
   gridContainer  = document.getElementById('grid-container');
   dpadEl         = document.getElementById('dpad');
   winBanner      = document.getElementById('win-banner');

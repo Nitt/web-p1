@@ -19,10 +19,203 @@ const LINK_RECT = 5;   // px of link rectangle (equal to LINK_LINE)
 const LINK_TOT  = LINK_LINE + LINK_RECT;   // 10 px period
 const LINK_LEAN = 5;   // px offset from gear centre to the correct side
 
+// ── textures ──────────────────────────────────────────────────────────────────
+
+function _tex(w, h, fn) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  fn(c.getContext('2d'));
+  return c;
+}
+
+let _TEX = null;
+
+function _buildTextures() {
+  const T = TILE;
+  _TEX = {
+    wall:     _tex(T, T, _texWall),
+    sticky:   _tex(T, T, _texSticky),
+    crumble:  _tex(T, T, _texCrumble),
+    onewayL:  _tex(T, T, c => _texOneway(c, CellType.ONEWAY_LEFT)),
+    onewayR:  _tex(T, T, c => _texOneway(c, CellType.ONEWAY_RIGHT)),
+    onewayU:  _tex(T, T, c => _texOneway(c, CellType.ONEWAY_UP)),
+    onewayD:  _tex(T, T, c => _texOneway(c, CellType.ONEWAY_DOWN)),
+    teleport: _tex(T, T, _texTeleport),
+    player:   _tex(T, T, _texPlayer),
+    goal:     _tex(T, T, _texGoal),
+    boat:     _tex(80, 40, _texBoat),
+  };
+}
+
+function _texWall(c) {
+  c.fillStyle = '#2b2926';
+  c.fillRect(0, 0, TILE, TILE);
+  c.fillStyle = 'rgba(255,255,255,0.07)';
+  c.fillRect(0, 0, TILE, 1);
+  c.fillRect(0, 0, 1, TILE);
+  c.fillStyle = 'rgba(0,0,0,0.3)';
+  c.fillRect(0, TILE - 1, TILE, 1);
+  c.fillRect(TILE - 1, 0, 1, TILE);
+}
+
+function _texSticky(c) {
+  c.fillStyle = '#c8a060';
+  c.fillRect(0, 0, TILE, TILE);
+  c.fillStyle = 'rgba(100,60,0,0.28)';
+  for (let i = 3; i < TILE; i += 4)
+    for (let j = 3; j < TILE; j += 4)
+      c.fillRect(i, j, 1, 1);
+}
+
+function _pixLine(c, x0, y0, x1, y1) {
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i / steps;
+    c.fillRect(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t), 1, 1);
+  }
+}
+
+function _texCrumble(c) {
+  c.fillStyle = '#7d5a40';
+  c.fillRect(0, 0, TILE, TILE);
+  c.fillStyle = '#6a4a34';
+  c.fillRect(0, 0, TILE, 1);
+  c.fillRect(0, 0, 1, TILE);
+  c.fillStyle = 'rgba(0,0,0,0.55)';
+  _pixLine(c, 4, 2, 9, 7);
+  _pixLine(c, 9, 7, 6, 13);
+  _pixLine(c, 11, 3, 7, 9);
+  _pixLine(c, 7, 9, 11, 12);
+}
+
+function _texOneway(c, type) {
+  c.fillStyle = '#4a8870';
+  c.fillRect(0, 0, TILE, TILE);
+  c.fillStyle = 'rgba(255,255,255,0.88)';
+  const CX = TILE / 2, CY = TILE / 2;
+  c.beginPath();
+  switch (type) {
+    case CellType.ONEWAY_LEFT:
+      c.moveTo(CX - 5, CY); c.lineTo(CX + 4, CY - 4); c.lineTo(CX + 4, CY + 4); break;
+    case CellType.ONEWAY_RIGHT:
+      c.moveTo(CX + 5, CY); c.lineTo(CX - 4, CY - 4); c.lineTo(CX - 4, CY + 4); break;
+    case CellType.ONEWAY_UP:
+      c.moveTo(CX, CY - 5); c.lineTo(CX - 4, CY + 4); c.lineTo(CX + 4, CY + 4); break;
+    case CellType.ONEWAY_DOWN:
+      c.moveTo(CX, CY + 5); c.lineTo(CX - 4, CY - 4); c.lineTo(CX + 4, CY - 4); break;
+  }
+  c.closePath();
+  c.fill();
+}
+
+function _texTeleport(c) {
+  const T = TILE, cx = T / 2, cy = T / 2;
+  c.fillStyle = '#1e0c38';
+  c.fillRect(0, 0, T, T);
+  c.strokeStyle = 'rgba(185,95,255,0.85)';
+  c.lineWidth = 1;
+  c.strokeRect(1.5, 1.5, T - 3, T - 3);
+  c.beginPath();
+  c.arc(cx, cy, 4, 0, Math.PI * 2);
+  c.stroke();
+  c.fillStyle = 'rgba(185,95,255,0.2)';
+  c.beginPath();
+  c.arc(cx, cy, 4, 0, Math.PI * 2);
+  c.fill();
+}
+
+function _texPlayer(c) {
+  const cx = TILE / 2, cy = TILE / 2;
+  c.fillStyle = '#3a6fd8';
+  c.beginPath();
+  c.arc(cx, cy, 6, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = '#5a8ff8';
+  c.beginPath();
+  c.arc(cx, cy, 4, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.5)';
+  c.beginPath();
+  c.arc(cx - 2, cy - 2, 2, 0, Math.PI * 2);
+  c.fill();
+}
+
+function _texGoal(c) {
+  const cx = TILE / 2, cy = TILE / 2;
+  c.fillStyle = '#e8a020';
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i * Math.PI / 5) - Math.PI / 2;
+    const r = i % 2 === 0 ? 7 : 3;
+    if (i === 0) c.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    else         c.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  }
+  c.closePath();
+  c.fill();
+  c.fillStyle = 'rgba(255,220,80,0.6)';
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i * Math.PI / 5) - Math.PI / 2;
+    const r = i % 2 === 0 ? 4 : 1.5;
+    if (i === 0) c.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    else         c.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  }
+  c.closePath();
+  c.fill();
+}
+
+function _texBoat(c) {
+  // Anchor point: (40, 32) = the (cx, by) origin of the original draw code.
+  // All coordinates below are: original_relative + anchor.
+  const AX = 40, AY = 32;
+
+  // hull: trapezoid (-36,-3)→(36,-3)→(30,5)→(-30,5), drawn as scanlines
+  c.fillStyle = '#4a2e08';
+  for (let dy = -3; dy <= 5; dy++) {
+    const frac = (dy + 3) / 8;
+    const hw = Math.round(36 - frac * 6);  // half-width: 36→30
+    c.fillRect(AX - hw, AY + dy, hw * 2, 1);
+  }
+
+  // deck rail: fillRect(-32,-8, 64,5)
+  c.fillStyle = '#7a4e18';
+  c.fillRect(AX - 32, AY - 8, 64, 5);
+
+  // cabin: fillRect(-10,-20, 20,13)
+  c.fillStyle = '#b87018';
+  c.fillRect(AX - 10, AY - 20, 20, 13);
+
+  // cabin windows
+  c.fillStyle = '#88ccff';
+  c.fillRect(AX - 8, AY - 17, 5, 5);
+  c.fillRect(AX + 3, AY - 17, 5, 5);
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.fillRect(AX - 8, AY - 17, 2, 2);
+  c.fillRect(AX + 3, AY - 17, 2, 2);
+
+  // mast: fillRect(-1,-30, 2,12)
+  c.fillStyle = '#2a1a04';
+  c.fillRect(AX - 1, AY - 30, 2, 12);
+
+  // chain hole: fillRect(-1,-2, 2,7)
+  c.fillStyle = '#1a1208';
+  c.fillRect(AX - 1, AY - 2, 2, 7);
+}
+
+function _blitTex(ctx, key, x, y, w, h) {
+  const src = _sprites?.[key] ?? _TEX[key];
+  if (w !== undefined) ctx.drawImage(src, x, y, w, h);
+  else ctx.drawImage(src, x, y);
+}
+
 // ── speed ─────────────────────────────────────────────────────────────────────
 let _speedMult = 1;
 export function setSpeedMultiplier(m) { _speedMult = Math.max(0.1, m); }
 export function getSpeedMultiplier()  { return _speedMult; }
+
+// ── loaded sprite images (set externally via setSprites) ─────────────────────
+let _sprites = null;
+export function setSprites(s) { _sprites = s; }
 
 // ── interface stubs (not needed in pixel renderer) ────────────────────────────
 export function setChainSpinning()    {}
@@ -179,6 +372,7 @@ function _render(now) {
   _renderChain(ctx);
   _renderGoal(ctx);
   _renderPlayer(ctx, now);
+  _renderBoat(ctx, _level.start.x, t);
   _updateGearHearts();
 }
 
@@ -194,8 +388,6 @@ function _renderSky(ctx, t) {
   // Horizon band
   ctx.fillStyle = '#6aaee0';
   ctx.fillRect(0, BOAT_ROWS * TILE - 6, W, 4);
-
-  _renderBoat(ctx, _level.start.x, t);
 
   // Wavy waterline pixels
   const baseY = BOAT_ROWS * TILE - 2;
@@ -214,45 +406,10 @@ function _renderBoat(ctx, startX, t) {
   const tilt = Math.sin(t * 0.85) * 0.018;
   const cx   = startX * TILE + TILE / 2;
   const by   = BOAT_ROWS * TILE - 2 + bob;
-
   ctx.save();
   ctx.translate(cx, by);
   ctx.rotate(tilt);
-
-  // hull
-  ctx.fillStyle = '#4a2e08';
-  ctx.beginPath();
-  ctx.moveTo(-36, -3);
-  ctx.lineTo( 36, -3);
-  ctx.lineTo( 30,  5);
-  ctx.lineTo(-30,  5);
-  ctx.closePath();
-  ctx.fill();
-
-  // deck rail
-  ctx.fillStyle = '#7a4e18';
-  ctx.fillRect(-32, -8, 64, 5);
-
-  // cabin
-  ctx.fillStyle = '#b87018';
-  ctx.fillRect(-10, -20, 20, 13);
-
-  // cabin windows
-  ctx.fillStyle = '#88ccff';
-  ctx.fillRect(-8, -17, 5, 5);
-  ctx.fillRect( 3, -17, 5, 5);
-  ctx.fillStyle = 'rgba(255,255,255,0.3)';
-  ctx.fillRect(-8, -17, 2, 2);
-  ctx.fillRect( 3, -17, 2, 2);
-
-  // mast
-  ctx.fillStyle = '#2a1a04';
-  ctx.fillRect(-1, -30, 2, 12);
-
-  // chain hole
-  ctx.fillStyle = '#1a1208';
-  ctx.fillRect(-1, -2, 2, 7);
-
+  ctx.drawImage(_sprites?.boat ?? _TEX.boat, -40, -32);
   ctx.restore();
 }
 
@@ -277,124 +434,50 @@ function _renderCells(ctx, now) {
 function _renderCell(ctx, gx, gy, type, px, py, now) {
   switch (type) {
     case CellType.EMPTY:
-      // water already filled by background
       break;
 
     case CellType.WALL:
-      ctx.fillStyle = '#2b2926';
-      ctx.fillRect(px, py, TILE, TILE);
-      ctx.fillStyle = 'rgba(255,255,255,0.07)';
-      ctx.fillRect(px, py, TILE, 1);
-      ctx.fillRect(px, py, 1, TILE);
-      ctx.fillStyle = 'rgba(0,0,0,0.3)';
-      ctx.fillRect(px, py + TILE - 1, TILE, 1);
-      ctx.fillRect(px + TILE - 1, py, 1, TILE);
+      _blitTex(ctx, 'wall', px, py);
       break;
 
     case CellType.STICKY:
-      ctx.fillStyle = '#c8a060';
-      ctx.fillRect(px, py, TILE, TILE);
-      ctx.fillStyle = 'rgba(100,60,0,0.28)';
-      for (let i = 3; i < TILE; i += 4)
-        for (let j = 3; j < TILE; j += 4)
-          ctx.fillRect(px + i, py + j, 1, 1);
+      _blitTex(ctx, 'sticky', px, py);
       break;
 
     case CellType.CRUMBLE: {
       const key    = `${gx},${gy}`;
       const startT = _crumbles.get(key);
-      // Always draw water beneath a crumble cell
       ctx.fillStyle = '#2d5a8a';
       ctx.fillRect(px, py, TILE, TILE);
       if (startT !== undefined) {
         const p = Math.min((now - startT) / 280, 1);
         if (p < 1) {
-          ctx.save();
-          ctx.translate(px + TILE / 2, py + TILE / 2);
-          ctx.scale(1 - p, 1 - p);
-          _drawCrumbleTile(ctx);
-          ctx.restore();
+          const s  = 1 - p;
+          const dw = Math.max(1, Math.round(TILE * s));
+          const dh = Math.max(1, Math.round(TILE * s));
+          _blitTex(ctx, 'crumble',
+            Math.round(px + (TILE - dw) / 2),
+            Math.round(py + (TILE - dh) / 2),
+            dw, dh);
         }
       } else {
-        ctx.save();
-        ctx.translate(px + TILE / 2, py + TILE / 2);
-        _drawCrumbleTile(ctx);
-        ctx.restore();
+        _blitTex(ctx, 'crumble', px, py);
       }
       break;
     }
 
-    case CellType.ONEWAY_LEFT:
-    case CellType.ONEWAY_RIGHT:
-    case CellType.ONEWAY_UP:
-    case CellType.ONEWAY_DOWN:
-      ctx.fillStyle = '#4a8870';
-      ctx.fillRect(px, py, TILE, TILE);
-      _drawArrow(ctx, px + TILE / 2, py + TILE / 2, type);
-      break;
+    case CellType.ONEWAY_LEFT:  _blitTex(ctx, 'onewayL', px, py); break;
+    case CellType.ONEWAY_RIGHT: _blitTex(ctx, 'onewayR', px, py); break;
+    case CellType.ONEWAY_UP:    _blitTex(ctx, 'onewayU', px, py); break;
+    case CellType.ONEWAY_DOWN:  _blitTex(ctx, 'onewayD', px, py); break;
 
     case CellType.TELEPORTER:
-      ctx.fillStyle = '#1e0c38';
-      ctx.fillRect(px, py, TILE, TILE);
-      ctx.strokeStyle = 'rgba(185,95,255,0.85)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(px + 1, py + 1, TILE - 2, TILE - 2);
-      ctx.beginPath();
-      ctx.arc(px + TILE / 2, py + TILE / 2, 4, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(185,95,255,0.2)';
-      ctx.beginPath();
-      ctx.arc(px + TILE / 2, py + TILE / 2, 4, 0, Math.PI * 2);
-      ctx.fill();
+      _blitTex(ctx, 'teleport', px, py);
       break;
 
     default:
-      // unknown / removed types: leave as water
       break;
   }
-}
-
-function _drawCrumbleTile(ctx) {
-  ctx.fillStyle = '#7d5a40';
-  ctx.fillRect(-TILE / 2, -TILE / 2, TILE, TILE);
-  ctx.fillStyle = '#6a4a34';
-  ctx.fillRect(-TILE / 2, -TILE / 2, TILE, 1);
-  ctx.fillRect(-TILE / 2, -TILE / 2, 1, TILE);
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-4, -6); ctx.lineTo(1, -1); ctx.lineTo(-2, 5);
-  ctx.moveTo( 3, -5); ctx.lineTo(-1,  1); ctx.lineTo( 3, 4);
-  ctx.stroke();
-}
-
-function _drawArrow(ctx, cx, cy, type) {
-  ctx.fillStyle = 'rgba(255,255,255,0.88)';
-  ctx.beginPath();
-  switch (type) {
-    case CellType.ONEWAY_LEFT:
-      ctx.moveTo(cx - 5, cy);
-      ctx.lineTo(cx + 4, cy - 4);
-      ctx.lineTo(cx + 4, cy + 4);
-      break;
-    case CellType.ONEWAY_RIGHT:
-      ctx.moveTo(cx + 5, cy);
-      ctx.lineTo(cx - 4, cy - 4);
-      ctx.lineTo(cx - 4, cy + 4);
-      break;
-    case CellType.ONEWAY_UP:
-      ctx.moveTo(cx, cy - 5);
-      ctx.lineTo(cx - 4, cy + 4);
-      ctx.lineTo(cx + 4, cy + 4);
-      break;
-    case CellType.ONEWAY_DOWN:
-      ctx.moveTo(cx, cy + 5);
-      ctx.lineTo(cx - 4, cy - 4);
-      ctx.lineTo(cx + 4, cy - 4);
-      break;
-  }
-  ctx.closePath();
-  ctx.fill();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -616,28 +699,16 @@ function _renderChain(ctx) {
     distFromTail += segLens[si];
   }
 
-  // Teleporter bridges (dashed)
-  ctx.lineWidth = 1;
-  ctx.setLineDash([3, 2]);
-  ctx.strokeStyle = 'rgba(190,100,255,0.65)';
+  // Teleporter bridges (pixel dashed line)
   for (const { from, to } of bridges) {
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.stroke();
+    _pixDashedLine(ctx, from.x, from.y, to.x, to.y, 3, 2, 'rgba(190,100,255,0.65)');
   }
-  ctx.setLineDash([]);
 
   // Gear squares at each bend / portals at teleporters
   for (const g of _chainGears) {
     if (g.isTeleport) {
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(210,130,255,0.9)';
       for (const { x, y } of [{ x: g.x, y: g.y }, { x: g.exitX, y: g.exitY }]) {
-        const pp = _cellCanvasPx(x, y);
-        ctx.beginPath();
-        ctx.arc(pp.x, pp.y, 4, 0, Math.PI * 2);
-        ctx.stroke();
+        _drawPortalRing(ctx, _cellCanvasPx(x, y));
       }
     } else {
       _drawGearSquare(ctx, _cellCanvasPx(g.x, g.y));
@@ -654,6 +725,41 @@ function _drawGearSquare(ctx, { x, y }) {
   ctx.fillStyle = 'rgba(255,255,255,0.3)';
   ctx.fillRect(x - 3, y - 3, 3, 1);
   ctx.fillRect(x - 3, y - 3, 1, 3);
+}
+
+function _pixDashedLine(ctx, x0, y0, x1, y1, dashLen, gapLen, color) {
+  ctx.fillStyle = color;
+  const dx = x1 - x0, dy = y1 - y0;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+  if (steps === 0) return;
+  const period = dashLen + gapLen;
+  for (let i = 0; i <= steps; i++) {
+    if (i % period < dashLen) {
+      ctx.fillRect(Math.round(x0 + dx * i / steps), Math.round(y0 + dy * i / steps), 1, 1);
+    }
+  }
+}
+
+// Pixel-art ring approximating a stroked circle of radius 4.
+const _PORTAL_RING = (() => {
+  const r = 4, cx = 6, cy = 6;
+  const pixels = [];
+  for (let dy = -r; dy <= r; dy++) {
+    const outerW = Math.round(Math.sqrt(r * r - dy * dy));
+    const innerR = r - 1;
+    const innerW = Math.round(Math.sqrt(innerR * innerR - dy * dy));
+    for (let dx = -outerW; dx <= outerW; dx++) {
+      if (Math.abs(dx) > innerW || Math.abs(dy) > innerR - 1)
+        pixels.push([cx + dx, cy + dy]);
+    }
+  }
+  return pixels;
+})();
+
+function _drawPortalRing(ctx, { x, y }) {
+  ctx.fillStyle = 'rgba(210,130,255,0.9)';
+  for (const [px, py] of _PORTAL_RING)
+    ctx.fillRect(x - 6 + px, y - 6 + py, 1, 1);
 }
 
 function _chainColor(cellDist) {
@@ -678,30 +784,7 @@ function _renderGoal(ctx) {
     gx = _level.goal.x * TILE + TILE / 2;
     gy = (_level.goal.y + BOAT_ROWS) * TILE + TILE / 2;
   }
-  ctx.save();
-  ctx.translate(gx, gy);
-  // Five-pointed star
-  ctx.fillStyle = '#e8a020';
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const a = (i * Math.PI / 5) - Math.PI / 2;
-    const r = i % 2 === 0 ? 7 : 3;
-    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-    else         ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,220,80,0.6)';
-  ctx.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const a = (i * Math.PI / 5) - Math.PI / 2;
-    const r = i % 2 === 0 ? 4 : 1.5;
-    if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-    else         ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
+  _blitTex(ctx, 'goal', Math.round(gx - TILE / 2), Math.round(gy - TILE / 2));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -716,11 +799,14 @@ function _renderPlayer(ctx, now) {
     const et    = Math.min((now - _explodeAnim.startTime) / EXPLODE_MS, 1);
     const scale = et < 0.4 ? 1 + (et / 0.4) * 1.2 : Math.max(0.05, 1 - (et - 0.4) / 0.6);
     const alpha = et < 0.4 ? 1 : Math.max(0, 1 - (et - 0.4) / 0.6);
+    const dw = Math.max(1, Math.round(TILE * scale));
+    const dh = Math.max(1, Math.round(TILE * scale));
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.translate(_explodeAnim.startPx.x, _explodeAnim.startPx.y);
-    ctx.scale(scale, scale);
-    _drawPlayerSprite(ctx);
+    _blitTex(ctx, 'player',
+      Math.round(_explodeAnim.startPx.x - dw / 2),
+      Math.round(_explodeAnim.startPx.y - dh / 2),
+      dw, dh);
     ctx.restore();
     if (et >= 1) {
       const cb = _explodeAnim.onDone;
@@ -733,7 +819,6 @@ function _renderPlayer(ctx, now) {
   let px = _playerPx.x;
   let py = _playerPx.y;
 
-  // Jerk offset
   if (_jerkState) {
     const JERK_MS = 260 * _speedMult;
     const jt = Math.min((now - _jerkState.startTime) / JERK_MS, 1);
@@ -745,24 +830,8 @@ function _renderPlayer(ctx, now) {
 
   ctx.save();
   ctx.globalAlpha = _playerOpacity;
-  ctx.translate(px, py);
-  _drawPlayerSprite(ctx);
+  _blitTex(ctx, 'player', Math.round(px - TILE / 2), Math.round(py - TILE / 2));
   ctx.restore();
-}
-
-function _drawPlayerSprite(ctx) {
-  ctx.fillStyle = '#3a6fd8';
-  ctx.beginPath();
-  ctx.arc(0, 0, 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#5a8ff8';
-  ctx.beginPath();
-  ctx.arc(0, 0, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.beginPath();
-  ctx.arc(-2, -2, 2, 0, Math.PI * 2);
-  ctx.fill();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -840,6 +909,8 @@ export function buildGrid(container, level) {
   _canvas.className = 'pixel-canvas';
   container.appendChild(_canvas);
   _ctx = _canvas.getContext('2d');
+  _ctx.imageSmoothingEnabled = false;
+  if (!_TEX) _buildTextures();
 
   _resizeCanvas();
   _startLoop();

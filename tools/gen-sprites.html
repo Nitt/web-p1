@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sprite Export</title>
+  <style>
+    body { background: #111; color: #eee; font-family: monospace; padding: 24px; }
+    h1 { margin-bottom: 6px; }
+    p  { color: #777; margin: 0 0 28px; }
+    p code { color: #adf; }
+    .grid { display: flex; flex-wrap: wrap; gap: 28px; }
+    .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .item span { font-size: 11px; color: #666; }
+    canvas { image-rendering: pixelated; border: 1px solid #2a2a2a; background: #1e2d4a; }
+    a.dl { font-size: 12px; color: #7af; text-decoration: none; border: 1px solid #335; padding: 3px 8px; border-radius: 3px; }
+    a.dl:hover { background: #223; }
+  </style>
+</head>
+<body>
+  <h1>Sprite Export</h1>
+  <p>Click each download link → save to <code>assets/sprites/</code> → edit in Aseprite. Reload this page to regenerate.</p>
+  <div class="grid" id="grid"></div>
+
+<script>
+const TILE = 16;
+const ZOOM = 8;   // preview zoom
+
+// ── drawing helpers ───────────────────────────────────────────────────────────
+
+function pixLine(c, x0, y0, x1, y1) {
+  const steps = Math.max(Math.abs(x1-x0), Math.abs(y1-y0));
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i/steps;
+    c.fillRect(Math.round(x0 + (x1-x0)*t), Math.round(y0 + (y1-y0)*t), 1, 1);
+  }
+}
+
+// ── sprite draw functions ─────────────────────────────────────────────────────
+// Each receives a 2D context sized to w×h.
+
+function drawWall(c, W, H) {
+  c.fillStyle = '#2b2926'; c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(255,255,255,0.07)';
+  c.fillRect(0, 0, W, 1); c.fillRect(0, 0, 1, H);
+  c.fillStyle = 'rgba(0,0,0,0.3)';
+  c.fillRect(0, H-1, W, 1); c.fillRect(W-1, 0, 1, H);
+}
+
+function drawSticky(c, W, H) {
+  c.fillStyle = '#c8a060'; c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(100,60,0,0.28)';
+  for (let i = 3; i < W; i += 4)
+    for (let j = 3; j < H; j += 4)
+      c.fillRect(i, j, 1, 1);
+}
+
+function drawCrumble(c, W, H) {
+  c.fillStyle = '#7d5a40'; c.fillRect(0, 0, W, H);
+  c.fillStyle = '#6a4a34';
+  c.fillRect(0, 0, W, 1); c.fillRect(0, 0, 1, H);
+  c.fillStyle = 'rgba(0,0,0,0.55)';
+  pixLine(c, 4,2,  9,7);  pixLine(c, 9,7,  6,13);
+  pixLine(c, 11,3, 7,9);  pixLine(c, 7,9, 11,12);
+}
+
+function drawArrow(c, W, H, dx, dy) {
+  c.fillStyle = '#4a8870'; c.fillRect(0, 0, W, H);
+  const CX = W/2, CY = H/2;
+  c.fillStyle = 'rgba(255,255,255,0.88)';
+  c.beginPath();
+  if (dx === -1) { c.moveTo(CX-5,CY); c.lineTo(CX+4,CY-4); c.lineTo(CX+4,CY+4); }
+  if (dx ===  1) { c.moveTo(CX+5,CY); c.lineTo(CX-4,CY-4); c.lineTo(CX-4,CY+4); }
+  if (dy === -1) { c.moveTo(CX,CY-5); c.lineTo(CX-4,CY+4); c.lineTo(CX+4,CY+4); }
+  if (dy ===  1) { c.moveTo(CX,CY+5); c.lineTo(CX-4,CY-4); c.lineTo(CX+4,CY-4); }
+  c.closePath(); c.fill();
+}
+
+function drawTeleport(c, W, H) {
+  const cx = W/2, cy = H/2;
+  c.fillStyle = '#1e0c38'; c.fillRect(0, 0, W, H);
+  c.strokeStyle = 'rgba(185,95,255,0.85)'; c.lineWidth = 1;
+  c.strokeRect(1.5, 1.5, W-3, H-3);
+  c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI*2); c.stroke();
+  c.fillStyle = 'rgba(185,95,255,0.2)';
+  c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI*2); c.fill();
+}
+
+function drawPlayer(c, W, H) {
+  const cx = W/2, cy = H/2;
+  c.fillStyle = '#3a6fd8'; c.beginPath(); c.arc(cx, cy, 6, 0, Math.PI*2); c.fill();
+  c.fillStyle = '#5a8ff8'; c.beginPath(); c.arc(cx, cy, 4, 0, Math.PI*2); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.5)';
+  c.beginPath(); c.arc(cx-2, cy-2, 2, 0, Math.PI*2); c.fill();
+}
+
+function drawGoal(c, W, H) {
+  const cx = W/2, cy = H/2;
+  c.fillStyle = '#e8a020';
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i * Math.PI/5) - Math.PI/2, r = i%2===0 ? 7 : 3;
+    if (i===0) c.moveTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+    else       c.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+  }
+  c.closePath(); c.fill();
+  c.fillStyle = 'rgba(255,220,80,0.6)';
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i * Math.PI/5) - Math.PI/2, r = i%2===0 ? 4 : 1.5;
+    if (i===0) c.moveTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+    else       c.lineTo(cx+Math.cos(a)*r, cy+Math.sin(a)*r);
+  }
+  c.closePath(); c.fill();
+}
+
+// Boat: 80×40, anchor at (40,32) = the pivot point used by the renderer.
+// Draw the boat centred on this anchor; the renderer will rotate/translate around it.
+function drawBoat(c, W, H) {
+  const AX = 40, AY = 32;
+  c.fillStyle = '#4a2e08';
+  for (let dy = -3; dy <= 5; dy++) {
+    const hw = Math.round(36 - (dy+3)/8 * 6);
+    c.fillRect(AX-hw, AY+dy, hw*2, 1);
+  }
+  c.fillStyle = '#7a4e18'; c.fillRect(AX-32, AY-8,  64, 5);
+  c.fillStyle = '#b87018'; c.fillRect(AX-10, AY-20, 20, 13);
+  c.fillStyle = '#88ccff';
+  c.fillRect(AX-8, AY-17, 5, 5); c.fillRect(AX+3, AY-17, 5, 5);
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.fillRect(AX-8, AY-17, 2, 2); c.fillRect(AX+3, AY-17, 2, 2);
+  c.fillStyle = '#2a1a04'; c.fillRect(AX-1, AY-30, 2, 12);
+  c.fillStyle = '#1a1208'; c.fillRect(AX-1, AY-2,  2,  7);
+}
+
+// ── sprite list ───────────────────────────────────────────────────────────────
+
+const SPRITES = [
+  { file: 'wall.png',      w: TILE, h: TILE, fn: (c,W,H) => drawWall(c,W,H)           },
+  { file: 'sticky.png',    w: TILE, h: TILE, fn: (c,W,H) => drawSticky(c,W,H)         },
+  { file: 'crumble.png',   w: TILE, h: TILE, fn: (c,W,H) => drawCrumble(c,W,H)        },
+  { file: 'oneway-l.png',  w: TILE, h: TILE, fn: (c,W,H) => drawArrow(c,W,H,-1, 0)   },
+  { file: 'oneway-r.png',  w: TILE, h: TILE, fn: (c,W,H) => drawArrow(c,W,H, 1, 0)   },
+  { file: 'oneway-u.png',  w: TILE, h: TILE, fn: (c,W,H) => drawArrow(c,W,H, 0,-1)   },
+  { file: 'oneway-d.png',  w: TILE, h: TILE, fn: (c,W,H) => drawArrow(c,W,H, 0, 1)   },
+  { file: 'teleport.png',  w: TILE, h: TILE, fn: (c,W,H) => drawTeleport(c,W,H)       },
+  { file: 'player.png',    w: TILE, h: TILE, fn: (c,W,H) => drawPlayer(c,W,H)         },
+  { file: 'goal.png',      w: TILE, h: TILE, fn: (c,W,H) => drawGoal(c,W,H)           },
+  { file: 'boat.png',      w: 80,   h: 40,   fn: (c,W,H) => drawBoat(c,W,H)           },
+];
+
+// ── generate and display ──────────────────────────────────────────────────────
+
+const grid = document.getElementById('grid');
+
+for (const { file, w, h, fn } of SPRITES) {
+  // Draw at native resolution
+  const src = document.createElement('canvas');
+  src.width = w; src.height = h;
+  fn(src.getContext('2d'), w, h);
+
+  // Scale up for preview (nearest-neighbour)
+  const preview = document.createElement('canvas');
+  preview.width  = w * ZOOM;
+  preview.height = h * ZOOM;
+  const pctx = preview.getContext('2d');
+  pctx.imageSmoothingEnabled = false;
+  pctx.drawImage(src, 0, 0, w * ZOOM, h * ZOOM);
+
+  const link = document.createElement('a');
+  link.href     = src.toDataURL('image/png');
+  link.download = file;
+  link.className = 'dl';
+  link.textContent = '↓ ' + file;
+
+  const label = document.createElement('span');
+  label.textContent = file.replace('.png','') + '  ' + w + '×' + h;
+
+  const item = document.createElement('div');
+  item.className = 'item';
+  item.append(preview, label, link);
+  grid.append(item);
+}
+</script>
+</body>
+</html>
