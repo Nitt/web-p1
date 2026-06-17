@@ -75,11 +75,6 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   cells[idx(startX, startY)]     = G.EMPTY;  // pass-through — player always slides through
   cells[idx(startX, startY + 1)] = G.EMPTY;  // second tunnel cell — actual carve origin
 
-  // Wall off every other cell in the entry row so they don't remain UNTOUCHED
-  // (which maps to output EMPTY and would let the player slide across the top).
-  for (let px = 1; px < pw - 1; px++) {
-    if (px !== startX) cells[idx(px, startY)] = G.BLOCK;
-  }
 
   // ── Forced entry-slide block (tutorial / mechanic introduction) ──
   // Place a specific block type at a chosen distance in the entry column
@@ -169,6 +164,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       if (nx < 1 || nx >= pw - 1 || ny < 1 || ny >= ph - 1) continue;
       const ni = idx(nx, ny);
       if (cells[ni] !== G.UNTOUCHED) continue;
+      if (ny === startY) { cells[ni] = G.BLOCK; continue; }
       const type = pickType();
       if (type === 'crumble' && togglesPlaced < maxUniverseBits) {
         togglesPlaced++;
@@ -356,6 +352,14 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   }
 
   function carveUntouched(dirIdx, x, y, nx, ny, ni, dir, arrivalDirIdx = dirIdx, accDiff = 0) {
+    // Top row is always a wall — only placed when the BFS actually explores there.
+    if (ny === startY) {
+      cells[ni] = G.BLOCK;
+      currentBranchDiff = accDiff + DIFF.BLOCK;
+      rec(x, y, nx, ny, `block-top (${nx-1},${ny-1})`);
+      enqueue(x, y, arrivalDirIdx, accDiff + DIFF.BLOCK);
+      return;
+    }
     const type = pickType();
     if (type === 'empty') {
       carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);

@@ -10,8 +10,11 @@ const FLASH_MS   = 180; // teleport flash duration (scaled by speedMult)
 const CHAIN_STOPS = [
   { upTo: 2,        r: 196, g: 164, b: 147 },
   { upTo: 6,        r: 186, g: 167, b: 63  },
-  { upTo: 12,       r: 170,  g: 143, b: 64  },
-  { upTo: Infinity, r: 140,  g: 123,  b: 130 },
+  { upTo: 12,       r: 170,  g: 173, b: 64  },
+  { upTo: 18,       r: 140,  g: 183, b: 128  },
+  { upTo: 24,       r: 170,  g: 173, b: 64  },
+  { upTo: 30,       r: 186, g: 167, b: 63  },
+  { upTo: Infinity,        r: 196, g: 164, b: 147 },
 ];
 
 const LINK_LINE = 4;   // px of thin connector between links
@@ -125,19 +128,36 @@ function _texTeleport(c) {
 }
 
 function _texPlayer(c) {
-  const cx = TILE / 2, cy = TILE / 2;
-  c.fillStyle = '#3a6fd8';
-  c.beginPath();
-  c.arc(cx, cy, 6, 0, Math.PI * 2);
-  c.fill();
-  c.fillStyle = '#5a8ff8';
-  c.beginPath();
-  c.arc(cx, cy, 4, 0, Math.PI * 2);
-  c.fill();
-  c.fillStyle = 'rgba(255,255,255,0.5)';
-  c.beginPath();
-  c.arc(cx - 2, cy - 2, 2, 0, Math.PI * 2);
-  c.fill();
+  _drawClaw(c, TILE / 2, TILE / 2, 0, 1); // open claw, pointing down
+}
+
+// Draw the claw centered at (cx, cy), rotated by angleRad (+y = forward),
+// spread: 1=open, 0=grasping.
+function _drawClaw(ctx, cx, cy, angleRad, spread) {
+  const s = Math.round(spread * 3); // 0..3 pixels of arm spread
+
+  ctx.save();
+  ctx.translate(Math.round(cx), Math.round(cy));
+  ctx.rotate(angleRad);
+
+  // body
+  ctx.fillStyle = '#5a8be8';
+  ctx.fillRect(-2, -7, 4, 4);
+  // neck
+  ctx.fillRect(-1, -3, 2, 2);
+
+  // arms + tips (shift outward by s when open)
+  ctx.fillStyle = '#4a7be0';
+  ctx.fillRect(-4 - s, -1, 2, 5);          // left arm shaft
+  ctx.fillRect( 2 + s, -1, 2, 5);          // right arm shaft
+  ctx.fillRect(-4 - s,  3, 5, 2);          // left tip (hooks inward)
+  ctx.fillRect(-1 + s,  3, 5, 2);          // right tip (hooks inward)
+
+  // body highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillRect(-1, -7, 2, 1);
+
+  ctx.restore();
 }
 
 function _texGoal(c) {
@@ -254,7 +274,16 @@ let _jerkAvatarOnly = false;
 export function setJerkAvatarOnly(v) { _jerkAvatarOnly = v; }
 
 let _goalFollowsPlayer = false;
-export function setGoalFollowsPlayer(v) { _goalFollowsPlayer = v; }
+let _playerDir = { dx: 0, dy: 1 }; // last movement direction (default: down)
+let _graspAnim = null;              // { startTime, dur } — claw-close animation
+
+export function setGoalFollowsPlayer(v) {
+  if (v && !_goalFollowsPlayer) {
+    _graspAnim = { startTime: performance.now(), dur: 350 };
+  }
+  if (!v) _graspAnim = null;
+  _goalFollowsPlayer = v;
+}
 
 // ── crumble animations ────────────────────────────────────────────────────────
 const _crumbles = new Map();   // `${x},${y}` → startTime (ms)
@@ -432,6 +461,8 @@ function _renderCells(ctx, now) {
 }
 
 function _renderCell(ctx, gx, gy, type, px, py, now) {
+
+
   switch (type) {
     case CellType.EMPTY:
       break;
@@ -592,10 +623,12 @@ function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
   }
 
   // ── Pass 1: hollow link rectangles (drawn first so holes stay empty) ───────
-  // Link k centre sits at distFromBoat = (LINK_LINE + LINK_RECT/2) + k*LINK_TOT from boat.
-  // In terms of position d along this segment (player-side = 0):
-  //   d = totalChainLen - distFromTailPx - (LINK_LINE + LINK_RECT/2) - k*LINK_TOT
-  const base = totalChainLen - distFromTailPx - (LINK_LINE + LINK_RECT / 2);
+  // Link k is placed at distance (LINK_LINE + LINK_RECT/2) + k*LINK_TOT from the tail
+  // (tail-anchored).  All segments march together as the player moves — boat-anchored
+  // placement would freeze pre-teleporter segments because their distFromTailPx exactly
+  // cancels out the totalChainLen change.
+  //   distFromTail = distFromTailPx + (totalLen - d)  →  d = totalLen + distFromTailPx - offset - k*LINK_TOT
+  const base = totalLen + distFromTailPx - (LINK_LINE + LINK_RECT / 2);
   const kMin = Math.ceil((base - totalLen) / LINK_TOT);
   const kMax = Math.floor(base / LINK_TOT);
 
@@ -642,15 +675,13 @@ function _drawChainSegment(ctx, pts, distFromTailPx, totalChainLen) {
     const steps = Math.ceil(s.len);
     for (let st = 0; st <= steps; st++) {
       const t      = s.len > 0 ? st / steps : 0;
-      const dSeg   = cumLen + t * s.len;   // distance from boat-end of this segment
-      // Phase must stay boat-anchored (same reference as rect placement in Pass 1).
-      const distFromBoat = totalChainLen - distFromTailPx - dSeg;
-      const phase        = ((distFromBoat % LINK_TOT) + LINK_TOT) % LINK_TOT;
+      const dSeg        = cumLen + t * s.len;              // distance from boat-end of this segment
+      const distFromTail = distFromTailPx + (totalLen - dSeg); // tail-anchored, matches Pass 1
+      const phase        = ((distFromTail % LINK_TOT) + LINK_TOT) % LINK_TOT;
       // Skip the rect interior (phases LINK_LINE+1 … LINK_TOT-2); keep the
       // 1 px on each rect edge so the wire visibly overlaps the rectangle.
       if (phase > LINK_LINE && phase < LINK_TOT - 1) continue;
-      // Color uses distance from player end (totalLen - dSeg from player-end of segment).
-      ctx.fillStyle = _chainDimColor((distFromTailPx + totalLen - dSeg) / TILE);
+      ctx.fillStyle = _chainDimColor(distFromTail / TILE);
       ctx.fillRect(Math.round(s.x0 + s.dx * t), Math.round(s.y0 + s.dy * t), 1, 1);
     }
     cumLen += s.len;
@@ -799,14 +830,12 @@ function _renderPlayer(ctx, now) {
     const et    = Math.min((now - _explodeAnim.startTime) / EXPLODE_MS, 1);
     const scale = et < 0.4 ? 1 + (et / 0.4) * 1.2 : Math.max(0.05, 1 - (et - 0.4) / 0.6);
     const alpha = et < 0.4 ? 1 : Math.max(0, 1 - (et - 0.4) / 0.6);
-    const dw = Math.max(1, Math.round(TILE * scale));
-    const dh = Math.max(1, Math.round(TILE * scale));
+    const epx = _explodeAnim.startPx;
     ctx.save();
     ctx.globalAlpha = alpha;
-    _blitTex(ctx, 'player',
-      Math.round(_explodeAnim.startPx.x - dw / 2),
-      Math.round(_explodeAnim.startPx.y - dh / 2),
-      dw, dh);
+    ctx.translate(Math.round(epx.x), Math.round(epx.y));
+    ctx.scale(scale, scale);
+    _drawClaw(ctx, 0, 0, Math.atan2(_playerDir.dy, _playerDir.dx) - Math.PI / 2, 1);
     ctx.restore();
     if (et >= 1) {
       const cb = _explodeAnim.onDone;
@@ -828,9 +857,20 @@ function _renderPlayer(ctx, now) {
     if (jt >= 1) _jerkState = null;
   }
 
+  // Rotation angle: claw faces direction of last movement
+  const angle = Math.atan2(_playerDir.dy, _playerDir.dx) - Math.PI / 2;
+
+  // Grasp progress: 0=open, 1=fully closed (grasping the goal)
+  let spread = 1;
+  if (_graspAnim) {
+    let t = Math.min((now - _graspAnim.startTime) / _graspAnim.dur, 1);
+    t = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); // ease in-out
+    spread = 1 - t;
+  }
+
   ctx.save();
   ctx.globalAlpha = _playerOpacity;
-  _blitTex(ctx, 'player', Math.round(px - TILE / 2), Math.round(py - TILE / 2));
+  _drawClaw(ctx, px, py, angle, spread);
   ctx.restore();
 }
 
@@ -893,15 +933,18 @@ export function buildGrid(container, level) {
   _gearHeartsEl = document.getElementById('gear-hearts');
 
   _crumbles.clear();
-  _explodeAnim   = null;
-  _playerAnim    = null;
-  _jerkState     = null;
-  _chainGears    = [];
-  _chainTailPx   = null;
-  _playerOpacity = 1;
-  _animToken     = 0;
-  _gearsLeft     = 0;
-  _totalGears    = 0;
+  _explodeAnim      = null;
+  _playerAnim       = null;
+  _jerkState        = null;
+  _chainGears       = [];
+  _chainTailPx      = null;
+  _playerOpacity    = 1;
+  _animToken        = 0;
+  _gearsLeft        = 0;
+  _totalGears       = 0;
+  _graspAnim        = null;
+  _goalFollowsPlayer = false;
+  _playerDir        = { dx: 0, dy: 1 };
 
   _canvas = document.createElement('canvas');
   _canvas.width  = level.width  * TILE;
@@ -924,6 +967,13 @@ export function animatePlayer(from, to, level, onDone, teleportInfo = null, jerk
   const token   = ++_animToken;
   const speedMs = SPEED_BASE * _speedMult;
   _playerOpacity = 1;
+
+  // Update claw facing direction from movement
+  const _ddx = to.x - from.x, _ddy = to.y - from.y;
+  if (_ddx !== 0 || _ddy !== 0) {
+    const _d = Math.max(Math.abs(_ddx), Math.abs(_ddy));
+    _playerDir = { dx: _ddx / _d, dy: _ddy / _d };
+  }
 
   if (!teleportInfo) {
     const steps  = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
