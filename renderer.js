@@ -1228,29 +1228,32 @@ function _updateBoatAndWaterline(level) {
   const wlMargin = cellW * 0.6;
   const wlW      = boatW + wlMargin * 2;
   waterlineEl.style.left   = (startCx - wlW / 2) + 'px';
-  waterlineEl.style.top    = (gTop - wlH * 0.5 + cellH * 0.5) + 'px';
+  // Wave path sits at y≈2 in the SVG viewBox (baseY 6 + waveFnBig DC −4).
+  // Position the SVG so that y=2 lands exactly at gTop (top edge of row 0).
+  waterlineEl.style.top    = (gTop - (2 / 30) * waterH) + 'px';
   waterlineEl.style.width  = wlW   + 'px';
   waterlineEl.style.height = waterH + 'px';
 
   // ── Boat ─────────────────────────────────────────────────────────────
-  // Hull deck line is at y≈34 out of viewBox height 60
-  // Align that line with the waterline (gTop)
+  // Hull deck endpoints are at y=34 of viewBox 60.
+  // Use k=40 so the static hull bottom (y=60) lands exactly at gTop+cellH,
+  // keeping the underwater hull entirely within the hidden row 0.
+  // The wave DC offset (~−4 SVG units) then pulls the boat up another ~0.3 cellH
+  // on average, so the deck sits visibly above the waterline at rest.
   boatEl.style.left   = (startCx - boatW / 2) + 'px';
   boatEl.style.width  = boatW + 'px';
   boatEl.style.height = boatH + 'px';
   const s2px = waterH / 30;
-  // Boat center y in chain-SVG (grid-client) coords.
-  // boatTopBase = gTop - boatH*(20/60); boat center = boatTopBase + boatH/2.
-  // Chain SVG origin is at gTop + gridEl.clientTop.
-  const chainStartBaseY = boatH * (0.5 - 20 / 60) - gridEl.clientTop;
+  // Chain emerges from gTop (waterline level) — y=0 in chain-SVG coords.
+  const chainStartBaseY = -gridEl.clientTop;
   _waveLayout = { wlW, waterH, boatW, boatH, s2px, chainStartBaseY,
-    boatTopBase: gTop - boatH * (25 / 60),
+    boatTopBase: gTop - boatH * (40 / 60),
     wlLeft: startCx - wlW / 2,
-    wlTop:  gTop - wlH * 0.5 + cellH * 0.5 };
+    wlTop:  gTop - (2 / 30) * waterH };
 
   // ── Sky gradient ──────────────────────────────────────────────────────
   if (skyEl) {
-    const skyH = Math.max(0, gTop - wlH * 0.5);
+    const skyH = Math.max(0, gTop - (2 / 30) * waterH);
     skyEl.style.left    = gLeft + 'px';
     skyEl.style.top     = '0px';
     skyEl.style.width   = gW    + 'px';

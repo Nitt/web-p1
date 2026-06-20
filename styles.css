@@ -158,12 +158,13 @@ html, body {
     Size: fill height first, then cap to width.
     12rem ≈ header + dpad + gaps.
   */
-  height: min(calc(100svh - 12rem), calc(100vw - 1.5rem));
+  height: calc(min(calc(100svh - 12rem), calc(100vw - 1.5rem)) * 0.9);
   width:  calc(
     min(calc(100svh - 12rem), calc(100vw - 1.5rem))
-    * var(--cols) / var(--rows)
+    * 0.9 * var(--cols) / var(--rows)
   );
   aspect-ratio: var(--cols) / var(--rows);
+  margin-top: 1.5rem;
 }
 
 .cell {

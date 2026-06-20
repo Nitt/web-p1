@@ -38,8 +38,8 @@ export function pregenNext(seed, id, recipe) {
 
   _worker.postMessage({
     genId,
-    width:            9,
-    height:           9,
+    width:            11,
+    height:           8,
     seed,
     id,
     candidates:       recipe.candidates,
@@ -72,5 +72,5 @@ export function getPendingRecipe() {
  * candidate count.  Used when the worker result is unavailable.
  */
 export function generateFallback(seed, id, recipe) {
-  return generateHardestLevel(9, 9, { seed, id, ...recipe });
+  return generateHardestLevel(11, 8, { seed, id, ...recipe });
 }
