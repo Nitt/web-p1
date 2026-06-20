@@ -328,7 +328,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // whose inner neighbors are all G.EMPTY or G.STICKY.
   function findTeleporterExit(entryPX, entryPY) {
     const candidates = [];
-    for (let py2 = startY + 1; py2 < ph - 1; py2++) {
+    for (let py2 = startY + 2; py2 < ph - 1; py2++) {
       for (let px2 = 1; px2 < pw - 1; px2++) {
         if (Math.abs(px2 - entryPX) + Math.abs(py2 - entryPY) < 4) continue;
         const ni2 = idx(px2, py2);
@@ -390,7 +390,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       // where the player is at (x,y) with the crumble still intact.
       enqueueActivated(ni, x, y, arrivalDirIdx, accDiff + DIFF.CRUMBLE, ni);
     } else if (type === 'teleporter') {
-      if (useTeleporter && !hasTeleporter && hasOnlyOpenNeighbors(nx, ny)) {
+      if (useTeleporter && !hasTeleporter && ny > startY + 1 && hasOnlyOpenNeighbors(nx, ny)) {
         const exitNi = findTeleporterExit(nx, ny);
         if (exitNi !== null) {
           const ex = exitNi % pw, ey = Math.floor(exitNi / pw);
@@ -572,7 +572,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   // place a teleporter pair now in `cells` and record a final step for it.
   if (useTeleporter && !hasTeleporter) {
     const candidates = [];
-    for (let py2 = startY + 1; py2 < ph - 1; py2++) {
+    for (let py2 = startY + 2; py2 < ph - 1; py2++) {
       for (let px2 = 1; px2 < pw - 1; px2++) {
         if (px2 === startX && py2 <= startY + 1) continue;
         const ni2 = idx(px2, py2);

@@ -411,15 +411,18 @@ function _render(now) {
 
 function _renderSky(ctx, t) {
   const W = _canvas.width;
-  // Sky fill
+  const baseY = BOAT_ROWS * TILE - 10;
+  // Sky fill (above waterline)
   ctx.fillStyle = '#4a8ac8';
-  ctx.fillRect(0, 0, W, BOAT_ROWS * TILE);
+  ctx.fillRect(0, 0, W, baseY);
+  // Underwater fill (below waterline, matches grid water color)
+  ctx.fillStyle = '#2d5a8a';
+  ctx.fillRect(0, baseY, W, BOAT_ROWS * TILE - baseY);
   // Horizon band
   ctx.fillStyle = '#6aaee0';
-  ctx.fillRect(0, BOAT_ROWS * TILE - 6, W, 4);
+  ctx.fillRect(0, BOAT_ROWS * TILE - 14, W, 4);
 
   // Wavy waterline pixels
-  const baseY = BOAT_ROWS * TILE - 2;
   ctx.fillStyle = '#88d0f8';
   for (let px = 0; px < W; px++) {
     const dy = Math.round(
@@ -434,7 +437,7 @@ function _renderBoat(ctx, startX, t) {
   const bob  = Math.sin(t * 1.3) * 1.2;
   const tilt = Math.sin(t * 0.85) * 0.018;
   const cx   = startX * TILE + TILE / 2;
-  const by   = BOAT_ROWS * TILE - 2 + bob;
+  const by   = BOAT_ROWS * TILE - 10 + bob;
   ctx.save();
   ctx.translate(cx, by);
   ctx.rotate(tilt);
@@ -1077,6 +1080,10 @@ export function explodePlayer(onDone) {
 
 export function removeCrumble(x, y, level) {
   _crumbles.set(`${x},${y}`, performance.now());
+}
+
+export function respawnCrumble(x, y) {
+  _crumbles.delete(`${x},${y}`);
 }
 
 // ── dive indicator ────────────────────────────────────────────────────────────
