@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, respawnCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { SAMPLE_LEVELS } from './levels.js';
@@ -502,6 +502,7 @@ function _findOnewayEntryGear(owx, owy, dx, dy) {
 function _executeBacktrack(gearIdx) {
   // gearIdx = -1 is a special signal meaning "backtrack all the way to the boat".
   const backtrackPos = gearIdx < 0 ? state.level.start : state.gears[gearIdx];
+  const targetWS = gearIdx < 0 ? 0 : (state.gears[gearIdx].worldState ?? state.worldState);
 
   state.isMoving = true;
   setChainSpinning(true, -1);
@@ -512,6 +513,7 @@ function _executeBacktrack(gearIdx) {
 
   state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
   state.gearsLeft += freed;
+  _restoreWorldState(targetWS);
 
   const moveToken = _moveToken;
 
@@ -820,6 +822,17 @@ function _buildDepartureCtx(target, dx, dy) {
            isReturnToStart, savedPrevDir };
 }
 
+function _restoreWorldState(targetWorldState) {
+  const { toggleMap, level, worldState } = state;
+  if (targetWorldState === worldState) return;
+  for (const [flatIdx, toggleIdx] of toggleMap.entries()) {
+    if ((worldState >> toggleIdx) & 1 && !((targetWorldState >> toggleIdx) & 1)) {
+      respawnCrumble(flatIdx % level.width, Math.floor(flatIdx / level.width));
+    }
+  }
+  state.worldState = targetWorldState;
+}
+
 // Draws the pre-animation chain state and pushes the departure cog if turning.
 function _applyPreAnimationChain(ctx, hasTeleportCrossing = false) {
   const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract } = ctx;
@@ -834,7 +847,7 @@ function _applyPreAnimationChain(ctx, hasTeleportCrossing = false) {
     state.gearsLeft++;
     drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
   } else if (isBend && !isAtLastCog && (!isBoatEntry || state.gears.length >= 2)) {
-    state.gears.push({ x: state.playerPos.x, y: state.playerPos.y });
+    state.gears.push({ x: state.playerPos.x, y: state.playerPos.y, worldState: state.worldState });
     state.gearsLeft--;
     if (isOneBack && !hasTeleportCrossing) {
       drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
@@ -989,6 +1002,9 @@ function _onPlayerLanded(target, dx, dy, ctx) {
 
   if (!isBoatEntry) {
     if (revisitIdx >= 0) {
+      const savedWS = state.gears[revisitIdx].worldState;
+      if (savedWS !== undefined) _restoreWorldState(savedWS);
+
       const freed      = state.gears.slice(revisitIdx + 1);
       freedOnRevisit   = freed.filter(g => !g.isTeleport).length; // only bend gears cost budget
       state.gears      = state.gears.slice(0, revisitIdx + 1);
@@ -1010,6 +1026,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       }
     }
   } else {
+    _restoreWorldState(0);
     state.gearsLeft += state.gears.filter(g => !g.isTeleport).length;
     state.gears = [];
   }
@@ -1136,7 +1153,7 @@ function _executeMove(dx, dy) {
         state.gears.splice(retracedIdx, 1);
       } else {
         state.gears.push({ isTeleport: true, x: tc.entryX, y: tc.entryY,
-                           exitX: tc.exitX, exitY: tc.exitY });
+                           exitX: tc.exitX, exitY: tc.exitY, worldState: state.worldState });
       }
       // Update _chainGears immediately so the slide2 phase draws the bridge correctly.
       drawChain(state.gears, { x: tc.exitX, y: tc.exitY }, state.gearsLeft, state.totalGears, state.level);

@@ -496,6 +496,13 @@ export function removeCrumble(x, y, level) {
   }, { once: true });
 }
 
+export function respawnCrumble(x, y) {
+  if (!_currentLevel) return;
+  const cellEl = gridEl.children[y * _currentLevel.width + x];
+  if (!cellEl) return;
+  cellEl.dataset.type = 'crumble';
+}
+
 // ─── chain / gear rope ───────────────────────────────────────────────────────
 
 /**
