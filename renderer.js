@@ -144,10 +144,11 @@ export function buildGrid(container, level) {
     for (let x = 0; x < level.width; x++) {
       const cell = document.createElement('div');
       cell.className = 'cell';
-      // Hide top-row wall cells (entry tunnel sides) — boat/waterline covers them.
-      // The center entry cell (level.start.x) is kept visible for the chain.
-      if (y === 0 && x !== level.start.x) cell.classList.add('entry-wall');
       const type = level.cells[y * level.width + x];
+      // Hide top-row non-wall cells — boat/waterline covers them.
+      // Wall cells placed by the generator are kept visible as obstacles.
+      // The center entry cell (level.start.x) is always kept visible for the chain.
+      if (y === 0 && x !== level.start.x && type !== CellType.WALL) cell.classList.add('entry-wall');
       if (type === CellType.WALL)       cell.dataset.type = 'wall';
       if (type === CellType.STICKY)     cell.dataset.type = 'sticky';
       if (type === CellType.CRUMBLE)    cell.dataset.type = 'crumble';
