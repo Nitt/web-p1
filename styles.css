@@ -153,6 +153,7 @@ html, body {
   gap: 0;
   border-radius: 6px;
   overflow: hidden;
+  background: linear-gradient(to bottom, #1a6ea8 0%, #0a2a50 100%);
 
   /*
     Size: fill height first, then cap to width.

@@ -1253,9 +1253,12 @@ function _updateBoatAndWaterline(level) {
 
   // ── Sky gradient ──────────────────────────────────────────────────────
   if (skyEl) {
-    const skyH = Math.max(0, gTop - (2 / 30) * waterH);
+    const waterlineY = gTop - (2 / 30) * waterH;
+    const boatTop    = gTop - boatH * (40 / 60);
+    const skyTop     = boatTop - cellH * 1.5;   // extend a bit above the boat
+    const skyH       = Math.max(0, waterlineY - skyTop);
     skyEl.style.left    = gLeft + 'px';
-    skyEl.style.top     = '0px';
+    skyEl.style.top     = skyTop + 'px';
     skyEl.style.width   = gW    + 'px';
     skyEl.style.height  = skyH  + 'px';
     skyEl.style.background = 'linear-gradient(to bottom, #3a7abd 0%, #6aaee0 45%, #a8d4f0 80%, rgba(168,212,240,0.3) 100%)';
