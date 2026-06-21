@@ -12,7 +12,7 @@
 
 import { generateHardestLevel } from './generator.js';
 
-export const LEVEL_WIDTH  = 9;
+export const LEVEL_WIDTH  = 10;
 export const LEVEL_HEIGHT = 8;
 
 const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });

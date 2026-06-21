@@ -131,14 +131,23 @@ export function buildGrid(container, level) {
   container.style.setProperty('--cols', level.width);
   container.style.setProperty('--rows', level.height);
 
-  containerEl = container;
+  const playAreaEl = document.createElement('div');
+  playAreaEl.id = 'play-area';
+  container.appendChild(playAreaEl);
+
+  containerEl = playAreaEl;
   _currentLevel = level;
   _gearHeartsEl = document.getElementById('gear-hearts');
+
+  // Sky is first flex child (top); grid is second (bottom).
+  skyEl = document.createElement('div');
+  skyEl.className = 'sky-gradient';
+  playAreaEl.appendChild(skyEl);
 
   _gridHighlightCanvas = null;
   gridEl = document.createElement('div');
   gridEl.className = 'grid';
-  container.appendChild(gridEl);
+  playAreaEl.appendChild(gridEl);
 
   for (let y = 0; y < level.height; y++) {
     for (let x = 0; x < level.width; x++) {
@@ -225,21 +234,17 @@ export function buildGrid(container, level) {
   playerEl.appendChild(counterSpan);
   gridEl.appendChild(playerEl);
 
-  // Sky, waterline, and boat overlays (appended to container, above the grid)
-  skyEl = document.createElement('div');
-  skyEl.className = 'sky-gradient';
-  container.appendChild(skyEl);
-
+  // Waterline and boat overlays (absolutely positioned within play-area)
   waterlineEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   waterlineEl.setAttribute('class', 'waterline-svg');
-  container.appendChild(waterlineEl);
+  playAreaEl.appendChild(waterlineEl);
   _loadAndAnimateWaterline();
 
   boatEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   boatEl.setAttribute('class', 'boat-svg');
   boatEl.setAttribute('viewBox', '0 0 100 60');
   _drawBoat();
-  container.appendChild(boatEl);
+  playAreaEl.appendChild(boatEl);
 
   // Clear any leftover dive indicator from the previous level.
   if (diveIndicatorEl) { diveIndicatorEl.remove(); diveIndicatorEl = null; }
@@ -1217,8 +1222,8 @@ function _updateBoatAndWaterline(level) {
   const cellW = gridRect.width  / level.width;
   const cellH = gridRect.height / level.height;
 
-  const boatW   = cellW * 5.7;
-  const boatH   = cellH * 3.0;
+  const boatW   = cellW * 2.85;
+  const boatH   = cellH * 1.5;
   const startCx = gLeft + (level.start.x + 0.5) * cellW;
 
   // ── Waterline ────────────────────────────────────────────────────────
@@ -1251,18 +1256,7 @@ function _updateBoatAndWaterline(level) {
     wlLeft: startCx - wlW / 2,
     wlTop:  gTop - (2 / 30) * waterH };
 
-  // ── Sky gradient ──────────────────────────────────────────────────────
-  if (skyEl) {
-    const waterlineY = gTop - (2 / 30) * waterH;
-    const boatTop    = gTop - boatH * (40 / 60);
-    const skyTop     = boatTop - cellH * 1.5;   // extend a bit above the boat
-    const skyH       = Math.max(0, waterlineY - skyTop);
-    skyEl.style.left    = gLeft + 'px';
-    skyEl.style.top     = skyTop + 'px';
-    skyEl.style.width   = gW    + 'px';
-    skyEl.style.height  = skyH  + 'px';
-    skyEl.style.background = 'linear-gradient(to bottom, #3a7abd 0%, #6aaee0 45%, #a8d4f0 80%, rgba(168,212,240,0.3) 100%)';
-  }
+  // Sky gradient colour and size are handled entirely by CSS.
   if (diveIndicatorEl) _updateDiveIndicator(level);
   _drawGridHighlight();
 }

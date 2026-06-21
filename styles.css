@@ -133,16 +133,23 @@ html, body {
 }
 #auto-solve-btn.no-path { animation: auto-solve-shake 0.4s ease; }
 
-/* grid container */
+/* grid container — centres the play-area */
 #grid-container {
   flex: 1;
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   min-height: 0;
-  overflow: visible;
+}
+
+/* play area — one rectangle containing sky (top) + grid (bottom) */
+#play-area {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 /* the actual grid */
@@ -151,8 +158,9 @@ html, body {
   display: grid;
   grid-template-columns: repeat(var(--cols), 1fr);
   gap: 0;
-  border-radius: 6px;
+  border-radius: 0 0 6px 6px;
   overflow: hidden;
+  flex-shrink: 0;
   background: linear-gradient(to bottom, #1a6ea8 0%, #0a2a50 100%);
 
   /*
@@ -165,7 +173,6 @@ html, body {
     * 0.9 * var(--cols) / var(--rows)
   );
   aspect-ratio: var(--cols) / var(--rows);
-  margin-top: 1.5rem;
 }
 
 .cell {
@@ -468,10 +475,18 @@ body.chain-debug .player {
 /* ─── boat & waterline overlays ──────────────────────────────────────────── */
 
 .boat-svg,
-.waterline-svg,
-.sky-gradient {
+.waterline-svg {
   position: absolute;
   pointer-events: none;
+}
+
+/* sky: exactly 2 cell-heights above the grid */
+.sky-gradient {
+  height: calc(min(calc(100svh - 12rem), calc(100vw - 1.5rem)) * 0.9 / var(--rows) * 2);
+  flex-shrink: 0;
+  border-radius: 6px 6px 0 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, #3a7abd 0%, #87ceeb 60%, #c8e8f7 100%);
 }
 
 /* Boat needs overflow:visible to render above the container edge */
