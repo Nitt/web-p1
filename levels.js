@@ -1,5 +1,6 @@
 import { generateHardestLevel } from './generator.js';
 import { getRecipe } from './levelConfig.js';
+import { LEVEL_WIDTH, LEVEL_HEIGHT } from './progression.js';
 
 /**
  * Level format (what generateLevel emits, and what the game expects):
@@ -22,7 +23,7 @@ import { getRecipe } from './levelConfig.js';
 export const SAMPLE_LEVELS = (() => {
   const recipe = getRecipe(1, 0);
   return [
-    generateHardestLevel(9, 9, {
+    generateHardestLevel(LEVEL_WIDTH, LEVEL_HEIGHT, {
       seed:            0,
       id:              1,
       candidates:      recipe.candidates,

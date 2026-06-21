@@ -12,6 +12,9 @@
 
 import { generateHardestLevel } from './generator.js';
 
+export const LEVEL_WIDTH  = 9;
+export const LEVEL_HEIGHT = 8;
+
 const _worker = new Worker(new URL('./levelWorker.js', import.meta.url), { type: 'module' });
 _worker.onerror = (e) => console.error('[progression] worker error:', e.message, e);
 
@@ -38,8 +41,8 @@ export function pregenNext(seed, id, recipe) {
 
   _worker.postMessage({
     genId,
-    width:            11,
-    height:           8,
+    width:            LEVEL_WIDTH,
+    height:           LEVEL_HEIGHT,
     seed,
     id,
     candidates:       recipe.candidates,
@@ -72,5 +75,5 @@ export function getPendingRecipe() {
  * candidate count.  Used when the worker result is unavailable.
  */
 export function generateFallback(seed, id, recipe) {
-  return generateHardestLevel(11, 8, { seed, id, ...recipe });
+  return generateHardestLevel(LEVEL_WIDTH, LEVEL_HEIGHT, { seed, id, ...recipe });
 }
