@@ -101,12 +101,14 @@ export function solve(level, startPos, worldState, gearsLeft, prevDi = 4) {
   // Push one heap entry per valid outgoing direction from (x,y) in worldState ws.
   // incoming = direction of the last actual slide (or prevDi at start).
   // Bend directions that lead to an adjacent intact crumble get b=0 (free bounce).
+  // Hook cells (CellType.HOOK = 11) act as permanent free anchors — bends cost 0.
   function pushOutgoing(x, y, incoming, ws, g, key) {
+    const onHook = y >= 0 && cells[y * width + x] === 11 /* CellType.HOOK */;
     for (let d = 0; d < 4; d++) {
       if (incoming < 4 && d === OPPOSITE_DI[incoming]) continue; // reversal
       if (y < 0 && DIRS4[d].dy !== 1) continue;                  // boat: only DOWN
       const isBend = incoming < 4 && d !== incoming;
-      const b = (isBend && !adjacentCrumble(x, y, d, cells, width, height, toggleMap, ws)) ? 1 : 0;
+      const b = (isBend && !onHook && !adjacentCrumble(x, y, d, cells, width, height, toggleMap, ws)) ? 1 : 0;
       heapPush({ x, y, di: incoming, outgoing: d, ws, g, b, key });
     }
   }

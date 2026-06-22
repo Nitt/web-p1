@@ -9,6 +9,7 @@ export const CellType = {
   ONEWAY_DOWN:  6,   // passable only when moving down  (dy=+1)
   CRUMBLE:      7,   // acts like a wall, but crumbles when the player stops against it
   TELEPORTER:  10,   // paired cells; player slides into entry and continues from paired exit
+  HOOK:        11,   // permanent gear anchor: stops the player (like sticky), bending from it costs 0 gears
 };
 
 /** Returns true for any one-way cell type. */
@@ -175,7 +176,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
         // Check stop conditions at the exit cell
         if (level.goal && x === level.goal.x && y === level.goal.y) break;
         const exitCell = cells[y * width + x];
-        if (exitCell === CellType.STICKY) break;
+        if (exitCell === CellType.STICKY || exitCell === CellType.HOOK) break;
         if (gearSet && gearSet.has(y * width + x)) break;
         continue; // continue sliding from exit in the same direction
       }
@@ -191,7 +192,7 @@ export function slidePlayer(level, pos, dx, dy, toggleMap = null, worldState = 0
       break;
     }
 
-    if (cell === CellType.STICKY) {
+    if (cell === CellType.STICKY || cell === CellType.HOOK) {
       break;
     }
 

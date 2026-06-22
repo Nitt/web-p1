@@ -1,7 +1,7 @@
 import { makeRng } from './random.js';
 
 // ── Internal generator cell values ──────────────────────────────────────────
-const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, TELEPORTER: 6 };
+const G = { UNTOUCHED: 0, EMPTY: 1, STICKY: 2, BLOCK: 3, ONEWAY: 4, CRUMBLE: 5, TELEPORTER: 6, HOOK: 7 };
 
 const DIRS = [
   { key: 'LEFT',  idx: 0, dx: -1, dy:  0 },
@@ -190,7 +190,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       if (cells[ni] === G.CRUMBLE && !activatedSet.has(ni)) continue;
       const isStraight = E === arrivalDir;
       const isReversal = eDir.dx === -aDir.dx && eDir.dy === -aDir.dy;
-      const isFree     = isStraight || isReversal;
+      const isHookCell = cells[idx(x, y)] === G.HOOK; // hook: all bends are free
+      const isFree     = isStraight || isReversal || isHookCell;
       const g = currentGearCount + (isFree ? 0 : 1);
       while (buckets.length <= g) buckets.push([]);
       buckets[g].push({ x, y, arrivalDir, exploreDir: E, activated, accDiff, moves: currentBranchMoves.slice(), justHitCrumble });
@@ -548,6 +549,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         case G.CRUMBLE:    out = 7;  break;   // CellType.CRUMBLE
         case G.BLOCK:      out = 1;  break;   // CellType.WALL
         case G.TELEPORTER: out = 10; break;   // CellType.TELEPORTER
+        case G.HOOK:       out = 11; break;   // CellType.HOOK
         default:           out = 0;  break;   // CellType.EMPTY  (UNTOUCHED — never carved)
       }
       outCells[y * width + x] = out;

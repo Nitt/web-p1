@@ -64,7 +64,6 @@ let _playerInTeleport = false;
 // During a retrace flash (second half), holds grid coords of a visual-only bridge that
 // keeps the teleporter visually connected until the player finishes fading in at the exit.
 let _flashRetraceBridge = null;
-let _jerkAnchorPx = null;  // extra chain point held fixed during jerk, cleared when jerk ends
 let _jerkAvatarOnly = false; // when true, jerk moves the sprite only and leaves chain drawing to the retract anim
 export function setJerkAvatarOnly(v) { _jerkAvatarOnly = v; }
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
@@ -162,6 +161,7 @@ export function buildGrid(container, level) {
       if (type === CellType.STICKY)     cell.dataset.type = 'sticky';
       if (type === CellType.CRUMBLE)    cell.dataset.type = 'crumble';
       if (type === CellType.TELEPORTER) cell.dataset.type = 'teleporter';
+      if (type === CellType.HOOK) cell.dataset.type = 'hook';
       if (isOneway(type)) {
         cell.dataset.type = 'oneway';
         cell.dataset.dir  = ONEWAY_DIR_ATTR[type];
@@ -397,6 +397,10 @@ function _animateSlide(from, to, level, manageTailSpin, onDone, jerkDir = null) 
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
   if (steps === 0) { onDone(); return; }
 
+  // Tell _redrawChain where this slide is headed so insertPassThroughHooks
+  // scans to the destination, not the pre-animation player position.
+  if (_chainState) _chainState.animTarget = to;
+
   const token    = ++_playerAnimToken;
   const duration = steps * speedMs();
   const startTime = performance.now();
@@ -438,10 +442,9 @@ function _animateChainJerk(endPx, { dx, dy }, level, token) {
   const cellSize = gridEl.getBoundingClientRect().width / level.width;
   const A        = cellSize * 0.35;
   const startTime = performance.now();
-  if (!_jerkAvatarOnly) _jerkAnchorPx = endPx;
 
   function frame(now) {
-    if (token !== _playerAnimToken) { _jerkAnchorPx = null; return; }
+    if (token !== _playerAnimToken) { return; }
     const t      = Math.min((now - startTime) / JERK_MS, 1);
     const offset = A * Math.exp(-5 * t) * Math.sin(Math.PI * 2 * 1.2 * t);
     _setOverlayPixel(playerEl, endPx.x + dx * offset, endPx.y + dy * offset);
@@ -449,7 +452,6 @@ function _animateChainJerk(endPx, { dx, dy }, level, token) {
     if (t < 1) {
       requestAnimationFrame(frame);
     } else {
-      _jerkAnchorPx = null;
       _setOverlayPixel(playerEl, endPx.x, endPx.y);
       if (!_jerkAvatarOnly && _chainState) _redrawChain(endPx.x, endPx.y);
     }
@@ -657,10 +659,11 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
     const ld     = localDirs[i];
 
     // Straight-through: same direction (cross≈0, dot>0) — no cog, no arc wrap.
-    // Just pass through the center so the chain runs straight.
+    // Hook bypass points are also passed straight through so the arc doesn't
+    // double the perpendicular offset that is already baked into their position.
     const cross_io = d_in.x * d_out.y - d_in.y * d_out.x;
     const dot_io   = d_in.x * d_out.x + d_in.y * d_out.y;
-    if (Math.abs(cross_io) < 0.01 && dot_io > 0) {
+    if ((Math.abs(cross_io) < 0.01 && dot_io > 0) || rawPoints[i]._hookBypass) {
       out.push({ x: center.x, y: center.y });
       continue;
     }
@@ -743,7 +746,7 @@ function _buildChainPath(rawPoints, R, gearLerpT = 0) {
   return out;
 }
 
-function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS) {
+function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS, holeColor = 'rgba(255,255,255,0.5)') {
   const gGroup = document.createElementNS(NS, 'g');
   gGroup.setAttribute('class', 'gear-group');
   gGroup.setAttribute('transform', `translate(${cx},${cy}) rotate(${spinAngle})`);
@@ -757,7 +760,7 @@ function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS)
   hole.setAttribute('cx', '0');
   hole.setAttribute('cy', '0');
   hole.setAttribute('r', String(holeR));
-  hole.setAttribute('fill', 'rgba(255,255,255,0.5)');
+  hole.setAttribute('fill', holeColor);
   gGroup.appendChild(hole);
   svgEl.appendChild(gGroup);
 }
@@ -789,22 +792,96 @@ function _redrawChain(px, py) {
   const bridges  = [];     // { from:{x,y}, to:{x,y} } in pixels
   let   curSeg   = [startPx];
 
+  // Insert offset intermediate points where the chain segment passes straight through a
+  // hook cell — gives the hook gear a chance to engage the chain visually.
+  const hookOffset = COG_R;
+  const hookCells = level.cells;
+  const hookW = level.width, hookH = level.height;
+  const hookGearsToDraw = []; // { x, y, spinDir } — hook cell centers drawn after segment loop
+  // isPlayerSeg: true only for the last segment ending at the player; scales offset by
+  // player distance so the wrap smoothly lerps from 0→full over one cell of travel.
+  function insertPassThroughHooks(fromGX, fromGY, toGX, toGY, isPlayerSeg) {
+    const dx = Math.sign(toGX - fromGX), dy = Math.sign(toGY - fromGY);
+    if ((dx !== 0) === (dy !== 0)) return; // diagonal or no-op
+    const perpX = dy * hookOffset, perpY = -dx * hookOffset;
+    const spinDir = (dx > 0 || dy > 0) ? 1 : -1;
+    // t = 0 until player has passed the hook, then grows 0→1 over one cell of travel.
+    // dot > 0 means player animation position is on the "past" side of the hook.
+    const hookLerpT = (hp) => {
+      if (!isPlayerSeg) return 1;
+      const tpx = px - hp.x, tpy = py - hp.y;
+      const dot = tpx * dx + tpy * dy;
+      return dot <= 0 ? 0 : Math.min(1, Math.hypot(tpx, tpy) / cellSize);
+    };
+    if (dy === 0) {
+      const y = fromGY;
+      if (y < 0 || y >= hookH) return;
+      const x0 = Math.min(fromGX, toGX) + 1, x1 = Math.max(fromGX, toGX) - 1;
+      const xs = [];
+      for (let x = x0; x <= x1; x++) {
+        if (x >= 0 && x < hookW && hookCells[y * hookW + x] === CellType.HOOK) xs.push(x);
+      }
+      if (dx < 0) xs.reverse();
+      for (const x of xs) {
+        const hp = _cellPixel(x, y, level);
+        const t = hookLerpT(hp);
+        if (t > 0) {
+          curSeg.push({ x: hp.x + perpX * t, y: hp.y + perpY * t, _noGear: true, _hookBypass: true });
+          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir, gx: x, gy: y });
+        }
+      }
+    } else {
+      const x = fromGX;
+      if (x < 0 || x >= hookW) return;
+      const y0 = Math.min(fromGY, toGY) + 1, y1 = Math.max(fromGY, toGY) - 1;
+      const ys = [];
+      for (let y = y0; y <= y1; y++) {
+        if (y >= 0 && y < hookH && hookCells[y * hookW + x] === CellType.HOOK) ys.push(y);
+      }
+      if (dy < 0) ys.reverse();
+      for (const y of ys) {
+        const hp = _cellPixel(x, y, level);
+        const t = hookLerpT(hp);
+        if (t > 0) {
+          curSeg.push({ x: hp.x + perpX * t, y: hp.y + perpY * t, _noGear: true, _hookBypass: true });
+          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir, gx: x, gy: y });
+        }
+      }
+    }
+  }
+
+  let prevGX = level.start.x, prevGY = level.start.y;
+
   for (const g of gears) {
     if (g.isTeleport) {
+      insertPassThroughHooks(prevGX, prevGY, g.x, g.y, false);
       curSeg.push(_cellPixel(g.x, g.y, level));
       segments.push(curSeg);
       const exitPx = _cellPixel(g.exitX, g.exitY, level);
       bridges.push({ from: curSeg[curSeg.length - 1], to: exitPx });
       curSeg = [exitPx];
+      prevGX = g.exitX; prevGY = g.exitY;
     } else {
-      curSeg.push(_cellPixel(g.x, g.y, level));
+      insertPassThroughHooks(prevGX, prevGY, g.x, g.y, false);
+      const pt = _cellPixel(g.x, g.y, level);
+      if (g.isHook) pt._isHook = true;
+      curSeg.push(pt);
+      prevGX = g.x; prevGY = g.y;
     }
   }
 
   // Append player pixel to the last segment — unless mid-flash (player invisible at entry).
-  // During a jerk, insert the anchor (stop position) so only the short jerk segment moves.
+  // Scan to whichever of playerPos / animTarget is further from prevGX/prevGY — this
+  // finds hooks regardless of travel direction (going through H vs returning through H).
   if (!_playerInTeleport) {
-    if (_jerkAnchorPx) curSeg.push({ x: _jerkAnchorPx.x, y: _jerkAnchorPx.y });
+    if (playerPos) {
+      const at = _chainState.animTarget;
+      const scanEnd = (at
+        ? (Math.abs(at.x - prevGX) + Math.abs(at.y - prevGY) >=
+           Math.abs(playerPos.x - prevGX) + Math.abs(playerPos.y - prevGY) ? at : playerPos)
+        : playerPos);
+      insertPassThroughHooks(prevGX, prevGY, scanEnd.x, scanEnd.y, true);
+    }
     curSeg.push({ x: px, y: py });
   }
   segments.push(curSeg);
@@ -890,16 +967,26 @@ function _redrawChain(px, py) {
       const localDir = cross !== 0 ? Math.sign(cross) : prevLocalDir;
       prevLocalDir   = localDir;
       if (Math.abs(cross) < 0.01 && dot_io > 0) continue; // straight-through — no cog
+      if (seg[i]._noGear) continue; // hook bypass point — gear drawn at cell center separately
       // First point is the segment anchor (boat/teleport-exit), last is player/teleport-entry.
       // Don't draw a cog at anchor endpoints.
+      const holeColor = seg[i]._isHook ? 'rgba(220,160,0,0.9)' : 'rgba(255,255,255,0.5)';
       _appendGear(chainSvgEl, seg[i].x, seg[i].y,
-                  gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS);
+                  gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS, holeColor);
     }
     // Draw teleporter portal circles at segment boundaries (entry and exit).
     if (si < bridges.length) {
       _drawTeleporterPortal(bridges[si].from.x, bridges[si].from.y, NS, scale);
       _drawTeleporterPortal(bridges[si].to.x,   bridges[si].to.y,   NS, scale);
     }
+  }
+
+  // Pass-through hook gears — drawn at cell center so the gear stays fixed while
+  // the chain offsets to the side via the _noGear bypass points.
+  for (const h of hookGearsToDraw) {
+    _appendGear(chainSvgEl, h.x, h.y,
+                gearOuterR, gearInnerR, gearHoleR,
+                _spinProgress * h.spinDir, scale, NS, 'rgba(220,160,0,0.9)');
   }
 
   // Portals for the retrace-flash visual bridge (not associated with any segment).
@@ -909,13 +996,36 @@ function _redrawChain(px, py) {
     _drawTeleporterPortal(fb.to.x,   fb.to.y,   NS, scale);
   }
 
-  // Tail gear at player (skip while mid-flash).
-  if (!_playerInTeleport && lastSeg.length >= 1) {
+  // Tail gear at player (skip while mid-flash, or when no gears remain).
+  if (!_playerInTeleport && lastSeg.length >= 1 && gearsLeft > 0) {
     const lastPt = lastSeg[lastSeg.length - 1];
     _appendGear(chainSvgEl, lastPt.x, lastPt.y,
                 gearOuterR, gearInnerR, gearHoleR,
                 _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir,
                 scale, NS);
+  }
+
+  // ── Pass-through hook gears — drawn at cell center, spinning with chain ──────
+  for (const h of hookGearsToDraw) {
+    _appendGear(chainSvgEl, h.x, h.y, gearOuterR, gearInnerR, gearHoleR,
+                _spinProgress * h.spinDir, scale, NS, 'rgba(220,160,0,0.9)');
+  }
+
+  // ── Hook cell fixtures (drawn last so yellow always shows on top) ──────────
+  // Build set of hook positions already rendered as chain gears (visited or passed-through).
+  const hookInChain = new Set([
+    ...gears.filter(g => !g.isTeleport && g.isHook).map(g => `${g.x},${g.y}`),
+    ...hookGearsToDraw.map(h => `${h.gx},${h.gy}`),
+  ]);
+  for (let fy = 0; fy < level.height; fy++) {
+    for (let fx = 0; fx < level.width; fx++) {
+      if (level.cells[fy * level.width + fx] === 11 /* CellType.HOOK */) {
+        if (!hookInChain.has(`${fx},${fy}`)) {
+          const hPx = _cellPixel(fx, fy, level);
+          _appendGear(chainSvgEl, hPx.x, hPx.y, gearOuterR, gearInnerR, gearHoleR, 0, scale, NS, 'rgba(220,160,0,0.9)');
+        }
+      }
+    }
   }
 
   // ── Counter / hearts / chain bar ──────────────────────────────────────────

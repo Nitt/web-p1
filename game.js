@@ -29,8 +29,8 @@ const state = {
   isMoving:             false,
   won:                  false,
   queuedMove:           null,   // { dx, dy, queuedAt } — next move buffered during animation
-  nextId:               2,      // id for the next generated level
-  nextSeed:             300,    // seed for level 2 (level 1 uses 0–299 as a safe margin)
+  nextId:               2,      // id of the next level to load (hand-crafted while ≤ SAMPLE_LEVELS.length)
+  nextSeed:             300,    // seed for the first generated level (hand-crafted levels use 0–299 as a margin)
   // Gear chain system.
   gears:                [],     // [{x,y}] cog positions (bends/reversals only)
   gearsLeft:            0,      // remaining gear budget
@@ -73,7 +73,7 @@ function _moveArrow({ dx, dy }) {
 function _renderLevelGrid() {
   const { level, playerPos, gears, worldState, toggleMap } = state;
   const { width, height, goal } = level;
-  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', '?', '?', 'T'];
+  const GLYPHS = ['.', '#', 'S', '←', '→', '↑', '↓', 'c', '?', '?', 'T', 'H'];
 
   const gearNums = new Map();
   gears.filter(g => !g.isTeleport).forEach((g, i) => gearNums.set(g.y * width + g.x, (i + 1) % 10));
@@ -305,7 +305,9 @@ function loadLevel(level) {
   const goalDepth = level.depths
     ? level.depths[level.goal.y * level.width + level.goal.x]
     : 0;
-  const budget = (level.effectiveCogs ?? goalDepth) > 0 ? (level.effectiveCogs ?? goalDepth) : 1;
+  // effectiveCogs explicitly set to 0 means hook-only level — allow 0 budget.
+  // Fall back to goalDepth for generated levels, clamped to at least 1.
+  const budget = level.effectiveCogs != null ? level.effectiveCogs : Math.max(1, goalDepth);
   state.gears      = [];
   state.gearsLeft  = budget;
   state.totalGears = budget;
@@ -318,9 +320,11 @@ function loadLevel(level) {
   placePlayer(state.playerPos, level);
   drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, level);
 
-  // Kick off background generation of the next level immediately.
-  const nextRecipe = getRecipe(state.nextId);
-  pregenNext(state.nextSeed, state.nextId, nextRecipe);
+  // Kick off background generation of the next level when approaching generated levels.
+  if (state.nextId > SAMPLE_LEVELS.length) {
+    const nextRecipe = getRecipe(state.nextId);
+    pregenNext(state.nextSeed, state.nextId, nextRecipe);
+  }
 
   // Show the dive indicator and wait for the player to manually dive in.
   state.waitingForDive = true;
@@ -331,12 +335,17 @@ function loadLevel(level) {
 }
 
 function _nextLevel() {
-  const seed = state.nextSeed;
-  const id   = state.nextId;
-  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
-  state.nextId   += 1;
-
+  const id = state.nextId;
+  state.nextId     += 1;
   state.levelIndex += 1;
+
+  if (id <= SAMPLE_LEVELS.length) {
+    loadLevel(SAMPLE_LEVELS[id - 1]);
+    return;
+  }
+
+  const seed = state.nextSeed;
+  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
 
   // Use the pre-generated level if ready; otherwise generate synchronously with
   // a reduced candidate count to avoid blocking the main thread too long.
@@ -508,8 +517,8 @@ function _executeBacktrack(gearIdx) {
   setChainSpinning(true, -1);
 
   const gearsSnapshot = state.gears.slice();
-  // Only bend gears (non-teleport) consume gear budget — count them for the refund.
-  const freed = gearsSnapshot.slice(gearIdx + 1).filter(g => !g.isTeleport).length;
+  // Only bend gears (non-teleport, non-hook) consume gear budget — count them for the refund.
+  const freed = gearsSnapshot.slice(gearIdx + 1).filter(g => !g.isTeleport && !g.isHook).length;
 
   state.gears     = state.gears.slice(0, gearIdx + 1); // slice(0,0) = [] for boat
   state.gearsLeft += freed;
@@ -560,7 +569,7 @@ function _executeBacktrack(gearIdx) {
               ? _gearOutPos(state.gears[state.gears.length - 2])
               : state.level.start;
             state.gears.pop();
-            state.gearsLeft++;
+            if (!last.isHook) state.gearsLeft++;
             state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
           }
         }
@@ -590,7 +599,7 @@ function _executeBacktrack(gearIdx) {
           ? _gearOutPos(state.gears[state.gears.length - 2])
           : state.level.start;
         state.gears.pop();
-        state.gearsLeft++;
+        if (!last.isHook) state.gearsLeft++;
         state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
       }
     }
@@ -614,11 +623,18 @@ export function skipLevel() {
 function _batchAdvanceLevel() {
   if (!_batchRunning) return;
 
-  const seed = state.nextSeed;
-  const id   = state.nextId;
-  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
-  state.nextId   += 1;
+  const id = state.nextId;
+  state.nextId     += 1;
   state.levelIndex += 1;
+
+  if (id <= SAMPLE_LEVELS.length) {
+    loadLevel(SAMPLE_LEVELS[id - 1]);
+    _autoSolve();
+    return;
+  }
+
+  const seed = state.nextSeed;
+  state.nextSeed += getPendingRecipe()?.candidates ?? 300;
 
   Promise.resolve(takePendingLevel()).then(level => {
     if (!_batchRunning) return;
@@ -661,7 +677,8 @@ export function startBatchTest() {
  */
 function _computeProgressionForLevel(n) {
   let seed = 300;
-  for (let i = 2; i < n; i++) {
+  const generatedStart = SAMPLE_LEVELS.length + 1;
+  for (let i = generatedStart; i < n; i++) {
     const recipe = getRecipe(i);
     seed += recipe.candidates;
   }
@@ -675,11 +692,11 @@ function _computeProgressionForLevel(n) {
 export function jumpToLevel(n) {
   n = Math.max(1, Math.floor(n));
 
-  if (n === 1) {
-    state.levelIndex = 1;
-    state.nextId     = 2;
+  if (n <= SAMPLE_LEVELS.length) {
+    state.levelIndex = n;
+    state.nextId     = n + 1;
     state.nextSeed   = 300;
-    loadLevel(SAMPLE_LEVELS[0]);
+    loadLevel(SAMPLE_LEVELS[n - 1]);
     return;
   }
 
@@ -745,6 +762,8 @@ function _tryOnewayBacktrack(target, dx, dy, didMove) {
 // Returns null if the move is blocked by an empty gear budget.
 function _buildDepartureCtx(target, dx, dy) {
   const isBoatEntry = target.y < 0;
+  const currentFlat = state.playerPos.y * state.level.width + state.playerPos.x;
+  const isOnHook = state.playerPos.y >= 0 && state.level.cells[currentFlat] === CellType.HOOK;
 
   // Detect early so we can skip the straight-through pop — the chain will be
   // fully retracted in _onPlayerLanded anyway, and popping a gear here causes
@@ -767,7 +786,7 @@ function _buildDepartureCtx(target, dx, dy) {
       if (dx === Math.sign(last.x - prev.x) && dy === Math.sign(last.y - prev.y)) {
         isStraightThrough = true;
         state.gears.pop();
-        state.gearsLeft++;
+        if (!last.isHook) state.gearsLeft++;
         drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       }
     }
@@ -802,7 +821,7 @@ function _buildDepartureCtx(target, dx, dy) {
   const bendGearCount = _bendGears().length;
   const isBoatVShapeRetract = isBoatEntry && isBend && !isAtLastCog && bendGearCount === 1;
 
-  if (willUseGear && state.gearsLeft === 0) {
+  if (willUseGear && state.gearsLeft === 0 && !isOnHook) {
     if (!_batchRunning) return null;
   }
   if (isBoatEntry && isBend && !isAtLastCog && bendGearCount >= 2 && state.gearsLeft === 0) {
@@ -819,7 +838,7 @@ function _buildDepartureCtx(target, dx, dy) {
 
   return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
            revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract,
-           isReturnToStart, savedPrevDir };
+           isReturnToStart, savedPrevDir, isOnHook };
 }
 
 function _restoreWorldState(targetWorldState) {
@@ -835,22 +854,23 @@ function _restoreWorldState(targetWorldState) {
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
 function _applyPreAnimationChain(ctx, hasTeleportCrossing = false) {
-  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract } = ctx;
+  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract, isOnHook } = ctx;
   // Skip the truncated-gears drawChain when a teleport crossing is involved — the
   // bridge must remain in _chainState so Phase 1 draws correctly through the teleporter.
   if (isOneBack && !pendingBendGear && !hasTeleportCrossing) {
-    drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
+    drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft, state.totalGears, state.level);
   }
   setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
   if (isBoatVShapeRetract) {
+    const popped = state.gears[state.gears.length - 1];
     state.gears.pop();
-    state.gearsLeft++;
+    if (!popped?.isHook) state.gearsLeft++;
     drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
   } else if (isBend && !isAtLastCog && (!isBoatEntry || state.gears.length >= 2)) {
-    state.gears.push({ x: state.playerPos.x, y: state.playerPos.y, worldState: state.worldState });
-    state.gearsLeft--;
+    state.gears.push({ x: state.playerPos.x, y: state.playerPos.y, worldState: state.worldState, isHook: isOnHook || false });
+    if (!isOnHook) state.gearsLeft--;
     if (isOneBack && !hasTeleportCrossing) {
-      drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft + 1, state.totalGears, state.level);
+      drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft, state.totalGears, state.level);
     } else {
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
     }
@@ -1006,17 +1026,17 @@ function _onPlayerLanded(target, dx, dy, ctx) {
       if (savedWS !== undefined) _restoreWorldState(savedWS);
 
       const freed      = state.gears.slice(revisitIdx + 1);
-      freedOnRevisit   = freed.filter(g => !g.isTeleport).length; // only bend gears cost budget
+      freedOnRevisit   = freed.filter(g => !g.isTeleport && !g.isHook).length; // only paid bend gears cost budget
       state.gears      = state.gears.slice(0, revisitIdx + 1);
       state.gearsLeft += freedOnRevisit;
 
       // The BFS path doesn't model gear waypoints. If this revisit stopped us before
       // the BFS-expected destination, re-inject the same direction so we continue.
-      // Exception: sticky cells are stop cells in the BFS too, so landing on one here
+      // Exception: sticky/hook cells are stop cells in the BFS too, so landing on one here
       // is already the expected destination — no extra press needed.
       if (_autoSolving) {
         const flat = state.playerPos.y * state.level.width + state.playerPos.x;
-        const isSticky = state.level.cells[flat] === CellType.STICKY;
+        const isSticky = state.level.cells[flat] === CellType.STICKY || state.level.cells[flat] === CellType.HOOK;
         if (!isSticky) {
           const continueTarget = slidePlayer(state.level, state.playerPos, dx, dy, state.toggleMap, state.worldState);
           if (continueTarget.x !== state.playerPos.x || continueTarget.y !== state.playerPos.y) {
@@ -1027,7 +1047,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
     }
   } else {
     _restoreWorldState(0);
-    state.gearsLeft += state.gears.filter(g => !g.isTeleport).length;
+    state.gearsLeft += state.gears.filter(g => !g.isTeleport && !g.isHook).length;
     state.gears = [];
   }
 
@@ -1060,7 +1080,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
         ? _gearOutPos(state.gears[state.gears.length - 2])
         : state.level.start;
       state.gears.pop();
-      state.gearsLeft++;
+      if (!last.isHook) state.gearsLeft++;
       state.prevDir = { dx: Math.sign(last.x - prev.x), dy: Math.sign(last.y - prev.y) };
     }
   }
