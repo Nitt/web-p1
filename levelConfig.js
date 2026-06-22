@@ -53,7 +53,7 @@ export const PROGRESSION = [
   {
     // ── walls enter ── dead-ends and corridors
     levels:           4,
-    weights:          { sticky: 0.10, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
+    weights:          { sticky: 0.10, hook: 0.03, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
     difficultyTarget: [9, 16],
     candidates:       25,
     playerGears:      4,
@@ -61,7 +61,7 @@ export const PROGRESSION = [
   {
     // ── one-ways enter ── directional constraints
     levels:           5,
-    weights:          { sticky: 0.08, block: 0.10, oneway: 0.04, crumble: 0.00, empty: 1.0 },
+    weights:          { sticky: 0.08, hook: 0.04, block: 0.10, oneway: 0.04, crumble: 0.00, empty: 1.0 },
     difficultyTarget: [16, 24],
     candidates:       30,
     playerGears:      5,
@@ -69,7 +69,7 @@ export const PROGRESSION = [
   {
     // ── crumble enters ── topology-changing blocks
     levels:           5,
-    weights:          { sticky: 0.06, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
+    weights:          { sticky: 0.06, hook: 0.04, block: 0.10, oneway: 0.03, crumble: 0.06, empty: 1.0 },
     useTeleporter:    false,
     difficultyTarget: [22, 30],
     candidates:       35,
@@ -78,7 +78,7 @@ export const PROGRESSION = [
   {
     // ── everything ── full chaos
     levels:           Infinity,
-    weights:          { sticky: 0.06, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
+    weights:          { sticky: 0.06, hook: 0.04, block: 0.10, oneway: 0.02, crumble: 0.07, empty: 1.0 },
     useTeleporter:    true,
     difficultyTarget: null,   // pick hardest
     candidates:       40,

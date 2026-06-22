@@ -20,6 +20,7 @@ const ONEWAY_OUT = [3, 5, 4, 6];
 // Incremental difficulty contributions per interaction type (accumulated during carving).
 const DIFF = {
   STICKY:           0.2,
+  HOOK:             0.15,
   BLOCK:            0.5,
   ONEWAY_TRAVERSE:  0.1,
   ONEWAY_BLOCKED:   3.5,
@@ -176,6 +177,8 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
           cells[idx(nx + eDir.dx, ny + eDir.dy)] = G.EMPTY;
         cells[ni] = G.ONEWAY;
         onewayDir.set(ni, E);
+      } else if (type === 'hook') {
+        cells[ni] = G.HOOK;
       } else if (type === 'block' || type === 'crumble') {
         cells[ni] = G.BLOCK;
       } else {
@@ -414,6 +417,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
       } else {
         carveEmpty(dirIdx, x, y, nx, ny, ni, accDiff);
       }
+    } else if (type === 'hook') {
+      cells[ni] = G.HOOK;
+      currentBranchDiff = accDiff + DIFF.HOOK;
+      rec(x, y, nx, ny, `hook (${nx-1},${ny-1})`);
+      enqueue(nx, ny, dirIdx, accDiff + DIFF.HOOK);
     } else {
       cells[ni] = G.STICKY;
       currentBranchDiff = accDiff + DIFF.STICKY;
@@ -463,6 +471,11 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
         currentBranchDiff = accDiff + DIFF.STICKY;
         rec(x, y, nx, ny, `stopped-sticky (${nx-1},${ny-1})`);
         enqueue(nx, ny, dirIdx, accDiff + DIFF.STICKY);
+        break;
+      case G.HOOK:
+        currentBranchDiff = accDiff + DIFF.HOOK;
+        rec(x, y, nx, ny, `stopped-hook (${nx-1},${ny-1})`);
+        enqueue(nx, ny, dirIdx, accDiff + DIFF.HOOK);
         break;
       case G.ONEWAY: {
         const allowedDir = onewayDir.get(ni);

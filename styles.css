@@ -316,9 +316,8 @@ body.chain-debug .player {
 
 /* Hook cell: permanent free gear anchor — like sticky but costs no gear to bend from */
 .cell[data-type="hook"] {
-  background-color: #1a1a2e;
-  border: 1px solid rgba(255, 200, 0, 0.25);
-  box-sizing: border-box;
+  background: transparent;
+  border: none;
 }
 
 /* One-way cell: tinted background + directional arrow via pseudo-element */
