@@ -844,12 +844,15 @@ function _buildDepartureCtx(target, dx, dy) {
 function _restoreWorldState(targetWorldState) {
   const { toggleMap, level, worldState } = state;
   if (targetWorldState === worldState) return;
-  for (const [flatIdx, toggleIdx] of toggleMap.entries()) {
-    if ((worldState >> toggleIdx) & 1 && !((targetWorldState >> toggleIdx) & 1)) {
-      respawnCrumble(flatIdx % level.width, Math.floor(flatIdx / level.width));
+  // During auto-solve/batch, crumbles stay broken (solver doesn't model respawning).
+  if (!_autoSolving && !_batchRunning) {
+    for (const [flatIdx, toggleIdx] of toggleMap.entries()) {
+      if ((worldState >> toggleIdx) & 1 && !((targetWorldState >> toggleIdx) & 1)) {
+        respawnCrumble(flatIdx % level.width, Math.floor(flatIdx / level.width));
+      }
     }
+    state.worldState = targetWorldState;
   }
-  state.worldState = targetWorldState;
 }
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
