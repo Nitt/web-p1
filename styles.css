@@ -164,14 +164,18 @@ html, body {
   background: linear-gradient(to bottom, #1a6ea8 0%, #0a2a50 100%);
 
   /*
-    Size: fill height first, then cap to width.
+    Constrain both axes independently so a wide grid (cols > rows) never
+    overflows the viewport width, and a tall grid never overflows the height.
     12rem ≈ header + dpad + gaps.
   */
-  height: calc(min(calc(100svh - 12rem), calc(100vw - 1.5rem)) * 0.9);
-  width:  calc(
-    min(calc(100svh - 12rem), calc(100vw - 1.5rem))
-    * 0.9 * var(--cols) / var(--rows)
-  );
+  height: calc(min(
+    (100svh - 12rem) * 0.9,
+    (100vw - 1.5rem) * 0.9 * var(--rows) / var(--cols)
+  ));
+  width: calc(min(
+    (100svh - 12rem) * 0.9 * var(--cols) / var(--rows),
+    (100vw - 1.5rem) * 0.9
+  ));
   aspect-ratio: var(--cols) / var(--rows);
 }
 
@@ -489,7 +493,10 @@ body.chain-debug .player {
 
 /* sky: exactly 2 cell-heights above the grid */
 .sky-gradient {
-  height: calc(min(calc(100svh - 12rem), calc(100vw - 1.5rem)) * 0.9 / var(--rows) * 2);
+  height: calc(min(
+    (100svh - 12rem) * 0.9,
+    (100vw - 1.5rem) * 0.9 * var(--rows) / var(--cols)
+  ) / var(--rows) * 2);
   flex-shrink: 0;
   border-radius: 6px 6px 0 0;
   pointer-events: none;
