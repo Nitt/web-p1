@@ -35,25 +35,26 @@
  */
 export const PROGRESSION = [
   {
-    // ── first level ── simple and quick to load
-    levels:           1,
-    weights:          { sticky: 0.08, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
-    difficultyTarget: [1, 1],
-    candidates:       10,
-    playerGears:      3,
+    // ── hook introduction ── hooks only, no gear bends required
+    // difficultyTarget maps directly to hooks on path: 0.5 = 1 hook, 1.0 = 2, 1.5 = 3
+    levels:           3,
+    weights:          { hook: 0.08, empty: 1.0 },
+    difficultyTarget: [0.5, 1.5],
+    candidates:       20,
+    playerGears:      0,
   },
   {
-    // ── introduction ── sticky only, gentle ramp
+    // ── sticky enters ── hooks + stickies, gear bends now allowed
     levels:           3,
-    weights:          { sticky: 0.18, block: 0.00, oneway: 0.00, crumble: 0.00, empty: 1.0 },
-    difficultyTarget: [4, 8],
+    weights:          { sticky: 0.18, hook: 0.08, empty: 1.0 },
+    difficultyTarget: [3, 8],
     candidates:       20,
-    playerGears:      3,
+    playerGears:      2,
   },
   {
     // ── walls enter ── dead-ends and corridors
     levels:           4,
-    weights:          { sticky: 0.10, hook: 0.03, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
+    weights:          { sticky: 0.10, hook: 0.06, block: 0.10, oneway: 0.00, crumble: 0.00, empty: 1.0 },
     difficultyTarget: [9, 16],
     candidates:       25,
     playerGears:      4,

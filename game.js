@@ -2,7 +2,6 @@ import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js
 import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, respawnCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
-import { SAMPLE_LEVELS } from './levels.js';
 import { getRecipe } from './levelConfig.js';
 import { playSlide, playLand, playBlocked, playCrumble, playWin } from './sounds.js';
 
@@ -29,7 +28,7 @@ const state = {
   isMoving:             false,
   won:                  false,
   queuedMove:           null,   // { dx, dy, queuedAt } — next move buffered during animation
-  nextId:               2,      // id of the next level to load (hand-crafted while ≤ SAMPLE_LEVELS.length)
+  nextId:               2,      // id of the next level to load
   nextSeed:             300,    // seed for the first generated level (hand-crafted levels use 0–299 as a margin)
   // Gear chain system.
   gears:                [],     // [{x,y}] cog positions (bends/reversals only)
@@ -282,7 +281,7 @@ export function init() {
   } else if (urlParams.has('level')) {
     jumpToLevel(parseInt(urlParams.get('level'), 10));
   } else {
-    loadLevel(SAMPLE_LEVELS[0]);
+    jumpToLevel(1);
   }
 }
 
@@ -320,11 +319,9 @@ function loadLevel(level) {
   placePlayer(state.playerPos, level);
   drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, level);
 
-  // Kick off background generation of the next level when approaching generated levels.
-  if (state.nextId > SAMPLE_LEVELS.length) {
-    const nextRecipe = getRecipe(state.nextId);
-    pregenNext(state.nextSeed, state.nextId, nextRecipe);
-  }
+  // Kick off background generation of the next level.
+  const nextRecipe = getRecipe(state.nextId);
+  pregenNext(state.nextSeed, state.nextId, nextRecipe);
 
   // Show the dive indicator and wait for the player to manually dive in.
   state.waitingForDive = true;
@@ -338,11 +335,6 @@ function _nextLevel() {
   const id = state.nextId;
   state.nextId     += 1;
   state.levelIndex += 1;
-
-  if (id <= SAMPLE_LEVELS.length) {
-    loadLevel(SAMPLE_LEVELS[id - 1]);
-    return;
-  }
 
   const seed = state.nextSeed;
   state.nextSeed += getPendingRecipe()?.candidates ?? 300;
@@ -627,12 +619,6 @@ function _batchAdvanceLevel() {
   state.nextId     += 1;
   state.levelIndex += 1;
 
-  if (id <= SAMPLE_LEVELS.length) {
-    loadLevel(SAMPLE_LEVELS[id - 1]);
-    _autoSolve();
-    return;
-  }
-
   const seed = state.nextSeed;
   state.nextSeed += getPendingRecipe()?.candidates ?? 300;
 
@@ -677,8 +663,7 @@ export function startBatchTest() {
  */
 function _computeProgressionForLevel(n) {
   let seed = 300;
-  const generatedStart = SAMPLE_LEVELS.length + 1;
-  for (let i = generatedStart; i < n; i++) {
+  for (let i = 1; i < n; i++) {
     const recipe = getRecipe(i);
     seed += recipe.candidates;
   }
@@ -691,14 +676,6 @@ function _computeProgressionForLevel(n) {
  */
 export function jumpToLevel(n) {
   n = Math.max(1, Math.floor(n));
-
-  if (n <= SAMPLE_LEVELS.length) {
-    state.levelIndex = n;
-    state.nextId     = n + 1;
-    state.nextSeed   = 300;
-    loadLevel(SAMPLE_LEVELS[n - 1]);
-    return;
-  }
 
   const { seed } = _computeProgressionForLevel(n);
   const recipe = getRecipe(n);

@@ -20,7 +20,7 @@ const ONEWAY_OUT = [3, 5, 4, 6];
 // Incremental difficulty contributions per interaction type (accumulated during carving).
 const DIFF = {
   STICKY:           0.2,
-  HOOK:             0.15,
+  HOOK:             0.5,
   BLOCK:            0.5,
   ONEWAY_TRAVERSE:  0.1,
   ONEWAY_BLOCKED:   3.5,
@@ -637,6 +637,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
   for (let flat = 0; flat < width * height; flat++) {
     if (diffDepthArr[flat] < 0) continue;
     if (carvedMask && !carvedMask[flat]) continue;
+    if (gearDepthArr[flat] > playerGears) continue;
     const cell = outCells[flat];
     if (cell !== 0) continue; // goal must land on an empty cell only
     const gx = flat % width, gy = Math.floor(flat / width);
@@ -646,7 +647,7 @@ export function generateLevel(width, height, { seed = 0, id = 1, weights = WEIGH
     }
   }
   const goalFlat       = goal.y * width + goal.x;
-  const effectiveCogs  = Math.max(1, gearDepthArr[goalFlat] >= 0 ? gearDepthArr[goalFlat] : 1);
+  const effectiveCogs  = gearDepthArr[goalFlat] >= 0 ? gearDepthArr[goalFlat] : 0;
   const goalDifficulty = diffDepthArr[goalFlat] >= 0 ? diffDepthArr[goalFlat] : 0;
   const depths         = gearDepthArr;
   const universeDepths = null;
