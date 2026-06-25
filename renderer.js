@@ -530,10 +530,13 @@ export function drawChain(gears, playerPos, gearsLeft, totalGears, level) {
   _redrawChain(pp.x, pp.y);
 }
 
-/** Like drawChain but the tail endpoint is already in pixels (used for retract animation). */
-export function drawChainWithPixelTail(gears, tailPx, gearsLeft, totalGears, level) {
+/** Like drawChain but the tail endpoint is already in pixels (used for retract animation).
+ *  tailScanEnd: grid {x,y} of the waypoint the tail is moving FROM (i.e. the "from" side of
+ *  the current animation segment).  When provided, _redrawChain uses it to scan for pass-through
+ *  hooks on the last chain segment so the offset blends smoothly as the tail approaches a hook. */
+export function drawChainWithPixelTail(gears, tailPx, gearsLeft, totalGears, level, tailScanEnd = null) {
   if (!chainSvgEl || !gridEl) return;
-  _chainState = { gears, gearsLeft, totalGears, level };
+  _chainState = { gears, gearsLeft, totalGears, level, tailScanEnd };
   _redrawChain(tailPx.x, tailPx.y);
 }
 
@@ -881,6 +884,13 @@ function _redrawChain(px, py) {
            Math.abs(playerPos.x - prevGX) + Math.abs(playerPos.y - prevGY) ? at : playerPos)
         : playerPos);
       insertPassThroughHooks(prevGX, prevGY, scanEnd.x, scanEnd.y, true);
+    } else if (_chainState.tailScanEnd) {
+      // During a retract animation the tail endpoint is pixels-only, so the normal
+      // playerPos branch doesn't run.  Use the "from" waypoint grid coord instead:
+      // scanning from the last kept gear to that waypoint detects any hook the tail
+      // is about to pass through, and hookLerpT computes the smooth blend from the
+      // live tail pixel position.
+      insertPassThroughHooks(prevGX, prevGY, _chainState.tailScanEnd.x, _chainState.tailScanEnd.y, true);
     }
     curSeg.push({ x: px, y: py });
   }

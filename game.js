@@ -452,7 +452,9 @@ function _animateChainRetract(fromGears, targetLength, playerPos, gearsLeft, tot
     // Gears to render: exclude gears the tail has already passed.
     const keepCount = segKeepCounts[seg];
     const gearsForRender = fromGears.slice(0, keepCount);
-    drawChainWithPixelTail(gearsForRender, tailPx, gearsLeft, totalGears, level);
+    // Pass the "from" waypoint grid position so the renderer can scan for pass-through
+    // hooks on the last chain segment and blend the offset smoothly as the tail approaches.
+    drawChainWithPixelTail(gearsForRender, tailPx, gearsLeft, totalGears, level, waypoints[seg]);
 
     if (progress < 1) {
       requestAnimationFrame(frame);
@@ -494,6 +496,27 @@ function _findOnewayEntryGear(owx, owy, dx, dy) {
     if (onSeg) return i - 1; // i=0 → -1 means backtrack to start
   }
   return null;
+}
+
+/**
+ * Returns the state.gears insert index if `hookPos` lies strictly on a chain
+ * segment (meaning the chain passed through the hook without placing a gear
+ * there, e.g. the player departed the hook straight without bending).
+ * Returns -1 if the hook is not on any segment.
+ */
+function _hookOnChainSegIdx(hookPos) {
+  const chain = [state.level.start, ...state.gears, state.playerPos];
+  for (let i = 0; i < chain.length - 1; i++) {
+    const a = chain[i], b = chain[i + 1];
+    // Teleport crossings continue from their exit, not entry.
+    const ax = a.isTeleport ? a.exitX : a.x;
+    const ay = a.isTeleport ? a.exitY : a.y;
+    const onSeg = ay === b.y
+      ? (hookPos.y === ay && Math.min(ax, b.x) < hookPos.x && hookPos.x < Math.max(ax, b.x))
+      : (hookPos.x === ax && Math.min(ay, b.y) < hookPos.y && hookPos.y < Math.max(ay, b.y));
+    if (onSeg) return i;
+  }
+  return -1;
 }
 
 /**
@@ -789,7 +812,18 @@ function _buildDepartureCtx(target, dx, dy) {
   const _lastG    = state.gears.length > 0 ? state.gears[state.gears.length - 1] : null;
   const isAtLastCog = _lastG !== null && !_lastG.isTeleport &&
     _lastG.x === state.playerPos.x && _lastG.y === state.playerPos.y;
-  const willUseGear = !isBoatEntry && revisitIdx < 0 && isBend && !isAtLastCog;
+
+  // If the target is a hook cell not yet in gears but lying on a chain segment,
+  // the hook acts as a permanent anchor — landing on it retracts the chain for free.
+  let hookSegRetract = -1;
+  if (!isBoatEntry && revisitIdx < 0) {
+    const tFlat = target.y >= 0 ? target.y * state.level.width + target.x : -1;
+    if (tFlat >= 0 && state.level.cells[tFlat] === CellType.HOOK) {
+      hookSegRetract = _hookOnChainSegIdx(target);
+    }
+  }
+
+  const willUseGear = !isBoatEntry && revisitIdx < 0 && hookSegRetract < 0 && isBend && !isAtLastCog;
 
   // 0 gears → simple V, skip placement.
   // 1 gear  → pop it and retract cleanly instead of creating a V.
@@ -805,7 +839,7 @@ function _buildDepartureCtx(target, dx, dy) {
     if (!_batchRunning) return null;
   }
   if (state.gearsLeft === 0 && revisitIdx >= 0 && revisitIdx < state.gears.length - 2) {
-    if (!_batchRunning) return null;
+    if (!state.gears[revisitIdx]?.isHook && !_batchRunning) return null;
   }
 
   const pendingBendGear    = isBend && !isAtLastCog && !isBoatEntry && revisitIdx >= 0;
@@ -815,7 +849,7 @@ function _buildDepartureCtx(target, dx, dy) {
 
   return { isBoatEntry, isStraightThrough, isBend, isRetractingTowardLastCog,
            revisitIdx, isAtLastCog, isOneBack, pendingBendGear, isBoatVShapeRetract,
-           isReturnToStart, savedPrevDir, isOnHook };
+           isReturnToStart, savedPrevDir, isOnHook, hookSegRetract };
 }
 
 function _restoreWorldState(targetWorldState) {
@@ -967,7 +1001,7 @@ function _handleWin() {
 }
 
 function _onPlayerLanded(target, dx, dy, ctx) {
-  const { isBoatEntry, isRetractingTowardLastCog, revisitIdx, isOneBack, isBend, isAtLastCog, isReturnToStart, savedPrevDir } = ctx;
+  const { isBoatEntry, isRetractingTowardLastCog, revisitIdx, isOneBack, isBend, isAtLastCog, isReturnToStart, savedPrevDir, hookSegRetract } = ctx;
 
   const gearsBeforeUpdate = state.gears.slice();
   let freedOnRevisit = -1;
@@ -1024,6 +1058,15 @@ function _onPlayerLanded(target, dx, dy, ctx) {
           }
         }
       }
+    } else if (hookSegRetract >= 0) {
+      // The chain passed straight through this hook (no gear placed there).
+      // Retract to the hook position — free everything after it, no gear consumed.
+      const wsAtHook = hookSegRetract > 0 ? (gearsBeforeUpdate[hookSegRetract - 1]?.worldState ?? 0) : 0;
+      _restoreWorldState(wsAtHook);
+      const freed    = state.gears.slice(hookSegRetract);
+      freedOnRevisit = freed.filter(g => !g.isTeleport && !g.isHook).length;
+      state.gears    = state.gears.slice(0, hookSegRetract);
+      state.gearsLeft += freedOnRevisit;
     }
   } else {
     _restoreWorldState(0);
@@ -1043,9 +1086,22 @@ function _onPlayerLanded(target, dx, dy, ctx) {
     };
   }
 
+  // After a hookSegRetract, prevDir must reflect the direction of the original chain
+  // segment through the hook (anchor→hook), not the current move direction. Otherwise
+  // the next departure misdetects bends and places spurious hookGear waypoints.
+  if (hookSegRetract >= 0) {
+    const anchor = state.gears.length > 0
+      ? _gearOutPos(state.gears[state.gears.length - 1])
+      : state.level.start;
+    state.prevDir = {
+      dx: Math.sign(state.playerPos.x - anchor.x),
+      dy: Math.sign(state.playerPos.y - anchor.y),
+    };
+  }
+
   // Compute before pending-cog pop so the pop doesn't trigger a spurious retraction.
   const needsRetractAnim = !isOneBack && gearsBeforeUpdate.length > state.gears.length
-                           && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0);
+                           && (isBoatEntry ? gearsBeforeUpdate.length > 0 : revisitIdx >= 0 || hookSegRetract >= 0);
 
   // Capture retract target before pop — animation must end at the player's cell,
   // not one step past it (which would happen if the pop reduces the length first).
@@ -1068,13 +1124,18 @@ function _onPlayerLanded(target, dx, dy, ctx) {
   if (needsRetractAnim) {
     state.isMoving = true;
     setJerkAvatarOnly(true);
+    // For hookSegRetract the player lands between two gears (not on one), so the
+    // default tail endpoint (fromGears[targetLength-1]) would be the gear BEFORE the
+    // hook rather than the hook itself. Override it to playerPos so the animation
+    // tail travels all the way to the hook cell rather than snapping there at the end.
+    const retractTailEnd = hookSegRetract > 0 ? state.playerPos : null;
     _animateChainRetract(gearsBeforeUpdate, retractTarget, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
       setJerkAvatarOnly(false);
       state.isMoving = false;
       setChainSpinning(false);
       drawChain(state.gears, state.playerPos, state.gearsLeft, state.totalGears, state.level);
       _flushQueuedMove();
-    }, null, state.playerPos, true, FAST_RETRACT_MS_PER_CELL);
+    }, retractTailEnd, state.playerPos, true, FAST_RETRACT_MS_PER_CELL);
   }
 
   _applyCollectibles(target);
