@@ -868,13 +868,13 @@ function _restoreWorldState(targetWorldState) {
 
 // Draws the pre-animation chain state and pushes the departure cog if turning.
 function _applyPreAnimationChain(ctx, hasTeleportCrossing = false) {
-  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract, isOnHook } = ctx;
+  const { isBoatEntry, isBend, isAtLastCog, isOneBack, revisitIdx, pendingBendGear, isBoatVShapeRetract, isOnHook, isRetractingTowardLastCog } = ctx;
   // Skip the truncated-gears drawChain when a teleport crossing is involved — the
   // bridge must remain in _chainState so Phase 1 draws correctly through the teleporter.
   if (isOneBack && !pendingBendGear && !hasTeleportCrossing) {
     drawChain(state.gears.slice(0, revisitIdx + 1), state.playerPos, state.gearsLeft, state.totalGears, state.level);
   }
-  setChainSpinning(true, revisitIdx >= 0 ? -1 : 1);
+  setChainSpinning(true, isRetractingTowardLastCog ? -1 : 1);
   if (isBoatVShapeRetract) {
     const popped = state.gears[state.gears.length - 1];
     state.gears.pop();
@@ -1024,6 +1024,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
     state.prevDir = savedPrevDir; // restore — this was a no-op move, next move should see unchanged prevDir
     const retractTarget = state.gears.length;
     state.isMoving = true;
+    setChainSpinning(true, -1);
     _animateChainRetract(gearsBeforeUpdate, retractTarget, state.playerPos, state.gearsLeft, state.totalGears, state.level, () => {
       state.isMoving = false;
       setChainSpinning(false);
@@ -1123,6 +1124,7 @@ function _onPlayerLanded(target, dx, dy, ctx) {
 
   if (needsRetractAnim) {
     state.isMoving = true;
+    setChainSpinning(true, -1);
     setJerkAvatarOnly(true);
     // For hookSegRetract the player lands between two gears (not on one), so the
     // default tail endpoint (fromGears[targetLength-1]) would be the gear BEFORE the

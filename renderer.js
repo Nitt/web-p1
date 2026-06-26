@@ -549,11 +549,11 @@ export function setTailGearSpinning(spins) { _tailGearSpins = spins; }
 
 /** Start or stop gear spinning. direction: 1 = clockwise, -1 = counterclockwise. */
 export function setChainSpinning(spinning, direction = 1) {
-  if (!spinning && _chainSpinning) {
-    // Freeze current motion into the base so gears hold their angle when stopped.
+  if (_chainSpinning && (!spinning || direction !== _spinDirection)) {
+    // Freeze current motion into the base so gears hold their angle when stopped or reversed.
     _spinAngleBase += ((performance.now() - _spinStartTime) / spinPeriodMs()) * 360 * _spinDirection;
   }
-  if (spinning && !_chainSpinning) _spinStartTime = performance.now();
+  if (spinning && (!_chainSpinning || direction !== _spinDirection)) _spinStartTime = performance.now();
   _chainSpinning = spinning;
   _spinDirection = direction;
 }
@@ -807,7 +807,6 @@ function _redrawChain(px, py) {
     const dx = Math.sign(toGX - fromGX), dy = Math.sign(toGY - fromGY);
     if ((dx !== 0) === (dy !== 0)) return; // diagonal or no-op
     const perpX = dy * hookOffset, perpY = -dx * hookOffset;
-    const spinDir = (dx > 0 || dy > 0) ? 1 : -1;
     // t = 0 until player has passed the hook, then grows 0→1 over one cell of travel.
     // dot > 0 means player animation position is on the "past" side of the hook.
     const hookLerpT = (hp) => {
@@ -830,7 +829,7 @@ function _redrawChain(px, py) {
         const t = hookLerpT(hp);
         if (t > 0) {
           curSeg.push({ x: hp.x + perpX * t, y: hp.y + perpY * t, _noGear: true, _hookBypass: true });
-          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir, gx: x, gy: y });
+          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir: 1, gx: x, gy: y });
         }
       }
     } else {
@@ -847,7 +846,7 @@ function _redrawChain(px, py) {
         const t = hookLerpT(hp);
         if (t > 0) {
           curSeg.push({ x: hp.x + perpX * t, y: hp.y + perpY * t, _noGear: true, _hookBypass: true });
-          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir, gx: x, gy: y });
+          hookGearsToDraw.push({ x: hp.x, y: hp.y, spinDir: 1, gx: x, gy: y });
         }
       }
     }
