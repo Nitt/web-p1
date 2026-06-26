@@ -1,5 +1,5 @@
 import { slidePlayer, buildToggleMap, CellType, onewayAllows } from './puzzle.js';
-import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, respawnCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint } from './renderer.js';
+import { buildGrid, placePlayer, animatePlayer, animateChainJerkInPlace, repositionOverlays, drawChain, drawChainWithPixelTail, getCellPixel, setChainSpinning, setTailGearSpinning, setJerkAvatarOnly, removeCrumble, respawnCrumble, getSpeedMultiplier, setSpeedMultiplier, setGoalFollowsPlayer, setPlayerGrabbing, setPlayerDir, showDiveIndicator, hideDiveIndicator, showDiveHint, showMoveHint, hideMoveHint, triggerGearLandingAnim } from './renderer.js';
 import { initInput } from './input.js';
 import { pregenNext, takePendingLevel, getPendingRecipe, generateFallback } from './progression.js';
 import { getRecipe } from './levelConfig.js';
@@ -937,6 +937,7 @@ function _animateWinRetract(onDone) {
 
   setChainSpinning(true, -1);
   setGoalFollowsPlayer(true);
+  setPlayerGrabbing(true);
 
   function step(stepIdx, fromPos) {
     // Drop the last gear from display after the first step (player has left that position).
@@ -1122,6 +1123,9 @@ function _onPlayerLanded(target, dx, dy, ctx) {
     }
   }
 
+  // Orient the claw to face the chain's last segment direction (anchor → player).
+  if (state.prevDir) setPlayerDir(state.prevDir.dx, state.prevDir.dy);
+
   if (needsRetractAnim) {
     state.isMoving = true;
     setChainSpinning(true, -1);
@@ -1196,6 +1200,11 @@ function _executeMove(dx, dy) {
   playSlide();
   _applyPreAnimationChain(ctx, !!target.teleportCrossing);
 
+  // Orient claw immediately for forward slides — the chain's new last segment already
+  // points from the bend gear (just placed) toward the destination.
+  // Revisits and hook-retracts defer to _onPlayerLanded where the new anchor is known.
+  if (ctx.revisitIdx < 0 && ctx.hookSegRetract < 0) setPlayerDir(dx, dy);
+
   const moveToken = _moveToken;
 
   // If the slide crosses a teleporter, provide entry/exit info and a callback
@@ -1236,6 +1245,13 @@ function _executeMove(dx, dy) {
       state.playerPos = { x: target.x, y: target.y };
       state.isMoving  = false;
       playLand();
+      // Animate tail gears expanding into position when landing on a regular cell (not hook/revisit).
+      const tFlat = target.y >= 0 ? target.y * state.level.width + target.x : -1;
+      const landedOnHook = tFlat >= 0 && state.level.cells[tFlat] === CellType.HOOK;
+      if (!ctx.isBoatEntry && !ctx.isReturnToStart && !landedOnHook &&
+          ctx.revisitIdx < 0 && ctx.hookSegRetract < 0 && state.gearsLeft > 0) {
+        triggerGearLandingAnim();
+      }
       _onPlayerLanded(target, dx, dy, ctx);
       if (_comingFromBoat && _diveHintShown) {
         _moveHintTimer = setTimeout(showMoveHint, 3500);

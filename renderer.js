@@ -48,6 +48,8 @@ let diveIndicatorEl = null;
 let moveHintEl = null;
 let _currentLevel = null;
 let _gearHeartsEl = null;
+let counterSvgEl = null;  // separate SVG overlay above playerEl for the gear count text
+let _gearLandAnim = null; // { startTime, duration } — gears expand from player on landing
 // Tracks the last pixel position written to the player overlay.
 // Used as the authoritative animation start so there is never a
 // discrepancy between the visual position and the animation origin.
@@ -66,6 +68,15 @@ let _playerInTeleport = false;
 let _flashRetraceBridge = null;
 let _jerkAvatarOnly = false; // when true, jerk moves the sprite only and leaves chain drawing to the retract anim
 export function setJerkAvatarOnly(v) { _jerkAvatarOnly = v; }
+
+let _playerDir = 0; // rotation degrees: 0=down, 90=right, 180=up, -90=left
+
+export function setPlayerDir(dx, dy) {
+  if      (dx > 0) _playerDir = -90;
+  else if (dx < 0) _playerDir = 90;
+  else if (dy < 0) _playerDir = 180;
+  else             _playerDir = 0;
+}
 let _spinDirection  = 1;   // 1 = clockwise, -1 = counterclockwise
 let _spinStartTime  = 0;
 let _spinAngleBase  = 0;   // accumulated signed angle (degrees) at last stop
@@ -226,13 +237,26 @@ export function buildGrid(container, level) {
   gridEl.appendChild(goalEl);
   _placeOverlay(goalEl, level.goal.x, level.goal.y, level);
 
-  // Player (overlay)
+  _playerDir = 0;
+
+  // Player (overlay) — rendered as a claw SVG
   playerEl = document.createElement('div');
   playerEl.className = 'player';
+  playerEl.innerHTML = `<svg class="claw-svg" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+    <rect class="claw-body" x="13" y="1" width="14" height="9" rx="3"/>
+    <path d="M20,10 L20,36"/>
+    <g class="prong-left"><path d="M17,10 Q8,20 7,30 Q6.5,36 12,37 Q15,37 15,32"/></g>
+    <g class="prong-right"><path d="M23,10 Q32,20 33,30 Q33.5,36 28,37 Q25,37 25,32"/></g>
+  </svg>`;
   counterSpan = document.createElement('span');
   counterSpan.className = 'chain-counter';
   playerEl.appendChild(counterSpan);
   gridEl.appendChild(playerEl);
+
+  // Counter text SVG — appended after playerEl so it renders above the claw sprite.
+  counterSvgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  counterSvgEl.setAttribute('class', 'counter-svg');
+  gridEl.appendChild(counterSvgEl);
 
   // Waterline and boat overlays (absolutely positioned within play-area)
   waterlineEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -547,6 +571,11 @@ export function getCellPixel(x, y, level) {
 
 export function setTailGearSpinning(spins) { _tailGearSpins = spins; }
 
+/** Play a short animation where the tail gear stack expands from the player to its resting position. */
+export function triggerGearLandingAnim() {
+  _gearLandAnim = { startTime: performance.now(), duration: 320 * _speedMult };
+}
+
 /** Start or stop gear spinning. direction: 1 = clockwise, -1 = counterclockwise. */
 export function setChainSpinning(spinning, direction = 1) {
   if (_chainSpinning && (!spinning || direction !== _spinDirection)) {
@@ -768,6 +797,24 @@ function _appendGear(svgEl, cx, cy, outerR, innerR, holeR, spinAngle, scale, NS,
   svgEl.appendChild(gGroup);
 }
 
+function _appendGearLabel(svgEl, cx, cy, text, scale, NS) {
+  const el = document.createElementNS(NS, 'text');
+  el.setAttribute('x', String(cx));
+  el.setAttribute('y', String(cy));
+  el.setAttribute('text-anchor', 'middle');
+  el.setAttribute('dominant-baseline', 'central');
+  el.setAttribute('font-size', String(Math.max(8, Math.round(13 * scale))));
+  el.setAttribute('font-weight', '700');
+  el.setAttribute('font-family', 'system-ui, sans-serif');
+  el.setAttribute('fill', '#fff');
+  el.setAttribute('stroke', 'rgba(0,0,0,0.8)');
+  el.setAttribute('stroke-width', String(2.5 * scale));
+  el.setAttribute('paint-order', 'stroke');
+  el.setAttribute('pointer-events', 'none');
+  el.textContent = text;
+  svgEl.appendChild(el);
+}
+
 function _redrawChain(px, py) {
   if (!chainSvgEl || !gridEl || !_chainState) return;
   const { gears, playerPos, gearsLeft, totalGears, level } = _chainState;
@@ -960,6 +1007,8 @@ function _redrawChain(px, py) {
   // Compute prevLocalDir per segment so spin direction is consistent across
   // teleport gaps. Within each segment the logic is the same as before.
   let prevLocalDir = 1;
+  let bendCount = 0; // counts placed bend gears from boat toward player, for labelling
+  const placedGearLabels = []; // collect label positions; drawn after all shapes so text is on top
   for (let si = 0; si < segments.length; si++) {
     const seg = segments[si];
     if (seg.length < 1) continue;
@@ -982,12 +1031,20 @@ function _redrawChain(px, py) {
       const holeColor = seg[i]._isHook ? 'rgba(220,160,0,0.9)' : 'rgba(255,255,255,0.5)';
       _appendGear(chainSvgEl, seg[i].x, seg[i].y,
                   gearOuterR, gearInnerR, gearHoleR, _spinProgress * localDir, scale, NS, holeColor);
+      // Label each placed bend gear with its countdown number (boat→player: totalGears … 1).
+      if (!seg[i]._isHook) {
+        placedGearLabels.push({ x: seg[i].x, y: seg[i].y, num: totalGears - bendCount });
+        bendCount++;
+      }
     }
     // Draw teleporter portal circles at segment boundaries (entry and exit).
     if (si < bridges.length) {
       _drawTeleporterPortal(bridges[si].from.x, bridges[si].from.y, NS, scale);
       _drawTeleporterPortal(bridges[si].to.x,   bridges[si].to.y,   NS, scale);
     }
+  }
+  for (const { x, y, num } of placedGearLabels) {
+    _appendGearLabel(chainSvgEl, x, y, String(num), scale, NS);
   }
 
   // Pass-through hook gears — drawn at cell center so the gear stays fixed while
@@ -1005,13 +1062,42 @@ function _redrawChain(px, py) {
     _drawTeleporterPortal(fb.to.x,   fb.to.y,   NS, scale);
   }
 
-  // Tail gear at player (skip while mid-flash, or when no gears remain).
+  // Unit vector from player back toward the chain — used for gear stack + counter.
+  let backDx = 0, backDy = -1;
+  if (!_playerInTeleport && lastSeg.length >= 2) {
+    const prevPt = lastSeg[lastSeg.length - 2];
+    const fdx = px - prevPt.x, fdy = py - prevPt.y;
+    const fLen = Math.hypot(fdx, fdy);
+    if (fLen > 0.1) { backDx = -fdx / fLen; backDy = -fdy / fLen; }
+  }
+
+  // Tail gear stack — placed just behind the player along the chain, stacked with overlap.
   if (!_playerInTeleport && lastSeg.length >= 1 && gearsLeft > 0) {
-    const lastPt = lastSeg[lastSeg.length - 1];
-    _appendGear(chainSvgEl, lastPt.x, lastPt.y,
-                gearOuterR, gearInnerR, gearHoleR,
-                _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir,
-                scale, NS);
+    const BACK_OFFSET = gearOuterR * 1.1;  // first gear center distance from player
+    const STACK_GAP   = gearOuterR * 0.55; // spacing between stacked gear centers
+    const maxStack    = Math.min(gearsLeft, 4);
+    const spinAngle   = _tailGearSpins ? _spinProgress * prevLocalDir : _spinAngleBase * prevLocalDir;
+
+    // Landing animation: gears expand outward from the player position to their resting spots.
+    let landScale = 1;
+    if (_gearLandAnim !== null) {
+      const rawT = Math.min((performance.now() - _gearLandAnim.startTime) / _gearLandAnim.duration, 1);
+      landScale = 1 - Math.pow(1 - rawT, 3); // cubic ease-out
+      if (rawT >= 1) _gearLandAnim = null;
+    }
+
+    // Draw farthest gear shape first so the nearest (frontmost) renders on top.
+    const stackPositions = [];
+    for (let i = maxStack - 1; i >= 0; i--) {
+      const dist = (BACK_OFFSET + i * STACK_GAP) * landScale;
+      const gx = px + backDx * dist, gy = py + backDy * dist;
+      _appendGear(chainSvgEl, gx, gy, gearOuterR, gearInnerR, gearHoleR, spinAngle, scale, NS);
+      stackPositions.push({ gx, gy, num: gearsLeft - i });
+    }
+    // Labels after all shapes so text on each gear paints above adjacent gear bodies.
+    for (const { gx, gy, num } of stackPositions) {
+      if (num > 0) _appendGearLabel(chainSvgEl, gx, gy, String(num), scale, NS);
+    }
   }
 
   // ── Pass-through hook gears — drawn at cell center, spinning with chain ──────
@@ -1038,7 +1124,9 @@ function _redrawChain(px, py) {
   }
 
   // ── Counter / hearts / chain bar ──────────────────────────────────────────
-  if (counterSpan) counterSpan.textContent = gearsLeft;
+  if (counterSpan) counterSpan.textContent = '';
+
+  if (counterSvgEl) counterSvgEl.innerHTML = '';
 
   if (_gearHeartsEl && totalGears > 0) {
     _gearHeartsEl.innerHTML = '';
@@ -1535,6 +1623,10 @@ function _placeOverlay(el, x, y, level) {
 let _goalFollowsPlayer = false;
 export function setGoalFollowsPlayer(v) { _goalFollowsPlayer = v; }
 
+export function setPlayerGrabbing(v) {
+  if (playerEl) playerEl.classList.toggle('grabbing', v);
+}
+
 // ─── dive indicator ────────────────────────────────────────────────────────────
 
 export function showDiveIndicator(level) {
@@ -1618,6 +1710,9 @@ function _setOverlayPixel(el, cx, cy) {
     if (_goalFollowsPlayer && goalEl) {
       goalEl.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
     }
+    el.style.setProperty('--player-dir', `${_playerDir}deg`);
+    el.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%) rotate(${_playerDir}deg)`;
+  } else {
+    el.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
   }
-  el.style.transform = `translate(${cx}px, ${cy}px) translate(-50%, -50%)`;
 }
